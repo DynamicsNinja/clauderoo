@@ -6,7 +6,7 @@ public partial class ProfileManager
     /// Sets the default profile. Null or the home profile clears the User-scope
     /// CLAUDE_CONFIG_DIR; any other profile is synced and the variable points at its folder.
     /// </summary>
-    public void SetDefault(string? name)
+    public SyncReport SetDefault(string? name)
     {
         var cfg = Config;
         string target;
@@ -21,16 +21,18 @@ public partial class ProfileManager
             target = name;
         }
 
+        var report = new SyncReport();
         if (cfg.Profiles[target].Home)
         {
             env.SetUser(EnvVar, null);
         }
         else
         {
-            new Syncer(cfg, paths, now).Sync(target);
+            report = new Syncer(cfg, paths, now).Sync(target);
             env.SetUser(EnvVar, paths.ProfileDir(target));
         }
         cfg.DefaultProfile = target;
         ConfigStore.Save(paths, cfg);
+        return report;
     }
 }

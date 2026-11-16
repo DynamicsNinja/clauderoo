@@ -14,6 +14,13 @@ public static class AutoStart
         else key.DeleteValue(ValueName, throwOnMissingValue: false);
     }
 
+    /// <summary>The installed tray exe if present under localAppDataclauderoo, otherwise fallbackExe.</summary>
+    public static string ResolveExe(string localAppData, string fallbackExe)
+    {
+        var installed = Path.Combine(localAppData, "clauderoo", "clauderoow.exe");
+        return File.Exists(installed) ? installed : fallbackExe;
+    }
+
     public static bool IsOn()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKey);
