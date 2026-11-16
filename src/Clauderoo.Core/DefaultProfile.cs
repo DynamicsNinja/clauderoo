@@ -28,7 +28,7 @@ public partial class ProfileManager
         }
         else
         {
-            report = new Syncer(cfg, paths, now).Sync(target);
+            report = NewSyncer(cfg).Sync(target);
             env.SetUser(EnvVar, paths.ProfileDir(target));
         }
         cfg.DefaultProfile = target;

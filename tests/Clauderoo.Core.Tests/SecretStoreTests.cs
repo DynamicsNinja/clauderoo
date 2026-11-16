@@ -7,7 +7,8 @@ public sealed class FakeSecretStore : ISecretStore
     private readonly Dictionary<string, string> _secrets = new(StringComparer.OrdinalIgnoreCase);
     public void Save(string profileDir, string secret) => _secrets[profileDir] = secret;
     public string? Load(string profileDir) => _secrets.TryGetValue(profileDir, out var s) ? s : null;
-    public void Delete(string profileDir) => _secrets.Remove(profileDir);
+    public List<string> Deleted { get; } = [];
+    public void Delete(string profileDir) { Deleted.Add(profileDir); _secrets.Remove(profileDir); }
     public bool Exists(string profileDir) => _secrets.ContainsKey(profileDir);
 }
 

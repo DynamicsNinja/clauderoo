@@ -228,9 +228,10 @@ public class ProfileProvidersTests
         var (pm, h, secrets, _) = Make();
         using var _h = h;
         pm.SetProvider("work", Providers.ApiKey, apiKey: "sk-1");
-        var dir = h.Paths.ProfileDir("work");
         pm.Remove("work");
-        Assert.False(secrets.Exists(dir));
+        // Deleted from the moved folder, after the move succeeded.
+        var moved = Path.Combine(h.Paths.RemovedDir, "work-20261116-100000");
+        Assert.Equal(moved, secrets.Deleted[^1]);
     }
 
     [Fact]

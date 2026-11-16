@@ -54,7 +54,7 @@ cr check work
 
 Vertex needs the Google Cloud CLI (`winget install Google.CloudSDK`), signed in twice: `gcloud auth login` and `gcloud auth application-default login`. API keys are stored encrypted for your Windows user (DPAPI) inside the profile folder.
 
-If a profile owns its `settings.json`, set the provider first and then run `cr share <profile> settings.json` to move it onto the shared copy plus the provider overlay.
+If a profile owns its `settings.json`, set the provider first and then run `cr share <profile> settings.json` to move it onto the shared copy plus the provider overlay. In an owned `settings.json`, provider settings replace any hand-written Vertex or API-key keys (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_API_KEY`, `apiKeyHelper`, …); the first time that happens clauderoo saves a `settings.json.bak-<timestamp>` copy.
 
 ## Sharing model
 

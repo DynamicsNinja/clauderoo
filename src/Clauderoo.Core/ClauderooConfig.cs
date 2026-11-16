@@ -11,6 +11,10 @@ public class ProfileEntry
     public string? Provider { get; set; }
     public VertexSettings? Vertex { get; set; }
     public Dictionary<string, string> Env { get; set; } = new();
+
+    /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 public class VertexSettings
@@ -38,6 +42,10 @@ public class ClauderooConfig
     public string HomeDir { get; set; } = "";
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
+
+    /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 
     [JsonIgnore]
     public string? HomeProfileName =>

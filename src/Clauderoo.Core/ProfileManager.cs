@@ -17,7 +17,8 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
     /// <summary>The exe that apiKeyHelper runs; handed to every Syncer.</summary>
     public string HelperExe { get; set; } = HelperExePath.Resolve();
 
-    private Syncer NewSyncer(ClauderooConfig cfg) => new(cfg, paths, now) { HelperExe = HelperExe };
+    /// <summary>The single place Syncers are built, so every sync writes the same apiKeyHelper exe.</summary>
+    internal Syncer NewSyncer(ClauderooConfig cfg) => new(cfg, paths, now) { HelperExe = HelperExe };
 
     private const string EnvVar = "CLAUDE_CONFIG_DIR";
 
@@ -91,23 +92,28 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                 $"{name}'s folder is referenced by shared plugin records (installed from the {name} profile). " +
                 $"Reinstall those plugins from {cfg.HomeDir}, or run 'clauderoo remove {name} --force'.");
 
-        secrets.Delete(dir);
+        // The API key is deleted only once the folder has moved, so a failed move keeps the profile working.
+        var keyDir = dir;
         if (Directory.Exists(dir))
         {
+            var moved = Path.Combine(paths.RemovedDir, $"{name}-{Stamp}");
             try
             {
                 // Unlink shared-folder junctions first so nothing that later deletes the moved
                 // folder (e.g. PowerShell 5.1 Remove-Item -Recurse) can follow them into home.
                 RemoveNestedLinks(dir);
                 Directory.CreateDirectory(paths.RemovedDir);
-                Directory.Move(dir, Path.Combine(paths.RemovedDir, $"{name}-{Stamp}"));
+                Directory.Move(dir, moved);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 throw new ClauderooException(
                     $"Couldn't move {name}'s folder — close {name}'s Claude sessions and try again.");
             }
+            keyDir = moved;
         }
+        try { secrets.Delete(keyDir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
         ConfigStore.Save(paths, cfg);
     }
@@ -222,14 +228,21 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
 
         entry.Overrides.Remove(item);
 
+        string? dirBackup = null;
         if (SharedItems.IsDir(item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
             if (Directory.Exists(link) && Junction.GetTarget(link) == null)
+            {
+                dirBackup = $"{item}.bak-{Stamp}";
                 Directory.Move(link, $"{link}.bak-{Stamp}");
+            }
         }
         ConfigStore.Save(paths, cfg);
-        return NewSyncer(cfg).Sync(name);
+        var report = NewSyncer(cfg).Sync(name, justShared: item);
+        if (dirBackup != null)
+            report.Notices.Insert(0, $"{name}: now sharing {item} from {cfg.HomeProfileName}; previous copy saved as {dirBackup}.");
+        return report;
     }
 
     public StatusReport Status()

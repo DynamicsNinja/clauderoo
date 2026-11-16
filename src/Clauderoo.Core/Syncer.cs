@@ -18,7 +18,22 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     /// <summary>Exe path written into apiKeyHelper for apikey profiles.</summary>
     public string HelperExe { get; set; } = HelperExePath.Resolve();
 
-    public SyncReport Sync(string profile)
+    public SyncReport Sync(string profile) => Sync(profile, justShared: null);
+
+    /// <summary>
+    /// Syncs one profile. <paramref name="justShared"/> names an item the user just chose to share again; a backup of
+    /// that item's previous copy is then reported as expected rather than as lost changes.
+    /// </summary>
+    public SyncReport Sync(string profile, string? justShared)
+    {
+        _justShared = justShared;
+        try { return SyncCore(profile); }
+        finally { _justShared = null; }
+    }
+
+    private string? _justShared;
+
+    private SyncReport SyncCore(string profile)
     {
         var report = new SyncReport();
         if (!cfg.Profiles.TryGetValue(profile, out var entry))
@@ -37,7 +52,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         }
         SyncFiles(profile, entry, dir, state, report);
         try { SyncMcp(profile, entry, dir, state, report); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
         {
             report.Problems.Add($"{profile}: could not sync mcpServers: {e.Message}");
         }
@@ -313,11 +328,21 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                 return;
             }
 
+            string? notice = null;
             if (sig == null || !JsonNode.DeepEquals(current, merged))
             {
                 var tmp = AtomicFile.TmpName(file);
                 try
                 {
+                    // First overlay on a file clauderoo never managed: hand-written provider keys are about to be
+                    // replaced, so keep a copy of the user's file.
+                    if (sig != null && state.ManagedEnv.Count == 0 && state.ManagedTop.Count == 0
+                        && ReplacesReservedKeys(current, merged))
+                    {
+                        var backup = $"{Settings}.bak-{Stamp}";
+                        File.Copy(file, Path.Combine(dir, backup), overwrite: true);
+                        notice = $"{profile}: provider settings replaced hand-written provider keys in settings.json (saved {backup}).";
+                    }
                     File.WriteAllBytes(tmp, SerializeSettings(merged));
                     BeforeOwnedSettingsCommit?.Invoke();
                     if (Signature(file) != sig)
@@ -333,14 +358,29 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                     throw;
                 }
             }
+            if (notice != null) report.Notices.Add(notice);
             RecordManaged(state, overlay);
             return;
         }
         report.Problems.Add($"{profile}: settings.json kept changing; provider settings not applied");
     }
 
+    /// <summary>True when <paramref name="current"/> holds a reserved env/top key whose value differs in <paramref name="merged"/>.</summary>
+    private static bool ReplacesReservedKeys(JsonObject current, JsonObject merged)
+    {
+        foreach (var k in ProviderOverlay.ReservedTop)
+            if (current.TryGetPropertyValue(k, out var v) && !JsonNode.DeepEquals(v, merged[k])) return true;
+        if (current["env"] is not JsonObject env) return false;
+        var mergedEnv = merged["env"] as JsonObject;
+        foreach (var k in ProviderOverlay.ReservedEnv)
+            if (env.TryGetPropertyValue(k, out var v) && !JsonNode.DeepEquals(v, mergedEnv?[k])) return true;
+        return false;
+    }
+
     private string Notice(string profile, string item, string backup) =>
-        $"{profile}: your changes to {item} were replaced by {cfg.HomeProfileName}'s (saved {backup}). Use 'clauderoo own {profile} {item}' to keep {profile}'s own.";
+        item == _justShared
+            ? $"{profile}: now sharing {item} from {cfg.HomeProfileName}; previous copy saved as {backup}."
+            : $"{profile}: your changes to {item} were replaced by {cfg.HomeProfileName}'s (saved {backup}). Use 'clauderoo own {profile} {item}' to keep {profile}'s own.";
 
     private static string McpHash(JsonNode? node) => HashBytes(Encoding.UTF8.GetBytes(node?.ToJsonString() ?? "null"));
 
@@ -359,9 +399,11 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             try
             {
                 using var fs = new FileStream(cfg.HomeJson, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                return (JsonNode.Parse(fs) as JsonObject)?[SharedItems.McpServers];
+                var node = JsonNode.Parse(fs, documentOptions: StrictJson);
+                Materialize(node); // duplicate keys surface here (ArgumentException), not later outside this catch
+                return (node as JsonObject)?[SharedItems.McpServers];
             }
-            catch (JsonException)
+            catch (Exception e) when (e is JsonException or ArgumentException)
             {
                 // Claude may be mid-write: wait once and retry before reporting.
                 if (attempt == 0) { Thread.Sleep(200); continue; }
@@ -388,8 +430,12 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             JsonObject root;
             if (sig != null)
             {
-                try { root = JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? throw new JsonException(); }
-                catch (JsonException)
+                try
+                {
+                    root = JsonNode.Parse(File.ReadAllText(file), documentOptions: StrictJson) as JsonObject ?? throw new JsonException();
+                    Materialize(root);
+                }
+                catch (Exception e) when (e is JsonException or ArgumentException)
                 {
                     report.Problems.Add($"{profile}: .claude.json is not valid JSON; MCP servers not synced");
                     return;

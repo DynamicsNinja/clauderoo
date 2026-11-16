@@ -94,9 +94,19 @@ public partial class ProfileManager
         return NewSyncer(cfg).Sync(name);
     }
 
-    public string? GetApiKey(string name) => secrets.Load(paths.ProfileDir(name));
+    /// <summary>The profile's saved API key, or null. Throws for an unknown profile or the home profile.</summary>
+    public string? GetApiKey(string name)
+    {
+        NonHome(Config, name);
+        return secrets.Load(paths.ProfileDir(name));
+    }
 
-    public bool HasApiKey(string name) => secrets.Exists(paths.ProfileDir(name));
+    /// <summary>True when the profile has a saved API key; false for an unknown profile or the home profile.</summary>
+    public bool HasApiKey(string name)
+    {
+        var cfg = Config;
+        return cfg.Profiles.TryGetValue(name, out var e) && !e.Home && secrets.Exists(paths.ProfileDir(name));
+    }
 
     public CheckResult Check(string name)
     {
