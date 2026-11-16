@@ -16,6 +16,7 @@ sealed class TrayContext : ApplicationContext
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly Icon _appIcon;
     private readonly SynchronizationContext _ui;
+    private string? _watchedKey;
 
     public TrayContext()
     {
@@ -27,17 +28,22 @@ sealed class TrayContext : ApplicationContext
 
         _menu.Opening += (_, _) => RebuildMenu();
         _icon = new NotifyIcon { Icon = _appIcon, Text = "clauderoo", ContextMenuStrip = _menu, Visible = true };
-        _icon.DoubleClick += (_, _) => Guard(StartDefault);
+        _icon.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) Guard(StartDefault); };
 
         _debounce.Tick += (_, _) =>
         {
             _debounce.Stop();
-            Guard(() => Show(new Syncer(_pm.Config, _paths, () => DateTime.Now).SyncAll()));
+            Guard(() =>
+            {
+                var cfg = _pm.Config;
+                EnsureWatchers(cfg);
+                Show(new Syncer(cfg, _paths, () => DateTime.Now).SyncAll());
+            });
         };
 
         try
         {
-            StartWatchers(_pm.Config);
+            EnsureWatchers(_pm.Config);
         }
         catch (Exception e)
         {
@@ -45,14 +51,27 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
-    private void StartWatchers(ClauderooConfig cfg)
+    // (Re)creates the watchers when there are none or the config's home paths changed.
+    private void EnsureWatchers(ClauderooConfig cfg)
     {
+        var key = cfg.HomeDir + "|" + cfg.HomeJson;
+        if (_watchers.Count > 0 && key == _watchedKey) return;
+
+        DisposeWatchers();
+        _watchedKey = key;
+
         if (Directory.Exists(cfg.HomeDir))
             AddWatcher(cfg.HomeDir, "*", n => SharedFileNames.Contains(n, StringComparer.OrdinalIgnoreCase));
 
         var jsonDir = Path.GetDirectoryName(cfg.HomeJson);
         if (!string.IsNullOrEmpty(jsonDir) && Directory.Exists(jsonDir))
             AddWatcher(jsonDir, ".claude.json", _ => true);
+    }
+
+    private void DisposeWatchers()
+    {
+        foreach (var w in _watchers) w.Dispose();
+        _watchers.Clear();
     }
 
     private void AddWatcher(string dir, string filter, Func<string, bool> accept)
@@ -67,8 +86,19 @@ sealed class TrayContext : ApplicationContext
         w.Created += (_, e) => { if (e.Name != null && accept(e.Name)) Kick(); };
         w.Deleted += (_, e) => { if (e.Name != null && accept(e.Name)) Kick(); };
         w.Renamed += (_, e) => { if (e.Name != null && accept(e.Name)) Kick(); };
+        w.Error += (_, _) => OnWatcherError();
         w.EnableRaisingEvents = true;
         _watchers.Add(w);
+    }
+
+    // Overflow or a deleted watched dir: drop the watchers (recreated by EnsureWatchers) and resync.
+    private void OnWatcherError()
+    {
+        try
+        {
+            _ui.Post(_ => { DisposeWatchers(); _watchedKey = null; Kick(); }, null);
+        }
+        catch (Exception) { /* shutting down */ }
     }
 
     // Watcher events arrive on thread-pool threads; post to the UI thread to (re)start the timer.
@@ -87,6 +117,7 @@ sealed class TrayContext : ApplicationContext
         IReadOnlyList<ProfileInfo> profiles;
         try
         {
+            EnsureWatchers(_pm.Config);
             profiles = _pm.List();
         }
         catch (Exception e)
@@ -177,7 +208,7 @@ sealed class TrayContext : ApplicationContext
     {
         if (disposing)
         {
-            foreach (var w in _watchers) w.Dispose();
+            DisposeWatchers();
             _debounce.Dispose();
             _icon.Visible = false;
             _icon.Dispose();
