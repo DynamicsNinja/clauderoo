@@ -87,10 +87,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             throw new ClauderooException($"'{name}' is the default profile. Change the default first.");
 
         var dir = paths.ProfileDir(name);
-        if (!force && PluginRecordsReference(cfg.HomeDir, dir))
-            throw new ClauderooException(
-                $"{name}'s folder is referenced by shared plugin records (installed from the {name} profile). " +
-                $"Reinstall those plugins from {cfg.HomeDir}, or run 'clauderoo remove {name} --force'.");
+        RefuseIfPluginRecordsReference(cfg, name, dir, force, $"remove {name}");
 
         // The API key is deleted only once the folder has moved, so a failed move keeps the profile working.
         var keyDir = dir;
@@ -116,6 +113,15 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
         ConfigStore.Save(paths, cfg);
+    }
+
+    // Shared by Remove and Rename: refuses while home's plugin records point inside the profile folder.
+    private static void RefuseIfPluginRecordsReference(ClauderooConfig cfg, string name, string dir, bool force, string command)
+    {
+        if (!force && PluginRecordsReference(cfg.HomeDir, dir))
+            throw new ClauderooException(
+                $"{name}'s folder is referenced by shared plugin records (installed from the {name} profile). " +
+                $"Reinstall those plugins from {cfg.HomeDir}, or run 'clauderoo {command} --force'.");
     }
 
     private static readonly string[] PluginRecordFiles = ["installed_plugins.json", "known_marketplaces.json"];
