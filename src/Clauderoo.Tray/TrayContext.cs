@@ -38,9 +38,8 @@ sealed class TrayContext : ApplicationContext
             _debounce.Stop();
             Guard(() =>
             {
-                var cfg = _pm.Config;
-                EnsureWatchers(cfg);
-                Show(new Syncer(cfg, _paths, () => DateTime.Now).SyncAll(), dedupe: true);
+                EnsureWatchers(_pm.Config);
+                Show(_pm.SyncAll(), dedupe: true);
             });
         };
 
@@ -155,7 +154,13 @@ sealed class TrayContext : ApplicationContext
 
         foreach (var p in profiles)
         {
-            var text = (p.IsDefault ? "● " : "") + p.Name + (p.Email != null ? $"  ({p.Email})" : "");
+            var who = p.Provider switch
+            {
+                Providers.Vertex => "vertex",
+                Providers.ApiKey => "API key",
+                _ => p.Email,
+            };
+            var text = (p.IsDefault ? "● " : "") + p.Name + (who != null ? $"  ({who})" : "");
             var item = new ToolStripMenuItem(text.Replace("&", "&&"));
             var name = p.Name;
             item.DropDownItems.Add("Start session", null, (_, _) => Guard(() => StartSession(name, null)));
