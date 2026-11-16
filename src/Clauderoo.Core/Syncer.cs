@@ -15,6 +15,9 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 {
     private readonly Func<DateTime> _now = now;
 
+    /// <summary>Exe path written into apiKeyHelper for apikey profiles.</summary>
+    public string HelperExe { get; set; } = HelperExePath.Resolve();
+
     public SyncReport Sync(string profile)
     {
         var report = new SyncReport();
@@ -118,41 +121,207 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private static string HashFile(string path) => HashBytes(File.ReadAllBytes(path));
 
+    private const string Settings = "settings.json";
+
     private void SyncFiles(string profile, ProfileEntry entry, string dir, SyncState state, SyncReport report)
     {
         foreach (var f in SharedItems.Files)
         {
-            if (entry.Overrides.Contains(f)) continue;
-            var source = Path.Combine(cfg.HomeDir, f);
-            if (!File.Exists(source)) continue;
             try
             {
-            var target = Path.Combine(dir, f);
-            var srcHash = HashFile(source);
-
-            if (File.Exists(target))
-            {
-                var tgtHash = HashFile(target);
-                state.Hashes.TryGetValue(f, out var recorded);
-                if (tgtHash != recorded && tgtHash != srcHash)
+                if (f == Settings)
                 {
-                    var backup = $"{f}.bak-{Stamp}";
-                    File.Copy(target, Path.Combine(dir, backup), overwrite: true);
-                    report.Notices.Add(Notice(profile, f, backup));
+                    SyncSettings(profile, entry, dir, state, report);
+                    continue;
                 }
-                if (tgtHash != srcHash) CopyAtomic(source, target);
-            }
-            else
-            {
-                CopyAtomic(source, target);
-            }
-            state.Hashes[f] = srcHash;
+                if (entry.Overrides.Contains(f)) continue;
+                var source = Path.Combine(cfg.HomeDir, f);
+                if (!File.Exists(source)) continue;
+                SyncCopy(profile, f, dir, source, state, report);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 report.Problems.Add($"{profile}: could not sync {f}: {e.Message}");
             }
         }
+    }
+
+    /// <summary>Today's path: the profile's file is a byte-for-byte copy of home's.</summary>
+    private void SyncCopy(string profile, string f, string dir, string source, SyncState state, SyncReport report) =>
+        SyncShared(profile, f, dir, HashFile(source), () => CopyAtomic(source, Path.Combine(dir, f)), state, report);
+
+    /// <summary>
+    /// Brings a shared file to the expected content (hash <paramref name="expectedHash"/>). If the session changed it since
+    /// clauderoo last wrote it, the session's version is backed up first and a notice is reported.
+    /// </summary>
+    private void SyncShared(string profile, string f, string dir, string expectedHash, Action write, SyncState state, SyncReport report)
+    {
+        var target = Path.Combine(dir, f);
+        if (File.Exists(target))
+        {
+            var tgtHash = HashFile(target);
+            state.Hashes.TryGetValue(f, out var recorded);
+            if (tgtHash != recorded && tgtHash != expectedHash)
+            {
+                var backup = $"{f}.bak-{Stamp}";
+                File.Copy(target, Path.Combine(dir, backup), overwrite: true);
+                report.Notices.Add(Notice(profile, f, backup));
+            }
+            if (tgtHash != expectedHash) write();
+        }
+        else
+        {
+            write();
+        }
+        state.Hashes[f] = expectedHash;
+    }
+
+    private static readonly JsonSerializerOptions SettingsJson = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    private static byte[] SerializeSettings(JsonObject o) => Encoding.UTF8.GetBytes(o.ToJsonString(SettingsJson));
+
+    private static JsonObject? ParseObject(string text)
+    {
+        try { return JsonNode.Parse(text) as JsonObject; }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>True when home's settings carry keys that only a provider overlay may set (spec decision 4).</summary>
+    private static bool HasReservedKeys(byte[] homeBytes)
+    {
+        JsonObject? o;
+        try { o = JsonNode.Parse(homeBytes) as JsonObject; }
+        catch (JsonException) { return false; }
+        if (o == null) return false;
+        if (ProviderOverlay.ReservedTop.Any(o.ContainsKey)) return true;
+        return o["env"] is JsonObject env && ProviderOverlay.ReservedEnv.Any(env.ContainsKey);
+    }
+
+    private static void RecordManaged(SyncState state, Overlay overlay)
+    {
+        state.ManagedEnv = [.. overlay.Env.Keys];
+        state.ManagedTop = [.. overlay.Top.Keys];
+    }
+
+    private void SyncSettings(string profile, ProfileEntry entry, string dir, SyncState state, SyncReport report)
+    {
+        var overlay = ProviderOverlay.Build(profile, entry, HelperExe);
+        var noOverlay = overlay.Env.Count == 0 && overlay.Top.Count == 0
+            && state.ManagedEnv.Count == 0 && state.ManagedTop.Count == 0;
+
+        if (entry.Overrides.Contains(Settings))
+        {
+            if (noOverlay) return; // owned and nothing to manage: untouched, as today
+            SyncOwnedSettings(profile, dir, overlay, state, report);
+            return;
+        }
+
+        var source = Path.Combine(cfg.HomeDir, Settings);
+        var homeExists = File.Exists(source);
+        if (noOverlay)
+        {
+            if (!homeExists) return;
+            // Byte-identical to home (today's behaviour) unless home carries provider-reserved keys to drop.
+            if (!HasReservedKeys(File.ReadAllBytes(source)))
+            {
+                SyncCopy(profile, Settings, dir, source, state, report);
+                return;
+            }
+        }
+
+        JsonObject home;
+        if (!homeExists) home = new JsonObject();
+        else
+        {
+            var parsed = ParseObject(File.ReadAllText(source));
+            if (parsed == null)
+            {
+                // Claude may be mid-write: wait once and retry before reporting.
+                Thread.Sleep(200);
+                parsed = ParseObject(File.ReadAllText(source));
+            }
+            if (parsed == null)
+            {
+                report.Problems.Add($"{profile}: home settings.json is not valid JSON; settings not synced");
+                return;
+            }
+            home = parsed;
+        }
+
+        JsonObject generated;
+        // Home never contains clauderoo-written keys, so nothing previously managed needs removing here.
+        try { generated = ProviderOverlay.Apply(home, overlay, [], []); }
+        catch (ClauderooException)
+        {
+            report.Problems.Add($"{profile}: home settings.json \"env\" is not an object; settings not synced");
+            return;
+        }
+
+        var bytes = SerializeSettings(generated);
+        var target = Path.Combine(dir, Settings);
+        SyncShared(profile, Settings, dir, HashBytes(bytes), () => AtomicFile.WriteAllBytes(target, bytes), state, report);
+        RecordManaged(state, overlay);
+    }
+
+    /// <summary>Test hook: runs just before an owned settings.json is replaced.</summary>
+    public Action? BeforeOwnedSettingsCommit { get; set; }
+
+    /// <summary>Applies the overlay in place to a profile-owned settings.json, touching only managed/reserved keys.</summary>
+    private void SyncOwnedSettings(string profile, string dir, Overlay overlay, SyncState state, SyncReport report)
+    {
+        var file = Path.Combine(dir, Settings);
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var sig = Signature(file);
+            JsonObject current;
+            if (sig != null)
+            {
+                var parsed = ParseObject(File.ReadAllText(file));
+                if (parsed == null)
+                {
+                    report.Problems.Add($"{profile}: settings.json is not valid JSON; provider settings not applied");
+                    return;
+                }
+                current = parsed;
+            }
+            else current = new JsonObject();
+
+            JsonObject merged;
+            try { merged = ProviderOverlay.Apply(current, overlay, state.ManagedEnv, state.ManagedTop); }
+            catch (ClauderooException)
+            {
+                report.Problems.Add($"{profile}: settings.json \"env\" is not an object; provider settings not applied");
+                return;
+            }
+
+            if (sig == null || !JsonNode.DeepEquals(current, merged))
+            {
+                var tmp = AtomicFile.TmpName(file);
+                try
+                {
+                    File.WriteAllBytes(tmp, SerializeSettings(merged));
+                    BeforeOwnedSettingsCommit?.Invoke();
+                    if (Signature(file) != sig)
+                    {
+                        File.Delete(tmp);
+                        continue; // the session wrote the file meanwhile: re-read and redo the merge
+                    }
+                    File.Move(tmp, file, overwrite: true);
+                }
+                catch
+                {
+                    try { File.Delete(tmp); } catch (Exception) { }
+                    throw;
+                }
+            }
+            RecordManaged(state, overlay);
+            return;
+        }
+        report.Problems.Add($"{profile}: settings.json kept changing; provider settings not applied");
     }
 
     private string Notice(string profile, string item, string backup) =>

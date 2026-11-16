@@ -181,4 +181,44 @@ public class ProviderOverlayTests
         Assert.Empty(e.Env);
         Assert.Equal(Providers.Login, Providers.Of(e));
     }
+
+    [Fact]
+    public void Build_SkipsReservedUserEnv_HandEditedConfig()
+    {
+        var e = new ProfileEntry();
+        e.Env["ANTHROPIC_API_KEY"] = "sk-x";
+        e.Env["CLAUDE_CODE_USE_VERTEX"] = "1";
+        e.Env["MY_VAR"] = "1";
+        var o = ProviderOverlay.Build("work", e, Exe);
+        Assert.Equal(["MY_VAR"], o.Env.Keys);
+    }
+
+    [Theory]
+    [InlineData("FOO\n")]
+    [InlineData("FOO\r\n")]
+    public void ValidateEnvName_RejectsTrailingNewline(string name) =>
+        Assert.Throws<ClauderooException>(() => ProviderOverlay.ValidateEnvName(name));
+
+    [Fact]
+    public void Build_Vertex_WhitespaceModelsTreatedAsNull()
+    {
+        var o = ProviderOverlay.Build("work", Vertex("", "  ", "\t"), Exe);
+        Assert.Equal(3, o.Env.Count);
+        Assert.DoesNotContain("ANTHROPIC_DEFAULT_SONNET_MODEL", o.Env.Keys);
+        Assert.DoesNotContain("ANTHROPIC_DEFAULT_OPUS_MODEL", o.Env.Keys);
+        Assert.DoesNotContain("ANTHROPIC_DEFAULT_HAIKU_MODEL", o.Env.Keys);
+    }
+
+    [Fact]
+    public void HelperExePath_InstalledWins_ElseFallback()
+    {
+        using var home = new TempHome();
+        var lad = Path.Combine(home.Dir, "lad");
+        const string run = @"C:\run\clauderoo.exe";
+        Assert.Equal(run, HelperExePath.Resolve(lad, run));
+        var installed = Path.Combine(lad, "clauderoo", "clauderoo.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(installed)!);
+        File.WriteAllText(installed, "");
+        Assert.Equal(installed, HelperExePath.Resolve(lad, run));
+    }
 }

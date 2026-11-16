@@ -25,7 +25,7 @@ public static partial class ProviderOverlay
         "gcpAuthRefresh",
     };
 
-    [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
+    [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*\z")]
     private static partial Regex NameRegex();
 
     public static void ValidateEnvName(string name)
@@ -38,7 +38,10 @@ public static partial class ProviderOverlay
 
     public static Overlay Build(string profile, ProfileEntry e, string helperExe)
     {
-        var env = new Dictionary<string, string>(e.Env, StringComparer.Ordinal);
+        // Reserved names come only from the provider; a hand-edited config must never inject them.
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (k, val) in e.Env)
+            if (!ReservedEnv.Contains(k)) env[k] = val;
         var top = new Dictionary<string, string>(StringComparer.Ordinal);
 
         switch (Providers.Of(e))
@@ -48,9 +51,9 @@ public static partial class ProviderOverlay
                 env["CLAUDE_CODE_USE_VERTEX"] = "1";
                 env["ANTHROPIC_VERTEX_PROJECT_ID"] = v.Project;
                 env["CLOUD_ML_REGION"] = v.Region;
-                if (v.SonnetModel is not null) env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = v.SonnetModel;
-                if (v.OpusModel is not null) env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = v.OpusModel;
-                if (v.HaikuModel is not null) env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = v.HaikuModel;
+                if (!string.IsNullOrWhiteSpace(v.SonnetModel)) env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = v.SonnetModel;
+                if (!string.IsNullOrWhiteSpace(v.OpusModel)) env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = v.OpusModel;
+                if (!string.IsNullOrWhiteSpace(v.HaikuModel)) env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = v.HaikuModel;
                 top["gcpAuthRefresh"] = "gcloud auth application-default login";
                 break;
             case Providers.ApiKey:
@@ -95,5 +98,18 @@ public static partial class ProviderOverlay
 
         if (created && envObj!.Count == 0) result.Remove("env");
         return result;
+    }
+}
+
+public static class HelperExePath
+{
+    /// <summary>The exe that apiKeyHelper runs: the installed clauderoo.exe if present, else the running exe.</summary>
+    public static string Resolve() =>
+        Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath ?? "clauderoo.exe");
+
+    public static string Resolve(string localAppData, string fallbackExe)
+    {
+        var installed = Path.Combine(localAppData, "clauderoo", "clauderoo.exe");
+        return File.Exists(installed) ? installed : fallbackExe;
     }
 }

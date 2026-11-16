@@ -8,13 +8,23 @@ public class SyncState
 
     public Dictionary<string, string> Hashes { get; set; } = new();
 
+    /// <summary>Env names clauderoo wrote into settings.json for this profile's provider/env overlay.</summary>
+    public List<string> ManagedEnv { get; set; } = [];
+
+    /// <summary>Top-level settings.json keys clauderoo wrote for this profile's provider overlay.</summary>
+    public List<string> ManagedTop { get; set; } = [];
+
     public static SyncState Load(string profileDir)
     {
         var file = Path.Combine(profileDir, FileName);
         if (!File.Exists(file)) return new SyncState();
         try
         {
-            return JsonSerializer.Deserialize<SyncState>(File.ReadAllText(file)) ?? new SyncState();
+            var s = JsonSerializer.Deserialize<SyncState>(File.ReadAllText(file)) ?? new SyncState();
+            s.Hashes ??= new();
+            s.ManagedEnv ??= [];
+            s.ManagedTop ??= [];
+            return s;
         }
         catch (JsonException)
         {
