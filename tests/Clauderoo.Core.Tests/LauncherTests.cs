@@ -20,7 +20,7 @@ public class LauncherTests
         var s = Launcher.NewWindow(Cfg(), home.Paths, "work", dir, [], wtAvailable: true);
         Assert.Equal("wt.exe", s.FileName);
         Assert.Equal(new[] { "-w", "0", "new-tab", "--title", "Claude · work", "-d", dir, "cmd", "/k",
-            $"set \"CLAUDE_CONFIG_DIR={workDir}\" && claude" }, s.Args);
+            $"set CLAUDE_CONFIG_DIR={workDir}&& claude" }, s.Args);
         Assert.Equal(workDir, s.ConfigDirEnv);
         Assert.Equal(dir, s.WorkingDir);
     }
@@ -30,7 +30,7 @@ public class LauncherTests
     {
         using var home = new TempHome();
         var s = Launcher.NewWindow(Cfg(), home.Paths, "personal", @"C:\proj", [], true);
-        Assert.StartsWith("set \"CLAUDE_CONFIG_DIR=\" && claude", s.Args[^1]);
+        Assert.StartsWith("set CLAUDE_CONFIG_DIR=&& claude", s.Args[^1]);
         Assert.Null(s.ConfigDirEnv);
     }
 
@@ -66,7 +66,42 @@ public class LauncherTests
         var s = Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\p", [], false);
         Assert.Equal("cmd.exe", s.FileName);
         Assert.Equal(new[] { "/c", "start", "Claude · work", "/D", @"C:\p", "cmd", "/k",
-            $"set \"CLAUDE_CONFIG_DIR={workDir}\" && claude" }, s.Args);
+            $"set CLAUDE_CONFIG_DIR={workDir}&& claude" }, s.Args);
+    }
+
+    [Fact]
+    public void Wt_AmpersandArg_Quoted()
+    {
+        using var home = new TempHome();
+        var s = Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\p", ["foo&calc"], true);
+        Assert.EndsWith("claude \"foo&calc\"", s.Args[^1]);
+    }
+
+    [Theory]
+    [InlineData("a\"b")]
+    [InlineData("%PATH%")]
+    [InlineData("a;b")]
+    [InlineData("hi!")]
+    public void BadClaudeArg_Throws(string arg)
+    {
+        using var home = new TempHome();
+        Assert.Throws<ClauderooException>(() => Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\p", [arg], true));
+    }
+
+    [Fact]
+    public void NoWt_ArgNeedingQuotes_Throws()
+    {
+        using var home = new TempHome();
+        Assert.Throws<ClauderooException>(() => Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\p", ["a b"], false));
+        Assert.Throws<ClauderooException>(() => Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\p", ["x&y"], false));
+    }
+
+    [Fact]
+    public void BadDir_Throws()
+    {
+        using var home = new TempHome();
+        Assert.Throws<ClauderooException>(() => Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\a;b", [], true));
+        Assert.Throws<ClauderooException>(() => Launcher.NewWindow(Cfg(), home.Paths, "work", @"C:\a&b", [], false));
     }
 
     [Fact]

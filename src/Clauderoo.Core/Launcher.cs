@@ -10,7 +10,15 @@ public static class Launcher
         string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable)
     {
         var configDir = ConfigDirFor(cfg, paths, profile);
-        var cmdLine = $"set \"CLAUDE_CONFIG_DIR={configDir}\" && claude"
+        foreach (var a in claudeArgs)
+            // Without wt, the command line is re-parsed by `cmd /c start`, which mangles the quotes
+            // .NET adds around the inner command, so args needing quotes can't be passed reliably.
+            if (a.IndexOfAny(BadArgChars) >= 0 || (!wtAvailable && QuoteIfNeeded(a) != a))
+                throw new ClauderooException("Argument contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
+        foreach (var p in new[] { configDir, dir })
+            if (p is not null && p.IndexOfAny(BadPathChars) >= 0)
+                throw new ClauderooException($"Path '{p}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
+        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& claude"
             + string.Concat(claudeArgs.Select(a => " " + QuoteIfNeeded(a)));
         var title = $"Claude · {profile}";
         string[] args = wtAvailable
@@ -30,8 +38,12 @@ public static class Launcher
         return entry.Home ? null : paths.ProfileDir(profile);
     }
 
+    private static readonly char[] BadArgChars = ['"', '%', '!', ';'];
+    private static readonly char[] BadPathChars = ['"', '%', '!', ';', '&', '|', '<', '>', '^'];
+    private static readonly char[] QuoteChars = ['&', '|', '<', '>', '^', '(', ')'];
+
     private static string QuoteIfNeeded(string a) =>
-        a.Contains(' ') || a.Contains('"') ? "\"" + a.Replace("\"", "\\\"") + "\"" : a;
+        a.Any(char.IsWhiteSpace) || a.IndexOfAny(QuoteChars) >= 0 ? "\"" + a + "\"" : a;
 
     public static string ResolveClaude() =>
         ResolveClaude(Environment.GetEnvironmentVariable("PATH") ?? "",
