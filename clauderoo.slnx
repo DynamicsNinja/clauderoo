@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Clauderoo.Cli/Clauderoo.Cli.csproj" />
+    <Project Path="src/Clauderoo.Core/Clauderoo.Core.csproj" />
+    <Project Path="src/Clauderoo.Tray/Clauderoo.Tray.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Clauderoo.Core.Tests/Clauderoo.Core.Tests.csproj" />
+  </Folder>
+</Solution>
