@@ -59,13 +59,38 @@ public class CliTests
     }
 
     [Fact]
-    public void Run_ReturnsClaudeExitCode_ForUnknownProfileIs1()
+    public void Run_UnknownProfile_Exit1()
     {
         var (pm, home) = Make();
         using var _h = home;
         var r = Run(pm, "run", "nope");
         Assert.Equal(1, r.code);
         Assert.Empty(r.launched);
+    }
+
+    [Fact]
+    public void Run_ReturnsLaunchExitCode()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var o = new StringWriter();
+        var e = new StringWriter();
+        LaunchSpec? seen = null;
+        var code = Commands.Run(["run", "work", "--", "-p", "hi"], o, e, pm,
+            s => 0, s => { seen = s; return 7; }, claudePath: "claude.cmd");
+        Assert.Equal(7, code);
+        Assert.Equal(["-p", "hi"], seen!.Args);
+    }
+
+    [Fact]
+    public void DefaultClear_PrintsCleared()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        Run(pm, "default", "work");
+        var r = Run(pm, "default", "--clear");
+        Assert.Equal(0, r.code);
+        Assert.Contains("Default cleared (personal is the default).", r.o);
     }
 
     [Fact]

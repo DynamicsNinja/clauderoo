@@ -1,3 +1,5 @@
+using Microsoft.Win32;
+
 namespace Clauderoo.Core;
 
 public static class Installer
@@ -15,13 +17,36 @@ public static class Installer
         {
             var src = Path.Combine(sourceDir, f);
             if (!File.Exists(src)) throw new ClauderooException($"{f} not found in {sourceDir}.");
-            if (!sameDir) File.Copy(src, Path.Combine(dest, f), overwrite: true);
+            if (sameDir) continue;
+            try { File.Copy(src, Path.Combine(dest, f), overwrite: true); }
+            catch (IOException)
+            {
+                throw new ClauderooException($"Couldn't replace {f} — quit the clauderoo tray and try again.");
+            }
         }
 
-        var userPath = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? "";
-        var parts = userPath.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        if (!parts.Any(p => string.Equals(p.Trim().TrimEnd('\\'), dest, StringComparison.OrdinalIgnoreCase)))
-            Environment.SetEnvironmentVariable("PATH", string.Join(';', parts.Append(dest)), EnvironmentVariableTarget.User);
+        // Read/write the raw registry value so REG_EXPAND_SZ entries (%VAR%) are preserved.
+        using var key = Registry.CurrentUser.OpenSubKey("Environment", writable: true)
+            ?? throw new ClauderooException("Could not open the user environment registry key.");
+        var raw = key.GetValue("Path", "", RegistryValueOptions.DoNotExpandEnvironmentNames) as string ?? "";
+        var updated = AppendToPath(raw, dest);
+        if (updated != null) key.SetValue("Path", updated, RegistryValueKind.ExpandString);
+        // No WM_SETTINGCHANGE broadcast: the caller tells the user to open a new terminal.
         return dest;
     }
+
+    /// <summary>Returns rawPath with dir appended, or null when dir is already an entry (raw or expanded).</summary>
+    public static string? AppendToPath(string rawPath, string dir)
+    {
+        var want = Norm(dir);
+        foreach (var entry in rawPath.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var e = entry.Trim().Trim('"');
+            if (Norm(e) == want || Norm(Environment.ExpandEnvironmentVariables(e)) == want) return null;
+        }
+        if (rawPath.Length == 0) return dir;
+        return rawPath.EndsWith(';') ? rawPath + dir : rawPath + ";" + dir;
+    }
+
+    private static string Norm(string p) => p.TrimEnd('\\', '/').ToUpperInvariant();
 }

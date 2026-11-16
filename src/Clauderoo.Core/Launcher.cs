@@ -28,8 +28,8 @@ public static class Launcher
     }
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs) =>
-        new(ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile));
+        string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>
+        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile));
 
     private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile)
     {

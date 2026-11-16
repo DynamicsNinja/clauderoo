@@ -27,11 +27,11 @@ public static class Commands
         Run(args, output, err, pm, launch, launch, wtAvailable);
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null)
     {
         try
         {
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable);
+            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath);
         }
         catch (ClauderooException e)
         {
@@ -46,7 +46,7 @@ public static class Commands
     }
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -104,14 +104,21 @@ public static class Commands
             case "run":
             {
                 var name = Need(pos, 1, "clauderoo run <name> [-- args]")[0];
-                var spec = Launcher.InPlace(pm.Config, pm.Paths, name, Environment.CurrentDirectory, claudeArgs);
+                var spec = Launcher.InPlace(pm.Config, pm.Paths, name, Environment.CurrentDirectory, claudeArgs, claudePath);
                 return runInPlace(spec);
             }
             case "default":
             {
-                if (pos.Count == 1 && pos[0] == "--clear") pm.SetDefault(null);
-                else pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]);
-                output.WriteLine($"Default is now {pm.Config.DefaultProfile}. Open a new terminal for plain 'claude' to use it.");
+                if (pos.Count == 1 && pos[0] == "--clear")
+                {
+                    pm.SetDefault(null);
+                    output.WriteLine($"Default cleared ({pm.Config.DefaultProfile} is the default). Open a new terminal for plain 'claude' to use it.");
+                }
+                else
+                {
+                    pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]);
+                    output.WriteLine($"Default is now {pm.Config.DefaultProfile}. Open a new terminal for plain 'claude' to use it.");
+                }
                 return 0;
             }
             case "own":
