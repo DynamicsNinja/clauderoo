@@ -8,6 +8,27 @@ public class ProfileEntry
     public bool Home { get; set; }
     public List<string> Overrides { get; set; } = [];
     public string? StartDir { get; set; }
+    public string? Provider { get; set; }
+    public VertexSettings? Vertex { get; set; }
+    public Dictionary<string, string> Env { get; set; } = new();
+}
+
+public class VertexSettings
+{
+    public string Project { get; set; } = "";
+    public string Region { get; set; } = "";
+    public string? SonnetModel { get; set; }
+    public string? OpusModel { get; set; }
+    public string? HaikuModel { get; set; }
+}
+
+public static class Providers
+{
+    public const string Login = "login";
+    public const string Vertex = "vertex";
+    public const string ApiKey = "apikey";
+
+    public static string Of(ProfileEntry e) => string.IsNullOrEmpty(e.Provider) ? Login : e.Provider;
 }
 
 public class ClauderooConfig
