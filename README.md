@@ -27,10 +27,34 @@ publish\clauderoo.exe install
 | `own <name> <item>` | Keep a profile's own copy of a shared item |
 | `share <name> <item>` | Go back to sharing an item from the home profile |
 | `remove <name> [--force]` | Remove a profile (its folder is moved, not deleted) |
+| `provider <name> login\|vertex\|apikey` | Choose how a profile signs in (`vertex` takes `--project`, `--region`, optional `--sonnet`/`--opus`/`--haiku`; `apikey` prompts for the key) |
+| `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
+| `check <name>` | Check that the profile's sign-in works (exit 1 if not) |
+| `apikey <name>` | Print the profile's API key (what Claude's `apiKeyHelper` runs) |
+| `manage` | Open the profile manager window |
 | `status` | Show the default profile and any problems |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app at login |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to PATH |
+
+## Providers
+
+Every profile except the home profile can use a different way of signing in: its own Claude **login** (default), **Google Vertex AI**, or an Anthropic **API key**. The home profile always uses its own Claude login.
+
+Use the manager window (`clauderoo manage`, or the tray menu) to pick a provider and edit environment variables. The same from the command line:
+
+```
+cr provider work vertex --project my-gcp-project --region us-east5 [--sonnet <model>] [--opus <model>] [--haiku <model>]
+cr provider work apikey          # reads the key from stdin or prompts without echo
+cr provider work login
+cr env work set HTTPS_PROXY=http://proxy:8080
+cr env work unset HTTPS_PROXY
+cr check work
+```
+
+Vertex needs the Google Cloud CLI (`winget install Google.CloudSDK`), signed in twice: `gcloud auth login` and `gcloud auth application-default login`. API keys are stored encrypted for your Windows user (DPAPI) inside the profile folder.
+
+If a profile owns its `settings.json`, set the provider first and then run `cr share <profile> settings.json` to move it onto the shared copy plus the provider overlay.
 
 ## Sharing model
 

@@ -16,8 +16,16 @@ public static class Commands
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
   remove <name> [--force]             remove a profile (its folder is moved, not deleted)
+  provider <name> login               use the profile's own Claude login (default)
+  provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
+                                      use Claude on Google Vertex AI
+  provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
+  env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  check <name>                        check that the profile's sign-in works
+  apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   status                              show the default profile and any problems
   tray                                start the tray app
+  manage                              open the profile manager window
   autostart on|off                    start the tray app at login
   install                             copy clauderoo to %LOCALAPPDATA%\clauderoo and add it to PATH
   help                                show this help";
@@ -27,11 +35,12 @@ public static class Commands
         Run(args, output, err, pm, launch, launch, wtAvailable);
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
+        Func<string?>? readSecret = null)
     {
         try
         {
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath);
+            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole);
         }
         catch (ClauderooException e)
         {
@@ -46,7 +55,7 @@ public static class Commands
     }
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -56,13 +65,13 @@ public static class Commands
 
         var cmd = args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove",
-            "status", "tray", "autostart", "install"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
-        if (cmd is not ("init" or "install" or "autostart" or "tray" or "status"))
+        if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"))
         {
             try { Print(pm.SyncAll(), output, err, "warning: "); }
             catch (Exception e) { err.WriteLine($"warning: sync failed: {e.Message}"); }
@@ -162,6 +171,35 @@ public static class Commands
                 Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = AppContext.BaseDirectory })?.Dispose();
                 return 0;
             }
+            case "manage":
+            {
+                var exe = TrayExe();
+                Process.Start(new ProcessStartInfo(exe, "--manage") { UseShellExecute = true, WorkingDirectory = AppContext.BaseDirectory })?.Dispose();
+                return 0;
+            }
+            case "provider":
+                return ProviderCmd(pos, output, err, pm, readSecret);
+            case "env":
+                return EnvCmd(pos, output, err, pm);
+            case "check":
+            {
+                var r = pm.Check(Need(pos, 1, "clauderoo check <name>")[0]);
+                output.WriteLine(r.Message);
+                return r.Ok ? 0 : 1;
+            }
+            case "apikey":
+            {
+                // Run by Claude's apiKeyHelper: stdout must be the key and nothing else.
+                var name = Need(pos, 1, "clauderoo apikey <name>")[0];
+                var key = pm.GetApiKey(name);
+                if (string.IsNullOrEmpty(key))
+                {
+                    err.WriteLine($"No API key saved for '{name}'.");
+                    return 1;
+                }
+                output.WriteLine(key);
+                return 0;
+            }
             case "autostart":
             {
                 var mode = Need(pos, 1, "clauderoo autostart on|off")[0];
@@ -180,6 +218,106 @@ public static class Commands
             }
         }
         return 0;
+    }
+
+    private static int ProviderCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm, Func<string?> readSecret)
+    {
+        const string usage = "clauderoo provider <name> login | vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>] | apikey";
+        if (pos.Count < 2) throw new ClauderooException($"Usage: {usage}");
+        var name = pos[0];
+        var kind = pos[1];
+        var rest = pos.Skip(2).ToList();
+        SyncReport report;
+        switch (kind)
+        {
+            case Providers.Login:
+                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
+                report = pm.SetProvider(name, Providers.Login);
+                break;
+            case Providers.Vertex:
+            {
+                var v = new VertexSettings { Project = "", Region = "" };
+                for (var i = 0; i < rest.Count; i += 2)
+                {
+                    if (i + 1 >= rest.Count) throw new ClauderooException($"Usage: {usage}");
+                    var val = rest[i + 1];
+                    switch (rest[i])
+                    {
+                        case "--project": v.Project = val; break;
+                        case "--region": v.Region = val; break;
+                        case "--sonnet": v.SonnetModel = val; break;
+                        case "--opus": v.OpusModel = val; break;
+                        case "--haiku": v.HaikuModel = val; break;
+                        default: throw new ClauderooException($"Usage: {usage}");
+                    }
+                }
+                report = pm.SetProvider(name, Providers.Vertex, v);
+                break;
+            }
+            case Providers.ApiKey:
+            {
+                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
+                var key = readSecret();
+                report = pm.SetProvider(name, Providers.ApiKey, null, string.IsNullOrWhiteSpace(key) ? null : key.Trim());
+                break;
+            }
+            default:
+                throw new ClauderooException($"Unknown provider '{kind}'. Known: login, vertex, apikey.");
+        }
+        Print(report, output, err);
+        output.WriteLine($"'{name}' now uses {kind}.");
+        return 0;
+    }
+
+    private static int EnvCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm)
+    {
+        const string usage = "clauderoo env <name> [set A=1 B=2 | unset A B]";
+        if (pos.Count < 1) throw new ClauderooException($"Usage: {usage}");
+        var name = pos[0];
+        if (pos.Count == 1)
+        {
+            foreach (var kv in pm.GetEnv(name).OrderBy(k => k.Key, StringComparer.Ordinal))
+                output.WriteLine($"{kv.Key}={kv.Value}");
+            return 0;
+        }
+        var items = pos.Skip(2).ToList();
+        if (items.Count == 0) throw new ClauderooException($"Usage: {usage}");
+        if (pos[1] == "set")
+        {
+            var set = new List<KeyValuePair<string, string>>();
+            foreach (var it in items)
+            {
+                var eq = it.IndexOf('=');
+                if (eq <= 0) throw new ClauderooException($"Expected NAME=value, got '{it}'.");
+                set.Add(new(it[..eq], it[(eq + 1)..]));
+            }
+            Print(pm.SetEnv(name, set, []), output, err);
+            output.WriteLine($"Set {set.Count} variable(s) on '{name}'.");
+        }
+        else if (pos[1] == "unset")
+        {
+            Print(pm.SetEnv(name, [], items), output, err);
+            output.WriteLine($"Unset {items.Count} variable(s) on '{name}'.");
+        }
+        else throw new ClauderooException($"Usage: {usage}");
+        return 0;
+    }
+
+    // Hidden prompt (no echo); a redirected stdin is read as one line.
+    private static string? ReadSecretFromConsole()
+    {
+        if (Console.IsInputRedirected) return Console.In.ReadLine();
+        Console.Error.Write("API key: ");
+        var sb = new System.Text.StringBuilder();
+        while (true)
+        {
+            var k = Console.ReadKey(intercept: true);
+            if (k.Key == ConsoleKey.Enter) break;
+            if (k.Key == ConsoleKey.Backspace) { if (sb.Length > 0) sb.Length--; }
+            else if (!char.IsControl(k.KeyChar)) sb.Append(k.KeyChar);
+        }
+        Console.Error.WriteLine();
+        return sb.ToString();
     }
 
     private static string TrayExe()
@@ -208,12 +346,18 @@ public static class Commands
     {
         const string NoLogin = "(not logged in)";
         var nameW = infos.Max(i => i.Name.Length);
-        var emailW = infos.Max(i => (i.Email ?? NoLogin).Length);
+        string Who(ProfileInfo i) => i.Provider switch
+        {
+            Providers.Vertex => $"vertex ({i.ProviderDetail})",
+            Providers.ApiKey => "apikey",
+            _ => i.Email ?? NoLogin,
+        };
+        var emailW = infos.Max(i => Who(i).Length);
         foreach (var i in infos)
         {
             var tail = i.IsHome ? "(home)"
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
-            yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {(i.Email ?? NoLogin).PadRight(emailW)}  {tail}".TrimEnd();
+            yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {tail}".TrimEnd();
         }
     }
 }
