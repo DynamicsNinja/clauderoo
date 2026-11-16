@@ -6,6 +6,7 @@ namespace Clauderoo.Core;
 public static class Installer
 {
     private static readonly string[] Files = ["clauderoo.exe", "clauderoow.exe"];
+    public const string ShortAlias = "cr.exe";
 
     /// <summary>Copies the executables to %LOCALAPPDATA%\clauderoo and adds that folder to the User PATH.</summary>
     public static string Install(string sourceDir)
@@ -28,6 +29,13 @@ public static class Installer
             {
                 throw new ClauderooException($"Couldn't replace {f} — quit the clauderoo tray and try again.");
             }
+        }
+
+        // Short alias: a copy of the CLI named cr.exe (works in cmd, PowerShell and Git Bash).
+        try { File.Copy(Path.Combine(dest, "clauderoo.exe"), Path.Combine(dest, ShortAlias), overwrite: true); }
+        catch (IOException)
+        {
+            throw new ClauderooException($"Couldn't replace {ShortAlias} — close any running 'cr' command and try again.");
         }
 
         // Read/write the raw registry value so REG_EXPAND_SZ entries (%VAR%) are preserved.

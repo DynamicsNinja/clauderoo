@@ -5,7 +5,7 @@ namespace Clauderoo.Cli;
 
 public static class Commands
 {
-    private const string Usage = @"Usage: clauderoo <command> [options]
+    private const string Usage = @"Usage: clauderoo <command> [options]   (short form: cr <command>)
 
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
   add <name>                          create a new profile
@@ -177,7 +177,7 @@ public static class Commands
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);
-                output.WriteLine($"Installed to {dir} and added it to your PATH. Open a new terminal to use 'clauderoo'.");
+                output.WriteLine($"Installed to {dir} and added it to your PATH. Open a new terminal to use 'clauderoo' (or the short form 'cr').");
                 return 0;
             }
         }

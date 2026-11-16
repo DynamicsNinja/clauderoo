@@ -12,7 +12,7 @@ dotnet publish src\Clauderoo.Tray -c Release -r win-x64 -p:PublishSingleFile=tru
 publish\clauderoo.exe install
 ```
 
-`install` copies `clauderoo.exe` and `clauderoow.exe` to `%LOCALAPPDATA%\clauderoo` and adds that folder to your user PATH. Open a new terminal afterwards. Then run `clauderoo init`.
+`install` copies `clauderoo.exe` and `clauderoow.exe` to `%LOCALAPPDATA%\clauderoo` and adds that folder to your user PATH. It also installs `cr.exe`, a short alias: `cr start work` is the same as `clauderoo start work`. Open a new terminal afterwards. Then run `clauderoo init`.
 
 ## Commands
 
