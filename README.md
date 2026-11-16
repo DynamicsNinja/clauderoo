@@ -30,7 +30,7 @@ publish\clauderoo.exe install
 | `rename <old> <new> [--force]` | Rename a profile (folder, config, secrets and env var move together; `--force` skips the shared-plugin-records check) |
 | `provider <name> login\|vertex\|apikey` | Choose how a profile signs in (`vertex` takes `--project`, `--region`, optional `--sonnet`/`--opus`/`--haiku`; `apikey` prompts for the key) |
 | `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
-| `check <name>` | Check that the profile's sign-in works (exit 1 if not) |
+| `check <name>` | Check that the profile's sign-in works; for Vertex profiles, the full setup checklist (exit 1 if anything fails) |
 | `apikey <name>` | Print the profile's API key (what Claude's `apiKeyHelper` runs) |
 | `manage` | Open the profile manager window |
 | `status` | Show the default profile and any problems |
@@ -56,6 +56,20 @@ cr check work
 Vertex needs the Google Cloud CLI (`winget install Google.CloudSDK`), signed in twice: `gcloud auth login` and `gcloud auth application-default login`. API keys are stored encrypted for your Windows user (DPAPI) inside the profile folder.
 
 If a profile owns its `settings.json`, set the provider first and then run `cr share <profile> settings.json` to move it onto the shared copy plus the provider overlay. In an owned `settings.json`, provider settings replace any hand-written Vertex or API-key keys (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_API_KEY`, `apiKeyHelper`, …); the first time that happens clauderoo saves a `settings.json.bak-<timestamp>` copy.
+
+### Check setup
+
+`cr check <vertex-profile>` (or the Check setup button in the manager) runs a read-only checklist and changes nothing:
+
+1. gcloud is installed.
+2. Google sign-in works for Claude (an access token can be obtained; the token is never shown).
+3. `GOOGLE_APPLICATION_CREDENTIALS` is not set (it would override your sign-in).
+4. Your account has the `aiplatform.endpoints.predict` permission on the project.
+5. No leftover provider variables (`ANTHROPIC_*`, `CLAUDE_CODE_*`, `CLOUD_ML_*`, `VERTEX_REGION_*`) in your user or machine environment.
+6. Claude Code is installed.
+7. Each configured model answers a tiny test prompt (this sends one short request per model).
+
+Each line is marked ✓ ok, ⚠ warning, ✗ failed or – skipped, with a hint on how to fix it. Exit code is 1 only if something failed.
 
 ## Sharing model
 

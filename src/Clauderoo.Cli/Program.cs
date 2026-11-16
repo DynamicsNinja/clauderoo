@@ -1,6 +1,8 @@
 using Clauderoo.Cli;
 using Clauderoo.Core;
 
+Console.OutputEncoding = System.Text.Encoding.UTF8; // so ✓ ⚠ ✗ render
+
 var paths = ClauderooPaths.ForCurrentUser();
 var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
 

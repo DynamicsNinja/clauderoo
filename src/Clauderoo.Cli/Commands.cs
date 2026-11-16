@@ -22,7 +22,7 @@ public static class Commands
                                       use Claude on Google Vertex AI
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
-  check <name>                        check that the profile's sign-in works
+  check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   status                              show the default profile and any problems
   tray                                start the tray app
@@ -192,9 +192,22 @@ public static class Commands
                 return EnvCmd(pos, output, err, pm);
             case "check":
             {
-                var r = pm.Check(Need(pos, 1, "clauderoo check <name>")[0]);
-                output.WriteLine(r.Message);
-                return r.Ok ? 0 : 1;
+                var name = Need(pos, 1, "clauderoo check <name>")[0];
+                if (pm.Get(name).Provider != Providers.Vertex)
+                {
+                    var r = pm.Check(name);
+                    output.WriteLine(r.Message);
+                    return r.Ok ? 0 : 1;
+                }
+                // The model probes run inside CheckSetupAsync, so announce them first.
+                output.WriteLine("Testing models (this sends a tiny prompt per model)…");
+                var items = pm.CheckSetupAsync(name).GetAwaiter().GetResult();
+                foreach (var it in items)
+                {
+                    var mark = it.Status switch { CheckStatus.Ok => "✓ ", CheckStatus.Warn => "⚠ ", CheckStatus.Fail => "✗ ", _ => "– " };
+                    output.WriteLine(mark + it.Label + (string.IsNullOrEmpty(it.Hint) ? "" : "  → " + it.Hint));
+                }
+                return items.Any(i => i.Status == CheckStatus.Fail) ? 1 : 0;
             }
             case "apikey":
             {
