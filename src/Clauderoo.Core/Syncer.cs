@@ -184,19 +184,34 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private static byte[] SerializeSettings(JsonObject o) => Encoding.UTF8.GetBytes(o.ToJsonString(SettingsJson));
 
+    private static readonly JsonDocumentOptions StrictJson = new() { AllowDuplicateProperties = false };
+
+    /// <summary>
+    /// Parses a JSON object, or null if the text is not one (including duplicate keys). The tree is walked inside the
+    /// try because JsonNode otherwise reports duplicate keys lazily (ArgumentException) on first access.
+    /// </summary>
     private static JsonObject? ParseObject(string text)
     {
-        try { return JsonNode.Parse(text) as JsonObject; }
-        catch (JsonException) { return null; }
+        try
+        {
+            if (JsonNode.Parse(text, documentOptions: StrictJson) is not JsonObject o) return null;
+            Materialize(o);
+            return o;
+        }
+        catch (Exception e) when (e is JsonException or ArgumentException) { return null; }
+    }
+
+    private static void Materialize(JsonNode? n)
+    {
+        if (n is JsonObject o) foreach (var (_, v) in o) Materialize(v);
+        else if (n is JsonArray a) foreach (var v in a) Materialize(v);
     }
 
     /// <summary>True when home's settings carry keys that only a provider overlay may set (spec decision 4).</summary>
-    private static bool HasReservedKeys(byte[] homeBytes)
+    private static bool HasReservedKeys(string homeText)
     {
-        JsonObject? o;
-        try { o = JsonNode.Parse(homeBytes) as JsonObject; }
-        catch (JsonException) { return false; }
-        if (o == null) return false;
+        var o = ParseObject(homeText);
+        if (o == null) return false; // not a JSON object: byte copy, as today
         if (ProviderOverlay.ReservedTop.Any(o.ContainsKey)) return true;
         return o["env"] is JsonObject env && ProviderOverlay.ReservedEnv.Any(env.ContainsKey);
     }
@@ -226,7 +241,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         {
             if (!homeExists) return;
             // Byte-identical to home (today's behaviour) unless home carries provider-reserved keys to drop.
-            if (!HasReservedKeys(File.ReadAllBytes(source)))
+            if (!HasReservedKeys(File.ReadAllText(source)))
             {
                 SyncCopy(profile, Settings, dir, source, state, report);
                 return;

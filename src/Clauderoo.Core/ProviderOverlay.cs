@@ -103,9 +103,13 @@ public static partial class ProviderOverlay
 
 public static class HelperExePath
 {
-    /// <summary>The exe that apiKeyHelper runs: the installed clauderoo.exe if present, else the running exe.</summary>
+    /// <summary>
+    /// The exe that apiKeyHelper runs: the installed clauderoo.exe if present, else clauderoo.exe next to the running
+    /// assembly (never Environment.ProcessPath, which is clauderoow.exe when the tray syncs).
+    /// </summary>
     public static string Resolve() =>
-        Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath ?? "clauderoo.exe");
+        Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Path.Combine(AppContext.BaseDirectory, "clauderoo.exe"));
 
     public static string Resolve(string localAppData, string fallbackExe)
     {

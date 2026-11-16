@@ -255,7 +255,69 @@ public class SyncerOverlayTests
     {
         var (cfg, _, h) = Setup(); using var _ = h;
         var s = new Syncer(cfg, h.Paths, () => DateTime.Now);
-        Assert.False(string.IsNullOrEmpty(s.HelperExe));
+        Assert.Equal("clauderoo.exe", Path.GetFileName(s.HelperExe), ignoreCase: true);
+    }
+
+    [Fact]
+    public void NoProvider_DuplicateKeyHome_StillByteCopied()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        File.WriteAllText(HomeSettings(cfg), """{"a":1,"a":2,"env":{"X":"1","X":"2"}}""");
+        var r = syncer.Sync("work");
+        Assert.Empty(r.Problems);
+        Assert.Equal(File.ReadAllBytes(HomeSettings(cfg)), File.ReadAllBytes(ProfileSettings(h)));
+    }
+
+    [Fact]
+    public void Shared_Vertex_DuplicateKeyHome_ProblemNotValidJson()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        File.WriteAllText(HomeSettings(cfg), """{"env":{"X":"1","X":"2"}}""");
+        MakeVertex(cfg.Profiles["work"]);
+        var r = syncer.Sync("work");
+        Assert.Equal("work: home settings.json is not valid JSON; settings not synced", Assert.Single(r.Problems));
+        Assert.False(File.Exists(ProfileSettings(h)));
+    }
+
+    [Fact]
+    public void Owned_DuplicateKey_ProblemUntouched()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        const string dup = """{"a":1,"a":2}""";
+        Own(cfg, h, dup);
+        MakeVertex(cfg.Profiles["work"]);
+        var r = syncer.Sync("work");
+        Assert.Equal("work: settings.json is not valid JSON; provider settings not applied", Assert.Single(r.Problems));
+        Assert.Equal(dup, File.ReadAllText(ProfileSettings(h)));
+    }
+
+    [Fact]
+    public void SyncAll_DuplicateKey_OtherProfilesStillSyncAndStateSaved()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        File.WriteAllText(HomeSettings(cfg), """{"theme":"dark"}""");
+        Own(cfg, h, """{"a":1,"a":2}""");
+        MakeVertex(cfg.Profiles["work"]);
+        cfg.Profiles["zzz"] = new ProfileEntry();
+        var r = syncer.SyncAll();
+        Assert.Single(r.Problems);
+        Assert.True(File.Exists(Path.Combine(h.Paths.ProfileDir("work"), SyncState.FileName)));
+        Assert.Equal("""{"theme":"dark"}""", File.ReadAllText(Path.Combine(h.Paths.ProfileDir("zzz"), "settings.json")));
+    }
+
+    [Fact]
+    public void Shared_LoginProfile_BomHome_DropsReservedKeys()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        File.WriteAllText(HomeSettings(cfg), """{"theme":"dark","apiKeyHelper":"x","env":{"CLOUD_ML_REGION":"r"}}""",
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        Assert.Equal(0xEF, File.ReadAllBytes(HomeSettings(cfg))[0]);
+        var r = syncer.Sync("work");
+        Assert.Empty(r.Problems);
+        var j = ReadProfile(h);
+        Assert.Equal("dark", (string?)j["theme"]);
+        Assert.False(j.ContainsKey("apiKeyHelper"));
+        Assert.False(j["env"]!.AsObject().ContainsKey("CLOUD_ML_REGION"));
     }
 
     [Fact]
