@@ -3,20 +3,29 @@ using System.Text.Json;
 namespace Clauderoo.Core;
 
 public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Email,
-    IReadOnlyList<string> Overrides, string Dir);
+    IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null);
 
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
 
-public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
+public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now,
+    ISecretStore secrets, IGcloud gcloud)
 {
+    public ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
+        : this(paths, env, now, new DpapiSecretStore(), new Gcloud()) { }
+
+    /// <summary>The exe that apiKeyHelper runs; handed to every Syncer.</summary>
+    public string HelperExe { get; set; } = HelperExePath.Resolve();
+
+    private Syncer NewSyncer(ClauderooConfig cfg) => new(cfg, paths, now) { HelperExe = HelperExe };
+
     private const string EnvVar = "CLAUDE_CONFIG_DIR";
 
     private string Stamp => now().ToString("yyyyMMdd-HHmmss");
 
     public ClauderooPaths Paths => paths;
 
-    public SyncReport SyncAll() => new Syncer(Config, paths, now).SyncAll();
+    public SyncReport SyncAll() => NewSyncer(Config).SyncAll();
 
     public ClauderooConfig Config =>
         ConfigStore.Load(paths) ?? throw new ClauderooException("Run 'clauderoo init' first.");
@@ -65,7 +74,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         Directory.CreateDirectory(paths.ProfileDir(name));
         cfg.Profiles[name] = new ProfileEntry();
         ConfigStore.Save(paths, cfg);
-        return new Syncer(cfg, paths, now).Sync(name);
+        return NewSyncer(cfg).Sync(name);
     }
 
     public void Remove(string name, bool force = false)
@@ -82,6 +91,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                 $"{name}'s folder is referenced by shared plugin records (installed from the {name} profile). " +
                 $"Reinstall those plugins from {cfg.HomeDir}, or run 'clauderoo remove {name} --force'.");
 
+        secrets.Delete(dir);
         if (Directory.Exists(dir))
         {
             try
@@ -153,8 +163,10 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         {
             var dir = kv.Value.Home ? cfg.HomeDir : paths.ProfileDir(kv.Key);
             var json = kv.Value.Home ? cfg.HomeJson : Path.Combine(dir, ".claude.json");
+            var provider = kv.Value.Home ? Providers.Login : Providers.Of(kv.Value);
+            var detail = provider == Providers.Vertex ? kv.Value.Vertex?.Project : null;
             return new ProfileInfo(kv.Key, kv.Value.Home, cfg.DefaultProfile == kv.Key,
-                ReadEmail(json), kv.Value.Overrides.ToArray(), dir);
+                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail);
         }).ToList();
     }
 
@@ -217,13 +229,13 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                 Directory.Move(link, $"{link}.bak-{Stamp}");
         }
         ConfigStore.Save(paths, cfg);
-        return new Syncer(cfg, paths, now).Sync(name);
+        return NewSyncer(cfg).Sync(name);
     }
 
     public StatusReport Status()
     {
         var cfg = Config;
-        var report = new Syncer(cfg, paths, now).SyncAll();
+        var report = NewSyncer(cfg).SyncAll();
 
         var userValue = env.GetUser(EnvVar);
         string? expected = null;
