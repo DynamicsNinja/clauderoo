@@ -15,6 +15,21 @@ public sealed class TempHome : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(Dir, recursive: true); } catch (IOException) { }
+        try
+        {
+            RemoveJunctions(Dir);
+            Directory.Delete(Dir, recursive: true);
+        }
+        catch (IOException) { }
+    }
+
+    // Remove junctions (non-recursively) before the recursive delete so targets are never touched.
+    private static void RemoveJunctions(string dir)
+    {
+        foreach (var sub in Directory.GetDirectories(dir))
+        {
+            if (new DirectoryInfo(sub).LinkTarget != null) Directory.Delete(sub);
+            else RemoveJunctions(sub);
+        }
     }
 }
