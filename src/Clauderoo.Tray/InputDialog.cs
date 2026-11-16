@@ -40,9 +40,15 @@ sealed class InputDialog : Form
     }
 
     /// <param name="owner">Window to stack above (e.g. the Profiles window); null from the tray menu.</param>
-    public static string? Ask(string title, string prompt, IWin32Window? owner = null)
+    /// <param name="initial">Text to prefill (selected, so typing replaces it).</param>
+    public static string? Ask(string title, string prompt, IWin32Window? owner = null, string? initial = null)
     {
         using var dlg = new InputDialog(title, prompt);
+        if (!string.IsNullOrEmpty(initial))
+        {
+            dlg._box.Text = initial;
+            dlg._box.SelectAll();
+        }
         if (owner == null)
         {
             dlg.TopMost = true;

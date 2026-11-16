@@ -17,6 +17,7 @@ sealed class ProfilesForm : Form
         Dock = DockStyle.Fill, IntegralHeight = false, Margin = new Padding(0, 0, 0, 6),
     };
     private readonly Button _new = Btn("New…");
+    private readonly Button _rename = Btn("Rename…");
     private readonly Button _remove = Btn("Remove");
 
     private readonly WrapLabel _homeNote = new()
@@ -91,10 +92,10 @@ sealed class ProfilesForm : Form
         ShowInTaskbar = true;
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch (Exception) { }
 
-        // Left: profile list + New / Remove.
+        // Left: profile list + New / Rename / Remove.
         _list.MinimumSize = new Size(170, 200);
         var leftButtons = Flow(FlowDirection.LeftToRight);
-        leftButtons.Controls.AddRange([_new, _remove]);
+        leftButtons.Controls.AddRange([_new, _rename, _remove]);
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
@@ -216,6 +217,7 @@ sealed class ProfilesForm : Form
 
         _list.SelectedIndexChanged += (_, _) => OnListSelection();
         _new.Click += (_, _) => Guard(NewProfile);
+        _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey })
             rb.CheckedChanged += (_, _) => { if (rb.Checked) UpdateProviderPanels(); };
@@ -337,6 +339,7 @@ sealed class ProfilesForm : Form
             _env.AllowUserToAddRows = editable;
             _env.DefaultCellStyle.BackColor = editable ? SystemColors.Window : SystemColors.Control;
             _remove.Enabled = editable;
+            _rename.Enabled = info != null; // the home profile can be relabelled too
             _start.Enabled = info != null;
             UpdateProviderPanels();
         }
@@ -570,6 +573,30 @@ sealed class ProfilesForm : Form
         var report = _pm.Add(name);
         Reload(name);
         ShowResult(report, $"Profile '{name}' created. Start a session in it to log in.");
+    }
+
+    private void RenameProfile()
+    {
+        if (_current == null || !ConfirmLeave()) return;
+        var oldName = _current;
+        var newName = InputDialog.Ask("Rename profile", $"New name for '{oldName}' (a-z, 0-9, -):", this, oldName)
+            ?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(newName) || newName == oldName) return;
+        SyncReport report;
+        try
+        {
+            report = _pm.Rename(oldName, newName);
+        }
+        catch (ClauderooException e) when (e.Message.Contains("--force"))
+        {
+            if (MessageBox.Show(this, e.Message + Environment.NewLine + Environment.NewLine + "Rename anyway?", "clauderoo",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            report = _pm.Rename(oldName, newName, force: true);
+        }
+        _loadedState = State(); // the editor's profile is gone under its old name: nothing left to save
+        _current = null;
+        Reload(newName);
+        ShowResult(report, $"Profile '{oldName}' renamed to '{newName}'.");
     }
 
     private void RemoveProfile()
