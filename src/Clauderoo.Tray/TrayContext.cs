@@ -18,8 +18,10 @@ sealed class TrayContext : ApplicationContext
     private readonly SynchronizationContext _ui;
     private string? _watchedKey;
     private readonly ProblemTracker _problems = new();
+    private readonly EventWaitHandle _manageSignal;
+    private ProfilesForm? _profilesForm;
 
-    public TrayContext()
+    public TrayContext(bool openProfiles = false)
     {
         if (SynchronizationContext.Current == null)
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
@@ -50,6 +52,29 @@ sealed class TrayContext : ApplicationContext
         {
             Balloon(e.Message, warning: true);
         }
+
+        // `clauderoow.exe --manage` from another process arrives here (on a background thread).
+        _manageSignal = ManageSignal.Listen(() =>
+        {
+            try { _ui.Post(_ => Guard(ShowProfiles), null); }
+            catch (Exception) { /* shutting down */ }
+        });
+        if (openProfiles) _ui.Post(_ => Guard(ShowProfiles), null);
+    }
+
+    // Single Profiles window: opened on first use, brought to the front afterwards.
+    private void ShowProfiles()
+    {
+        if (_profilesForm is { IsDisposed: false })
+        {
+            _profilesForm.ShowAndActivate(reload: true);
+            return;
+        }
+        _ = _pm.Config; // surfaces "Run 'clauderoo init' first." before opening an empty window
+        var form = new ProfilesForm(_pm, name => StartSession(name, null));
+        form.FormClosed += (_, _) => { if (_profilesForm == form) _profilesForm = null; };
+        _profilesForm = form;
+        form.ShowAndActivate(reload: false);
     }
 
     // (Re)creates the watchers when there are none or the config's home paths changed.
@@ -145,6 +170,7 @@ sealed class TrayContext : ApplicationContext
         }
 
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Manage profiles…", null, (_, _) => Guard(ShowProfiles));
         _menu.Items.Add("New profile…", null, (_, _) => Guard(NewProfile));
         _menu.Items.Add("Open profiles folder", null, (_, _) => Guard(() =>
         {
@@ -187,6 +213,7 @@ sealed class TrayContext : ApplicationContext
         var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):")?.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(name)) return;
         Show(_pm.Add(name));
+        if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
         Balloon($"Profile '{name}' created. Run 'claude' in it to log in.", warning: false);
     }
 
@@ -217,6 +244,8 @@ sealed class TrayContext : ApplicationContext
         if (disposing)
         {
             DisposeWatchers();
+            _profilesForm?.Dispose();
+            _manageSignal.Dispose();
             _debounce.Dispose();
             _icon.Visible = false;
             _icon.Dispose();
