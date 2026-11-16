@@ -52,7 +52,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         });
     }
 
-    public void Add(string name)
+    public SyncReport Add(string name)
     {
         ProfileName.Validate(name);
         var cfg = Config;
@@ -61,7 +61,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         Directory.CreateDirectory(paths.ProfileDir(name));
         cfg.Profiles[name] = new ProfileEntry();
         ConfigStore.Save(paths, cfg);
-        new Syncer(cfg, paths, now).Sync(name);
+        return new Syncer(cfg, paths, now).Sync(name);
     }
 
     public void Remove(string name)
@@ -108,11 +108,27 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         if (SharedItems.IsDir(item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
-            if (Junction.GetTarget(link) != null)
-                Directory.Delete(link); // non-recursive: removes only the junction, never the target
-
             var source = Path.Combine(cfg.HomeDir, item);
-            if (!Directory.Exists(link))
+            var oldTarget = Junction.GetTarget(link);
+            if (oldTarget != null)
+            {
+                var tmp = link + ".tmp-copy";
+                if (Directory.Exists(tmp)) DeleteOwnCopy(tmp);
+                try
+                {
+                    if (Directory.Exists(source)) CopyDir(source, tmp);
+                    else Directory.CreateDirectory(tmp);
+                    Directory.Delete(link); // non-recursive: removes only the junction, never the target
+                    Directory.Move(tmp, link);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+                {
+                    DeleteOwnCopy(tmp);
+                    if (!Directory.Exists(link)) Junction.Create(link, oldTarget);
+                    throw new ClauderooException($"Could not copy {item} for '{name}': {e.Message}");
+                }
+            }
+            else if (!Directory.Exists(link))
             {
                 if (Directory.Exists(source)) CopyDir(source, link);
                 else Directory.CreateDirectory(link);
@@ -121,7 +137,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         ConfigStore.Save(paths, cfg);
     }
 
-    public void Share(string name, string item)
+    public SyncReport Share(string name, string item)
     {
         var cfg = Config;
         var entry = Entry(cfg, name);
@@ -137,7 +153,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                 Directory.Move(link, $"{link}.bak-{Stamp}");
         }
         ConfigStore.Save(paths, cfg);
-        new Syncer(cfg, paths, now).Sync(name);
+        return new Syncer(cfg, paths, now).Sync(name);
     }
 
     public StatusReport Status()
@@ -193,6 +209,29 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         foreach (var f in Directory.GetFiles(source))
             File.Copy(f, Path.Combine(dest, Path.GetFileName(f)), overwrite: false);
         foreach (var d in Directory.GetDirectories(source))
-            CopyDir(d, Path.Combine(dest, Path.GetFileName(d)));
+        {
+            var target = Path.Combine(dest, Path.GetFileName(d));
+            var linkTarget = Junction.GetTarget(d);
+            if (linkTarget != null) Junction.Create(target, linkTarget); // never follow links
+            else CopyDir(d, target);
+        }
+    }
+
+    // Deletes a copy this class made: nested junctions are removed non-recursively first.
+    private static void DeleteOwnCopy(string dir)
+    {
+        if (!Directory.Exists(dir)) return;
+        if (Junction.GetTarget(dir) != null) { Directory.Delete(dir); return; }
+        RemoveNestedLinks(dir);
+        Directory.Delete(dir, recursive: true);
+    }
+
+    private static void RemoveNestedLinks(string dir)
+    {
+        foreach (var sub in Directory.GetDirectories(dir))
+        {
+            if (Junction.GetTarget(sub) != null) Directory.Delete(sub);
+            else RemoveNestedLinks(sub);
+        }
     }
 }

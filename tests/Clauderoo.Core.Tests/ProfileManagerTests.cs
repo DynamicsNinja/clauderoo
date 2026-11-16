@@ -262,4 +262,43 @@ public class ProfileManagerTests
         Assert.True(s.EnvMatchesDefault);
         Assert.Equal("work", s.DefaultProfile);
     }
+
+    [Fact]
+    public void Own_Dir_NestedJunction_RecreatedNotFollowed()
+    {
+        var (pm, home, _) = Make();
+        using var _h = home;
+        var outside = Path.Combine(home.Dir, "outside");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "big.md"), "BIG");
+        var src = Path.Combine(home.Paths.DefaultHomeDir, "skills");
+        Directory.CreateDirectory(src);
+        File.WriteAllText(Path.Combine(src, "a.md"), "A");
+        Junction.Create(Path.Combine(src, "ext"), outside);
+        pm.Init();
+        pm.Add("work");
+        var link = Path.Combine(home.Paths.ProfileDir("work"), "skills");
+
+        pm.Own("work", "skills");
+
+        var nested = Path.Combine(link, "ext");
+        Assert.Equal("A", File.ReadAllText(Path.Combine(link, "a.md")));
+        Assert.NotNull(Junction.GetTarget(nested)); // recreated as junction, not a copied tree
+        Assert.Equal(Junction.GetTarget(Path.Combine(src, "ext")), Junction.GetTarget(nested));
+        Assert.False(Directory.Exists(link + ".tmp-copy"));
+        Assert.Equal("BIG", File.ReadAllText(Path.Combine(outside, "big.md")));
+    }
+
+    [Fact]
+    public void Add_ReturnsSyncReport()
+    {
+        var (pm, home, _) = Make();
+        using var _h = home;
+        Directory.CreateDirectory(Path.Combine(home.Paths.DefaultHomeDir, "skills"));
+        pm.Init();
+        var report = pm.Add("work");
+        Assert.NotNull(report);
+        Assert.Empty(report.Problems);
+        Assert.NotNull(pm.Share("work", "skills"));
+    }
 }
