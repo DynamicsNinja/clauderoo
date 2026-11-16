@@ -68,7 +68,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         return new Syncer(cfg, paths, now).Sync(name);
     }
 
-    public void Remove(string name)
+    public void Remove(string name, bool force = false)
     {
         var cfg = Config;
         var entry = Entry(cfg, name);
@@ -77,13 +77,73 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             throw new ClauderooException($"'{name}' is the default profile. Change the default first.");
 
         var dir = paths.ProfileDir(name);
+        if (!force && PluginRecordsReference(cfg.HomeDir, dir))
+            throw new ClauderooException(
+                $"{name}'s folder is referenced by shared plugin records (installed from the {name} profile). " +
+                $"Reinstall those plugins from {cfg.HomeDir}, or run 'clauderoo remove {name} --force'.");
+
         if (Directory.Exists(dir))
         {
-            Directory.CreateDirectory(paths.RemovedDir);
-            Directory.Move(dir, Path.Combine(paths.RemovedDir, $"{name}-{Stamp}"));
+            try
+            {
+                // Unlink shared-folder junctions first so nothing that later deletes the moved
+                // folder (e.g. PowerShell 5.1 Remove-Item -Recurse) can follow them into home.
+                RemoveNestedLinks(dir);
+                Directory.CreateDirectory(paths.RemovedDir);
+                Directory.Move(dir, Path.Combine(paths.RemovedDir, $"{name}-{Stamp}"));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                throw new ClauderooException(
+                    $"Couldn't move {name}'s folder — close {name}'s Claude sessions and try again.");
+            }
         }
         cfg.Profiles.Remove(name);
         ConfigStore.Save(paths, cfg);
+    }
+
+    private static readonly string[] PluginRecordFiles = ["installed_plugins.json", "known_marketplaces.json"];
+
+    // True when a string in home's shared plugin records points inside the profile folder.
+    private static bool PluginRecordsReference(string homeDir, string profileDir)
+    {
+        var needle = profileDir.TrimEnd('\\', '/').Replace('/', '\\');
+        foreach (var f in PluginRecordFiles)
+        {
+            var file = Path.Combine(homeDir, "plugins", f);
+            try
+            {
+                if (!File.Exists(file)) continue;
+                using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var doc = JsonDocument.Parse(fs);
+                if (AnyStringIn(doc.RootElement, needle)) return true;
+            }
+            catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { }
+        }
+        return false;
+    }
+
+    private static bool AnyStringIn(JsonElement el, string needle)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.String:
+                var v = (el.GetString() ?? "").Replace('/', '\\');
+                var i = 0;
+                while ((i = v.IndexOf(needle, i, StringComparison.OrdinalIgnoreCase)) >= 0)
+                {
+                    var end = i + needle.Length;
+                    if (end == v.Length || v[end] == '\\') return true;
+                    i = end;
+                }
+                return false;
+            case JsonValueKind.Array:
+                return el.EnumerateArray().Any(x => AnyStringIn(x, needle));
+            case JsonValueKind.Object:
+                return el.EnumerateObject().Any(p => AnyStringIn(p.Value, needle));
+            default:
+                return false;
+        }
     }
 
     public IReadOnlyList<ProfileInfo> List()
