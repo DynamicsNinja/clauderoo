@@ -138,6 +138,34 @@ public class RenameTests
         File.WriteAllText(Path.Combine(h.Paths.ProfileDir("work"), "marker.txt"), "m");
         var before = File.ReadAllText(h.Paths.ConfigFile);
         var envBefore = env.User["CLAUDE_CONFIG_DIR"];
+        // Fails after the config was saved with the new key and the env var was repointed.
+        pm.AfterRenameCommit = () =>
+        {
+            Assert.Contains("\"job\"", File.ReadAllText(h.Paths.ConfigFile));
+            Assert.Equal(h.Paths.ProfileDir("job"), env.User["CLAUDE_CONFIG_DIR"]);
+            throw new IOException("boom");
+        };
+
+        Assert.Throws<IOException>(() => pm.Rename("work", "job"));
+
+        Assert.True(File.Exists(Path.Combine(h.Paths.ProfileDir("work"), "marker.txt")));
+        Assert.False(Directory.Exists(h.Paths.ProfileDir("job")));
+        Assert.Equal(before, File.ReadAllText(h.Paths.ConfigFile));
+        var cfg = pm.Config;
+        Assert.True(cfg.Profiles.ContainsKey("work"));
+        Assert.False(cfg.Profiles.ContainsKey("job"));
+        Assert.Equal("work", cfg.DefaultProfile);
+        Assert.Equal(envBefore, env.User["CLAUDE_CONFIG_DIR"]);
+    }
+
+    [Fact]
+    public void Rename_FailsBeforeSave_RolledBack()
+    {
+        var (pm, h, env) = Make(); using var _h = h;
+        pm.SetDefault("work");
+        File.WriteAllText(Path.Combine(h.Paths.ProfileDir("work"), "marker.txt"), "m");
+        var before = File.ReadAllText(h.Paths.ConfigFile);
+        var envBefore = env.User["CLAUDE_CONFIG_DIR"];
         pm.BeforeRenameCommit = () => throw new IOException("disk full");
 
         Assert.Throws<IOException>(() => pm.Rename("work", "job"));
