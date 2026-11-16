@@ -48,6 +48,13 @@ sealed class ProfilesForm : Form
     {
         AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 0, 6),
     };
+    // Vertex "Check setup" results: about 8 lines tall (logical units, scaled with the rest), scrolls beyond that.
+    private readonly TextBox _checkList = new()
+    {
+        Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = ScrollBars.Vertical,
+        Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 6),
+        MinimumSize = new Size(0, 8 * 16 + 8), BackColor = SystemColors.Window, Visible = false,
+    };
     private readonly FlowLayoutPanel _checkRow;
     private readonly TableLayoutPanel _root;
     private readonly Panel _right;
@@ -80,6 +87,8 @@ sealed class ProfilesForm : Form
     private bool _loading;         // suppresses change handlers while filling controls
     private bool _switching;       // suppresses re-entrant selection changes
     private int _checkSeq;         // ignores stale async check results
+    private CancellationTokenSource? _checkCts; // the running setup check, if any
+    private int _baseMinHeight;    // minimum window height for the content measured at startup
 
     public ProfilesForm(ProfileManager pm, Action<string> startSession)
     {
@@ -138,7 +147,7 @@ sealed class ProfilesForm : Form
         var top = _top = Table(1);
         top.Dock = DockStyle.Top;
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Control[] topRows = [_homeNote, providerRow, _vertexPanel, _apiKeyPanel, _loginPanel, _checkRow, _checkStatus, _envLabel];
+        Control[] topRows = [_homeNote, providerRow, _vertexPanel, _apiKeyPanel, _loginPanel, _checkRow, _checkStatus, _checkList, _envLabel];
         top.RowCount = topRows.Length;
         for (var i = 0; i < topRows.Length; i++)
         {
@@ -192,6 +201,8 @@ sealed class ProfilesForm : Form
 
         // All Padding/Margin/MinimumSize literals above are logical (96 DPI) units: scale them once.
         ScaleLiterals(this);
+        // A multiline box's preferred height follows its text: cap it so long results scroll instead.
+        _checkList.MaximumSize = new Size(0, _checkList.MinimumSize.Height);
 
         // Size the window from its content, measured with the largest provider panel showing.
         _vertexPanel.Visible = true;
@@ -202,18 +213,21 @@ sealed class ProfilesForm : Form
         var pref = root.GetPreferredSize(Size.Empty);
         ClientSize = new Size(pref.Width + Padding.Horizontal, pref.Height + Padding.Vertical);
         MinimumSize = Size;
+        _baseMinHeight = MinimumSize.Height;
         // The grid gives up height to long status lines before the window has to grow (EnsureFits).
         _env.MinimumSize = new Size(_env.MinimumSize.Width, LogicalToDeviceUnits(70));
 
         // Status labels wrap to the width of their column.
         WrapTo(top, _homeNote, _checkStatus);
         WrapTo(root, _result);
-        _checkStatus.TextChanged += (_, _) => EnsureFits();
+        // SizeChanged: a wrapped label takes its new height after TextChanged has been raised.
+        _checkStatus.SizeChanged += (_, _) => EnsureFits();
         _result.TextChanged += (_, _) =>
         {
             _result.Visible = _result.Text.Length > 0;
             EnsureFits();
         };
+        _result.SizeChanged += (_, _) => EnsureFits();
 
         _list.SelectedIndexChanged += (_, _) => OnListSelection();
         _new.Click += (_, _) => Guard(NewProfile);
@@ -291,8 +305,7 @@ sealed class ProfilesForm : Form
         _loading = true;
         try
         {
-            _checkSeq++;
-            _checkStatus.Text = "";
+            CancelCheck();
             _current = info?.Name;
             _currentIsHome = info?.IsHome ?? false;
             _project.Text = _region.Text = _sonnet.Text = _opus.Text = _haiku.Text = _apiKey.Text = "";
@@ -365,9 +378,9 @@ sealed class ProfilesForm : Form
         _apiKeyPanel.Visible = p == Providers.ApiKey;
         _loginPanel.Visible = p == Providers.Login;
         _checkRow.Visible = p != Providers.Login && !_currentIsHome;
-        _check.Text = p == Providers.Vertex ? "Check sign-in" : "Check";
+        _check.Text = p == Providers.Vertex ? "Check setup" : "Check";
         _signIn.Visible = p == Providers.Vertex;
-        if (!_loading) { _checkSeq++; _checkStatus.Text = ""; }
+        if (!_loading) CancelCheck();
         ResumeLayout(true);
         EnsureFits();
     }
@@ -517,6 +530,26 @@ sealed class ProfilesForm : Form
         base.OnFormClosing(e);
     }
 
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        AbortCheck();
+        base.OnFormClosed(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) AbortCheck(); // the tray may dispose the window without closing it
+        base.Dispose(disposing);
+    }
+
+    // Stops a running setup check without touching controls (the window is going away).
+    private void AbortCheck()
+    {
+        _checkSeq++;
+        _checkCts?.CancelAsync(); // callbacks run off the UI thread
+        _checkCts = null;
+    }
+
     // ---------- checks ----------
 
     private void RunCheck()
@@ -531,7 +564,13 @@ sealed class ProfilesForm : Form
         }
         if (IsDirty) // Check tests what is saved
         {
+            CancelCheck();
             SetCheckStatus(false, "Save first, then check.");
+            return;
+        }
+        if (provider == Providers.Vertex)
+        {
+            RunSetupCheck(name);
             return;
         }
 
@@ -549,12 +588,90 @@ sealed class ProfilesForm : Form
             {
                 BeginInvoke(() =>
                 {
+                    if (seq != _checkSeq) return; // CancelCheck re-enabled the button
                     _check.Enabled = true;
-                    if (seq == _checkSeq) SetCheckStatus(result.Ok, result.Message);
+                    SetCheckStatus(result.Ok, result.Message);
                 });
             }
             catch (InvalidOperationException) { /* window closed meanwhile */ }
         });
+    }
+
+    // Vertex: the full checklist (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model).
+    private void RunSetupCheck(string name)
+    {
+        var seq = ++_checkSeq;
+        var cts = _checkCts = new CancellationTokenSource();
+        var ct = cts.Token;
+        _check.Enabled = false;
+        ShowCheckList(null);
+        _checkStatus.ForeColor = SystemColors.GrayText;
+        _checkStatus.Text = "Checking… (tests a tiny prompt per model)";
+        Task.Run(async () =>
+        {
+            IReadOnlyList<CheckItem>? items = null;
+            string? error = null;
+            try { items = await _pm.CheckSetupAsync(name, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception e) { error = e.Message; }
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    // The CTS is only touched on the UI thread, so cancelling and disposing never race.
+                    if (_checkCts == cts) _checkCts = null;
+                    cts.Dispose();
+                    if (seq != _checkSeq) return; // profile/provider changed or window closing: stale
+                    _check.Enabled = true;
+                    if (items != null) ShowSetupResult(items);
+                    else SetCheckStatus(false, error ?? "Check cancelled.");
+                });
+            }
+            catch (InvalidOperationException) { /* window closed meanwhile */ }
+        });
+    }
+
+    private void ShowSetupResult(IReadOnlyList<CheckItem> items)
+    {
+        var fails = items.Count(i => i.Status == CheckStatus.Fail);
+        var warns = items.Count(i => i.Status == CheckStatus.Warn);
+        if (fails > 0) SetCheckStatus(false, fails == 1 ? "1 problem found." : $"{fails} problems found.");
+        else if (warns > 0)
+        {
+            _checkStatus.ForeColor = Color.DarkGoldenrod;
+            _checkStatus.Text = "⚠ " + (warns == 1 ? "Works, with 1 warning." : $"Works, with {warns} warnings.");
+        }
+        else SetCheckStatus(true, "Setup looks good.");
+        ShowCheckList(string.Join(Environment.NewLine, items.Select(FormatCheckItem)));
+    }
+
+    // Same line format as `clauderoo check`.
+    private static string FormatCheckItem(CheckItem i) =>
+        i.Status switch
+        {
+            CheckStatus.Ok => "✓ ",
+            CheckStatus.Warn => "⚠ ",
+            CheckStatus.Fail => "✗ ",
+            _ => "– ",
+        } + i.Label + (i.Hint != null ? "  → " + i.Hint : "");
+
+    private void ShowCheckList(string? text)
+    {
+        _checkList.Text = text ?? "";
+        if (_checkList.Visible == (text != null)) return;
+        _checkList.Visible = text != null;
+        EnsureFits();
+    }
+
+    /// <summary>Cancels any running check, drops its pending result and clears the check output.</summary>
+    private void CancelCheck()
+    {
+        _checkSeq++;
+        _checkCts?.CancelAsync(); // callbacks run off the UI thread
+        _checkCts = null;
+        _check.Enabled = true;
+        _checkStatus.Text = "";
+        ShowCheckList(null);
     }
 
     private void SetCheckStatus(bool ok, string message)
@@ -710,22 +827,25 @@ sealed class ProfilesForm : Form
 
         protected override void OnTextChanged(EventArgs e)
         {
-            Size = GetPreferredSize(Size.Empty);
+            // Base first: it drops Label's cached preferred size, which still describes the old text.
             base.OnTextChanged(e);
+            Size = GetPreferredSize(Size.Empty);
         }
     }
 
-    // Grows the window (within the screen) when wrapped status text needs more room than it has.
+    // Grows the window (within the screen) when wrapped status text or the check list needs more room than it
+    // has, and keeps the minimum height in step so the window can't then be shrunk over the content.
     private void EnsureFits()
     {
-        if (!IsHandleCreated) return;
+        if (!IsHandleCreated || WindowState == FormWindowState.Minimized) return;
         _root.PerformLayout();
         var need = _top.GetPreferredSize(new Size(_right.ClientSize.Width, 0)).Height
                    + _envButtons.Height + _env.MinimumSize.Height;
         var grow = need - _right.ClientSize.Height;
-        if (grow <= 0) return;
         var max = Screen.FromControl(this).WorkingArea.Height;
-        Height = Math.Min(Height + grow, max);
+        var height = Height;
+        MinimumSize = new Size(MinimumSize.Width, Math.Min(max, Math.Max(_baseMinHeight, height + grow)));
+        if (grow > 0) Height = Math.Min(height + grow, max);
     }
 
     private static Button Btn(string text) =>
