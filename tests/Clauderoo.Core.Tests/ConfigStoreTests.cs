@@ -45,4 +45,14 @@ public class ConfigStoreTests
         Assert.Contains("\"overrides\"", raw);
         Assert.False(File.Exists(home.Paths.ConfigFile + ".tmp"));
     }
+
+    [Fact]
+    public void Load_CorruptJson_ThrowsClauderooException()
+    {
+        using var home = new TempHome();
+        Directory.CreateDirectory(home.Paths.Root);
+        File.WriteAllText(home.Paths.ConfigFile, "{ not json");
+        var ex = Assert.Throws<ClauderooException>(() => ConfigStore.Load(home.Paths));
+        Assert.Equal("config.json is not valid JSON: " + home.Paths.ConfigFile, ex.Message);
+    }
 }

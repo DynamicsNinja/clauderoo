@@ -34,7 +34,14 @@ public static class ConfigStore
     public static ClauderooConfig? Load(ClauderooPaths p)
     {
         if (!File.Exists(p.ConfigFile)) return null;
-        return JsonSerializer.Deserialize<ClauderooConfig>(File.ReadAllText(p.ConfigFile), Options);
+        try
+        {
+            return JsonSerializer.Deserialize<ClauderooConfig>(File.ReadAllText(p.ConfigFile), Options);
+        }
+        catch (JsonException)
+        {
+            throw new ClauderooException($"config.json is not valid JSON: {p.ConfigFile}");
+        }
     }
 
     public static void Save(ClauderooPaths p, ClauderooConfig c)
