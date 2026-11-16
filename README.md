@@ -27,6 +27,7 @@ publish\clauderoo.exe install
 | `own <name> <item>` | Keep a profile's own copy of a shared item |
 | `share <name> <item>` | Go back to sharing an item from the home profile |
 | `remove <name> [--force]` | Remove a profile (its folder is moved, not deleted) |
+| `rename <old> <new> [--force]` | Rename a profile (folder, config, secrets and env var move together; `--force` skips the shared-plugin-records check) |
 | `provider <name> login\|vertex\|apikey` | Choose how a profile signs in (`vertex` takes `--project`, `--region`, optional `--sonnet`/`--opus`/`--haiku`; `apikey` prompts for the key) |
 | `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
 | `check <name>` | Check that the profile's sign-in works (exit 1 if not) |
