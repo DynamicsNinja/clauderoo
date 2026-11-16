@@ -254,3 +254,53 @@ public class SetupCheckTests
         await Assert.ThrowsAsync<ClauderooException>(() => c.Pm.CheckSetupAsync("work"));
     }
 }
+
+public class SetupCheckHelpersTests
+{
+    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> f) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) =>
+            Task.FromResult(f(r));
+    }
+
+    private static HttpResponseMessage Json(string body, System.Net.HttpStatusCode code = System.Net.HttpStatusCode.OK) =>
+        new(code) { Content = new StringContent(body) };
+
+    [Fact]
+    public void BuildCmdLine_SpacedPath_WrapsWholeCommand()
+    {
+        var s = ProcessClaudeRunner.BuildCmdLine(@"C:\Users\First Last\claude.cmd", ["-p", "Reply with exactly: OK", "--model", "m"]);
+        Assert.Equal("""/d /s /c ""C:\Users\First Last\claude.cmd" -p "Reply with exactly: OK" --model m" """.TrimEnd(), s);
+    }
+
+    [Fact]
+    public async Task Iam_PermissionPresent_True()
+    {
+        var t = new HttpIamTester(new StubHandler(_ => Json("{\"permissions\":[\"aiplatform.endpoints.predict\"]}")));
+        Assert.Equal((true, (string?)null), await t.HasPermissionAsync("p", "tok", "aiplatform.endpoints.predict", default));
+    }
+
+    [Fact]
+    public async Task Iam_PermissionAbsent_False()
+    {
+        var t = new HttpIamTester(new StubHandler(_ => Json("{}")));
+        Assert.Equal((false, (string?)null), await t.HasPermissionAsync("p", "tok", "aiplatform.endpoints.predict", default));
+    }
+
+    [Fact]
+    public async Task Iam_403_ReportsHttpError()
+    {
+        var t = new HttpIamTester(new StubHandler(_ => Json("", System.Net.HttpStatusCode.Forbidden)));
+        Assert.Equal(((bool?)null, (string?)"HTTP 403 Forbidden"), await t.HasPermissionAsync("p", "tok", "x", default));
+    }
+
+    [Fact]
+    public async Task Iam_ExceptionWithToken_Scrubbed()
+    {
+        var t = new HttpIamTester(new StubHandler(_ => throw new HttpRequestException("failed for ya29.SECRET")));
+        var (allowed, error) = await t.HasPermissionAsync("p", "ya29.SECRET", "x", default);
+        Assert.Null(allowed);
+        Assert.NotNull(error);
+        Assert.DoesNotContain("ya29.SECRET", error);
+    }
+}

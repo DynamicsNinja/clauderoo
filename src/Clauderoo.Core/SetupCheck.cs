@@ -39,7 +39,11 @@ public interface IIamTester
 
 public sealed class HttpIamTester : IIamTester
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private readonly HttpClient Http;
+
+    public HttpIamTester() { Http = SharedHttp; }
+    internal HttpIamTester(HttpMessageHandler handler) { Http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) }; }
 
     public async Task<(bool? allowed, string? error)> HasPermissionAsync(string project, string token, string permission, CancellationToken ct)
     {
@@ -86,6 +90,14 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         catch (ClauderooException) { return null; }
     }
 
+    internal static string BuildCmdLine(string exe, IReadOnlyList<string> args)
+    {
+        static string Q(string a) => a.Length == 0 || a.Any(c => char.IsWhiteSpace(c) || c is '&' or '|' or '<' or '>' or '^' or '(' or ')')
+            ? "\"" + a + "\"" : a;
+        var inner = string.Join(" ", new[] { Q(exe) }.Concat(args.Select(Q)));
+        return "/d /s /c \"" + inner + "\"";
+    }
+
     public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
         string configDir, TimeSpan timeout, CancellationToken ct)
     {
@@ -99,16 +111,15 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        if (isCmd)
-        {
-            psi.ArgumentList.Add("/d");
-            psi.ArgumentList.Add("/c");
-            psi.ArgumentList.Add(claudePath);
-        }
-        foreach (var a in args) psi.ArgumentList.Add(a);
+        if (isCmd) psi.Arguments = BuildCmdLine(claudePath, args);
+        else foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["CLAUDE_CONFIG_DIR"] = configDir;
+        var timedOut = $"timed out after {(int)timeout.TotalSeconds} s";
 
-        using var proc = Process.Start(psi) ?? throw new ClauderooException("Couldn't start claude.");
+        Process proc;
+        try { proc = Process.Start(psi) ?? throw new ClauderooException("Couldn't start claude."); }
+        catch (System.ComponentModel.Win32Exception e) { return (-1, "", "Couldn't start claude: " + e.Message); }
+        using var _ = proc;
         proc.StandardInput.Close();
         var outTask = proc.StandardOutput.ReadToEndAsync();
         var errTask = proc.StandardError.ReadToEndAsync();
@@ -117,15 +128,20 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         try
         {
             await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            var o = await outTask.WaitAsync(cts.Token).ConfigureAwait(false);
+            var e = await errTask.WaitAsync(cts.Token).ConfigureAwait(false);
+            return (proc.ExitCode, o, e);
         }
         catch (OperationCanceledException)
         {
-            try { proc.Kill(entireProcessTree: true); }
-            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
             ct.ThrowIfCancellationRequested();
-            return (-1, "", "timed out after 60 s");
+            return (-1, "", timedOut);
         }
-        return (proc.ExitCode, await outTask.ConfigureAwait(false), await errTask.ConfigureAwait(false));
+        finally
+        {
+            try { if (!proc.HasExited || !outTask.IsCompleted || !errTask.IsCompleted) proc.Kill(entireProcessTree: true); }
+            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
     }
 }
 
@@ -177,7 +193,14 @@ public partial class ProfileManager
 
         ct.ThrowIfCancellationRequested();
         string? token = null;
-        var (exit, stdout, stderr) = gcloud.Run("auth", "application-default", "print-access-token");
+        (int exit, string stdout, string stderr) gr;
+        try
+        {
+            gr = await Task.Run(() => gcloud.Run("auth", "application-default", "print-access-token"), ct)
+                .WaitAsync(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException) { gr = (-1, "", "gcloud timed out"); }
+        var (exit, stdout, stderr) = gr;
         if (exit == 0 && !string.IsNullOrWhiteSpace(stdout))
         {
             token = stdout.Trim();
