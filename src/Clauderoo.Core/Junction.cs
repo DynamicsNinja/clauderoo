@@ -24,7 +24,7 @@ public static class Junction
 
     public static string? GetTarget(string path)
     {
-        var info = new DirectoryInfo(path);
-        return info.Exists ? info.LinkTarget : null;
+        // LinkTarget is readable even when the junction's target is gone (dangling).
+        return new DirectoryInfo(path).LinkTarget;
     }
 }
