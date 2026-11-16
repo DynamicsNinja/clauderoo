@@ -92,7 +92,7 @@ sealed class ProfilesForm : Form
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch (Exception) { }
 
         // Left: profile list + New / Remove.
-        _list.MinimumSize = new Size(LogicalToDeviceUnits(170), LogicalToDeviceUnits(200));
+        _list.MinimumSize = new Size(170, 200);
         var leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _remove]);
         var left = Table(1);
@@ -118,7 +118,7 @@ sealed class ProfilesForm : Form
         AddField(_vertexPanel, "Opus model (optional):", _opus);
         AddField(_vertexPanel, "Haiku model (optional):", _haiku);
         foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey })
-            tb.MinimumSize = new Size(LogicalToDeviceUnits(240), 0);
+            tb.MinimumSize = new Size(240, 0);
         _apiKey.UseSystemPasswordChar = true;
         AddField(_apiKeyPanel, "API key:", _apiKey);
         AddField(_loginPanel, "Account:", _account);
@@ -130,7 +130,7 @@ sealed class ProfilesForm : Form
         envButtons.Controls.Add(_envDelete);
         _env.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Name", FillWeight = 40 });
         _env.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Value", FillWeight = 60 });
-        _env.MinimumSize = new Size(LogicalToDeviceUnits(380), LogicalToDeviceUnits(140));
+        _env.MinimumSize = new Size(380, 140);
 
         // Right column: provider part on top (auto-sized), env buttons at the bottom, the grid fills the rest.
         // Explicit cells: auto-placement skips invisible controls, which would shift rows when panels swap.
@@ -188,6 +188,9 @@ sealed class ProfilesForm : Form
         root.Controls.Add(bottom, 0, 2);
         root.SetColumnSpan(bottom, 2);
         Controls.Add(root);
+
+        // All Padding/Margin/MinimumSize literals above are logical (96 DPI) units: scale them once.
+        ScaleLiterals(this);
 
         // Size the window from its content, measured with the largest provider panel showing.
         _vertexPanel.Visible = true;
@@ -423,10 +426,15 @@ sealed class ProfilesForm : Form
             }
             if (provider == Providers.Vertex && (string.IsNullOrWhiteSpace(_project.Text) || string.IsNullOrWhiteSpace(_region.Text)))
                 throw new ClauderooException("Vertex needs a project and a region.");
-            if (provider == Providers.ApiKey && string.IsNullOrWhiteSpace(_apiKey.Text) && !_pm.HasApiKey(name))
+            var hasKey = _pm.HasApiKey(name);
+            if (provider == Providers.ApiKey && string.IsNullOrWhiteSpace(_apiKey.Text) && !hasKey)
                 throw new ClauderooException("Enter an API key.");
+            if (provider != Providers.ApiKey && hasKey &&
+                MessageBox.Show(this, $"Switching {name} away from API key deletes its saved key. Continue?", "clauderoo",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return false;
         }
-        catch (ClauderooException e)
+        catch (Exception e)
         {
             ShowError(e.Message);
             return false;
@@ -434,6 +442,7 @@ sealed class ProfilesForm : Form
 
         var notices = new List<string>();
         var problems = new List<string>();
+        var providerSaved = false;
         try
         {
             var vertex = provider == Providers.Vertex
@@ -445,11 +454,28 @@ sealed class ProfilesForm : Form
                 : null;
             var apiKey = provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(_apiKey.Text) ? _apiKey.Text.Trim() : null;
             Collect(_pm.SetProvider(name, provider, vertex, apiKey), notices, problems);
+            providerSaved = true;
             Collect(_pm.ReplaceEnv(name, env), notices, problems);
         }
-        catch (ClauderooException e)
+        catch (Exception e) // file/sync errors too, not only ClauderooException: never let them reach the tray
         {
-            ShowError(e.Message);
+            if (!providerSaved)
+            {
+                ShowError(e.Message);
+                return false;
+            }
+            // The provider is stored but the env vars aren't: show the saved state, keep the unsaved rows to retry.
+            var unsaved = EnvRows();
+            Reload(name);
+            _env.Rows.Clear();
+            foreach (var (n, v) in unsaved) _env.Rows.Add(n, v);
+            var message = $"Provider saved, but environment variables failed: {e.Message}";
+            var failLines = new List<string> { message };
+            failLines.AddRange(notices.Distinct());
+            failLines.AddRange(problems.Distinct());
+            _result.ForeColor = Color.Firebrick;
+            _result.Text = string.Join(Environment.NewLine, failLines);
+            ShowError(message);
             return false;
         }
 
@@ -500,10 +526,7 @@ sealed class ProfilesForm : Form
             SetCheckStatus(true, "Key entered — Save to store it.");
             return;
         }
-        string saved;
-        try { saved = Providers.Of(_pm.Get(name)); }
-        catch (Exception e) { SetCheckStatus(false, e.Message); return; }
-        if (saved != provider)
+        if (IsDirty) // Check tests what is saved
         {
             SetCheckStatus(false, "Save first, then check.");
             return;
@@ -542,7 +565,7 @@ sealed class ProfilesForm : Form
     private void NewProfile()
     {
         if (!ConfirmLeave()) return;
-        var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):")?.Trim().ToLowerInvariant();
+        var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):", this)?.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(name)) return;
         var report = _pm.Add(name);
         Reload(name);
@@ -612,6 +635,16 @@ sealed class ProfilesForm : Form
     }
 
     // ---------- layout helpers ----------
+
+    private void ScaleLiterals(Control c)
+    {
+        Padding Scale(Padding p) => new(LogicalToDeviceUnits(p.Left), LogicalToDeviceUnits(p.Top),
+            LogicalToDeviceUnits(p.Right), LogicalToDeviceUnits(p.Bottom));
+        c.Margin = Scale(c.Margin);
+        c.Padding = Scale(c.Padding);
+        c.MinimumSize = LogicalToDeviceUnits(c.MinimumSize);
+        foreach (Control child in c.Controls) ScaleLiterals(child);
+    }
 
     // Labels that wrap to the width of their column (TableLayoutPanel doesn't wrap AutoSize labels reliably).
     private static void WrapTo(Control column, params WrapLabel[] labels)

@@ -39,10 +39,16 @@ sealed class InputDialog : Form
         CancelButton = cancel;
     }
 
-    public static string? Ask(string title, string prompt)
+    /// <param name="owner">Window to stack above (e.g. the Profiles window); null from the tray menu.</param>
+    public static string? Ask(string title, string prompt, IWin32Window? owner = null)
     {
         using var dlg = new InputDialog(title, prompt);
-        dlg.TopMost = true;
-        return dlg.ShowDialog() == DialogResult.OK ? dlg._box.Text.Trim() : null;
+        if (owner == null)
+        {
+            dlg.TopMost = true;
+            return dlg.ShowDialog() == DialogResult.OK ? dlg._box.Text.Trim() : null;
+        }
+        dlg.StartPosition = FormStartPosition.CenterParent;
+        return dlg.ShowDialog(owner) == DialogResult.OK ? dlg._box.Text.Trim() : null;
     }
 }
