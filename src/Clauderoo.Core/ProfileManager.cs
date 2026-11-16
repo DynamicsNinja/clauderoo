@@ -8,7 +8,7 @@ public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Emai
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
 
-public class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
+public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
 {
     private const string EnvVar = "CLAUDE_CONFIG_DIR";
 
