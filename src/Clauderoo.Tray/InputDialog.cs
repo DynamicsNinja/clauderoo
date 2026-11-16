@@ -1,8 +1,9 @@
 namespace Clauderoo.Tray;
 
+// Layout is driven by auto-sizing panels (no fixed pixel positions), so it fits at any display scaling.
 sealed class InputDialog : Form
 {
-    private readonly TextBox _box = new();
+    private readonly TextBox _box = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 12) };
 
     private InputDialog(string title, string prompt)
     {
@@ -10,14 +11,30 @@ sealed class InputDialog : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterScreen;
         MaximizeBox = MinimizeBox = false;
-        ClientSize = new Size(320, 100);
+        ShowInTaskbar = false;
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        Padding = new Padding(12);
 
-        var label = new Label { Text = prompt, AutoSize = true, Location = new Point(12, 12) };
-        _box.Location = new Point(12, 36);
-        _box.Width = 296;
-        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(152, 66) };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(233, 66) };
-        Controls.AddRange([label, _box, ok, cancel]);
+        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(80, 0) };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(80, 0) };
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill,
+            Margin = Padding.Empty, WrapContents = false,
+        };
+        buttons.Controls.AddRange([cancel, ok]);
+
+        var layout = new TableLayoutPanel
+        {
+            ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill,
+            MinimumSize = new Size(LogicalToDeviceUnits(300), 0),
+        };
+        layout.Controls.Add(new Label { Text = prompt, AutoSize = true, Margin = Padding.Empty });
+        layout.Controls.Add(_box);
+        layout.Controls.Add(buttons);
+        Controls.Add(layout);
+
         AcceptButton = ok;
         CancelButton = cancel;
     }
