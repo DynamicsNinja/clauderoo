@@ -10,8 +10,8 @@ public static class Commands
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
   add <name>                          create a new profile
   list                                list profiles
-  start <name> [dir] [-- args]        open Claude for a profile in a new terminal window
-  run <name> [-- args]                run Claude for a profile in this terminal
+  start <name> [dir] [-- args]        run Claude for a profile in this terminal (run = same)
+  start <name> [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -97,19 +97,17 @@ public static class Commands
                 foreach (var line in FormatList(pm.List())) output.WriteLine(line);
                 return 0;
             case "start":
-            {
-                if (pos.Count is < 1 or > 2) throw new ClauderooException("Usage: clauderoo start <name> [dir] [-- args]");
-                var dir = pos.Count > 1 ? Path.GetFullPath(pos[1]) : Environment.CurrentDirectory;
-                if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
-                var spec = Launcher.NewWindow(pm.Config, pm.Paths, pos[0], dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable());
-                startNewWindow(spec);
-                return 0;
-            }
             case "run":
             {
-                var name = Need(pos, 1, "clauderoo run <name> [-- args]")[0];
-                var spec = Launcher.InPlace(pm.Config, pm.Paths, name, Environment.CurrentDirectory, claudeArgs, claudePath);
-                return runInPlace(spec);
+                // Runs Claude in this terminal; --tab opens a new Windows Terminal tab instead.
+                var tab = pos.Remove("--tab");
+                if (pos.Count is < 1 or > 2) throw new ClauderooException($"Usage: clauderoo {cmd} <name> [dir] [--tab] [-- args]");
+                var dir = pos.Count > 1 ? Path.GetFullPath(pos[1]) : Environment.CurrentDirectory;
+                if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
+                if (!tab)
+                    return runInPlace(Launcher.InPlace(pm.Config, pm.Paths, pos[0], dir, claudeArgs, claudePath));
+                startNewWindow(Launcher.NewWindow(pm.Config, pm.Paths, pos[0], dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable()));
+                return 0;
             }
             case "default":
             {

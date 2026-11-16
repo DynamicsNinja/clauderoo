@@ -20,7 +20,8 @@ public class CliTests
         var o = new StringWriter();
         var e = new StringWriter();
         var launched = new List<LaunchSpec>();
-        var code = Commands.Run(args, o, e, pm, s => { launched.Add(s); return 0; }, s => { launched.Add(s); return 7; }, wtAvailable: true);
+        var code = Commands.Run(args, o, e, pm, s => { launched.Add(s); return 0; }, s => { launched.Add(s); return 7; },
+            wtAvailable: true, claudePath: "claude.cmd");
         return (code, o.ToString(), e.ToString(), launched);
     }
 
@@ -36,15 +37,26 @@ public class CliTests
     }
 
     [Fact]
-    public void Start_Work_LaunchesWithCwd()
+    public void Start_Work_RunsInCurrentWindow()
     {
         var (pm, home) = Make();
         using var _h = home;
         var r = Run(pm, "start", "work");
-        Assert.Equal(0, r.code);
+        Assert.Equal(7, r.code); // in-place launcher's exit code is passed through
         var spec = Assert.Single(r.launched);
+        Assert.Equal("claude.cmd", spec.FileName);
         Assert.Equal(Environment.CurrentDirectory, spec.WorkingDir);
         Assert.Equal(home.Paths.ProfileDir("work"), spec.ConfigDirEnv);
+    }
+
+    [Fact]
+    public void Start_WithDir_RunsInThatDir()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = home.Paths.ProfileDir("work");
+        var r = Run(pm, "start", "work", dir);
+        Assert.Equal(dir, Assert.Single(r.launched).WorkingDir);
     }
 
     [Fact]
@@ -53,9 +65,30 @@ public class CliTests
         var (pm, home) = Make();
         using var _h = home;
         var r = Run(pm, "start", "work", "--", "--resume", "abc");
+        Assert.Equal(["--resume", "abc"], Assert.Single(r.launched).Args);
+    }
+
+    [Fact]
+    public void Start_Tab_OpensNewTab()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var r = Run(pm, "start", "work", "--tab", "--", "--resume", "abc");
         Assert.Equal(0, r.code);
         var spec = Assert.Single(r.launched);
+        Assert.Equal("wt.exe", spec.FileName);
         Assert.Contains("claude --resume abc", spec.Args[^1]);
+    }
+
+    [Fact]
+    public void Run_IsSameAsStart()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = home.Paths.ProfileDir("work");
+        var r = Run(pm, "run", "work", dir);
+        Assert.Equal(7, r.code);
+        Assert.Equal(dir, Assert.Single(r.launched).WorkingDir);
     }
 
     [Fact]

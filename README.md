@@ -21,8 +21,8 @@ publish\clauderoo.exe install
 | `init [--name <n>] [--home <path>]` | Set up clauderoo around your existing `~/.claude` |
 | `add <name>` | Create a profile (names: `a-z`, `0-9`, `-`) |
 | `list` | List profiles and their logged-in accounts |
-| `start <name> [dir] [-- args]` | Open Claude for a profile in a new terminal window |
-| `run <name> [-- args]` | Run Claude for a profile in this terminal |
+| `start <name> [dir] [-- args]` | Run Claude for a profile in this terminal (`run` is the same) |
+| `start <name> [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead (prompts can't contain `" % ! ;` there) |
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
 | `own <name> <item>` | Keep a profile's own copy of a shared item |
 | `share <name> <item>` | Go back to sharing an item from the home profile |
