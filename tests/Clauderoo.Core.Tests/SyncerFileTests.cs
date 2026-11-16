@@ -201,4 +201,47 @@ public class SyncerFileTests
         var r = syncer.Sync("work");
         Assert.Equal("work: plugins is a file, not a shared folder", Assert.Single(r.Problems));
     }
+
+    [Fact]
+    public void Sync_Mcp_ProfileJsonWithoutKey_NoBackupNoNotice()
+    {
+        var (_, syncer, h) = Setup(); using var _ = h;
+        WriteHomeJson(h);
+        var dir = h.Paths.ProfileDir("work");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, ".claude.json"), "{\"projects\":{}}");
+        var r = syncer.Sync("work");
+        Assert.Empty(r.Notices);
+        Assert.Empty(Directory.GetFiles(dir, "mcpServers.bak-*"));
+    }
+
+    [Fact]
+    public void Sync_Overwrite_LeavesNoTmpBehind()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        var src = Path.Combine(cfg.HomeDir, "settings.json");
+        File.WriteAllText(src, "A");
+        syncer.Sync("work");
+        File.WriteAllText(src, "B");
+        syncer.Sync("work");
+        Assert.Empty(Directory.GetFiles(h.Paths.ProfileDir("work"), "*.tmp"));
+    }
+
+    [Fact]
+    public void Sync_LockedTarget_ReportsProblemAndContinues()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        File.WriteAllText(Path.Combine(cfg.HomeDir, "settings.json"), "A");
+        File.WriteAllText(Path.Combine(cfg.HomeDir, "keybindings.json"), "K");
+        syncer.Sync("work");
+        var dir = h.Paths.ProfileDir("work");
+        File.WriteAllText(Path.Combine(cfg.HomeDir, "settings.json"), "B");
+        File.WriteAllText(Path.Combine(cfg.HomeDir, "keybindings.json"), "K2");
+        using (new FileStream(Path.Combine(dir, "settings.json"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var r = syncer.SyncAll();
+            Assert.Contains(r.Problems, p => p.StartsWith("work: could not sync settings.json:"));
+        }
+        Assert.Equal("K2", File.ReadAllText(Path.Combine(dir, "keybindings.json")));
+    }
 }

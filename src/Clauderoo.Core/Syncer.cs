@@ -27,7 +27,11 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         SyncDirs(profile, entry, dir, report);
         var state = SyncState.Load(dir);
         SyncFiles(profile, entry, dir, state, report);
-        SyncMcp(profile, entry, dir, state, report);
+        try { SyncMcp(profile, entry, dir, state, report); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            report.Problems.Add($"{profile}: could not sync mcpServers: {e.Message}");
+        }
         state.Save(dir);
         return report;
     }
@@ -62,12 +66,25 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                 else if (Directory.Exists(link))
                     report.Problems.Add($"{profile}: {d} is a real folder, not shared (run 'clauderoo share {profile} {d}' to share it)");
                 else
-                    Junction.Create(link, source);
+                {
+                    try { Junction.Create(link, source); }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+                    {
+                        report.Problems.Add($"{profile}: could not sync {d}: {e.Message}");
+                    }
+                }
                 continue;
             }
             if (!string.Equals(Path.TrimEndingDirectorySeparator(target), Path.TrimEndingDirectorySeparator(source), StringComparison.OrdinalIgnoreCase))
                 report.Problems.Add($"{profile}: {d} is linked to {target}, not to {source}");
         }
+    }
+
+    private static void CopyAtomic(string source, string target)
+    {
+        var tmp = target + ".tmp";
+        File.Copy(source, tmp, overwrite: true);
+        File.Move(tmp, target, overwrite: true);
     }
 
     private string Stamp => _now().ToString("yyyyMMdd-HHmmss");
@@ -83,6 +100,8 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             if (entry.Overrides.Contains(f)) continue;
             var source = Path.Combine(cfg.HomeDir, f);
             if (!File.Exists(source)) continue;
+            try
+            {
             var target = Path.Combine(dir, f);
             var srcHash = HashFile(source);
 
@@ -96,13 +115,18 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                     File.Copy(target, Path.Combine(dir, backup), overwrite: true);
                     report.Notices.Add(Notice(profile, f, backup));
                 }
-                if (tgtHash != srcHash) File.Copy(source, target, overwrite: true);
+                if (tgtHash != srcHash) CopyAtomic(source, target);
             }
             else
             {
-                File.Copy(source, target);
+                CopyAtomic(source, target);
             }
             state.Hashes[f] = srcHash;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                report.Problems.Add($"{profile}: could not sync {f}: {e.Message}");
+            }
         }
     }
 
@@ -148,7 +172,8 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         var current = root[key];
         var curHash = McpHash(current);
         state.Hashes.TryGetValue(key, out var recorded);
-        if (curHash != recorded && curHash != homeHash && File.Exists(file))
+        var hasUserValue = current != null && !(current is JsonObject { Count: 0 });
+        if (hasUserValue && curHash != recorded && curHash != homeHash && File.Exists(file))
         {
             var backup = $"mcpServers.bak-{Stamp}.json";
             File.WriteAllText(Path.Combine(dir, backup), current?.ToJsonString() ?? "null");
