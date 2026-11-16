@@ -47,8 +47,6 @@ public static class ConfigStore
     public static void Save(ClauderooPaths p, ClauderooConfig c)
     {
         Directory.CreateDirectory(p.Root);
-        var tmp = p.ConfigFile + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(c, Options));
-        File.Move(tmp, p.ConfigFile, overwrite: true);
+        AtomicFile.WriteAllText(p.ConfigFile, JsonSerializer.Serialize(c, Options));
     }
 }

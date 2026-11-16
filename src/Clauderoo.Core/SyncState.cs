@@ -26,8 +26,6 @@ public class SyncState
     {
         Directory.CreateDirectory(profileDir);
         var file = Path.Combine(profileDir, FileName);
-        var tmp = file + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(tmp, file, overwrite: true);
+        AtomicFile.WriteAllText(file, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
 }

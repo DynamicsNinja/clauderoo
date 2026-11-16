@@ -25,14 +25,24 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         var dir = paths.ProfileDir(profile);
         Directory.CreateDirectory(dir);
         SyncDirs(profile, entry, dir, report);
-        var state = SyncState.Load(dir);
+        SyncState state;
+        try { state = SyncState.Load(dir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            report.Problems.Add($"{profile}: could not read sync state: {e.Message}");
+            return report;
+        }
         SyncFiles(profile, entry, dir, state, report);
         try { SyncMcp(profile, entry, dir, state, report); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             report.Problems.Add($"{profile}: could not sync mcpServers: {e.Message}");
         }
-        state.Save(dir);
+        try { state.Save(dir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            report.Problems.Add($"{profile}: could not save sync state: {e.Message}");
+        }
         return report;
     }
 
@@ -42,9 +52,16 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         foreach (var (name, entry) in cfg.Profiles)
         {
             if (entry.Home) continue;
-            var r = Sync(name);
-            all.Notices.AddRange(r.Notices);
-            all.Problems.AddRange(r.Problems);
+            try
+            {
+                var r = Sync(name);
+                all.Notices.AddRange(r.Notices);
+                all.Problems.AddRange(r.Problems);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+            {
+                all.Problems.Add($"{name}: could not sync: {e.Message}");
+            }
         }
         return all;
     }
@@ -82,9 +99,17 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private static void CopyAtomic(string source, string target)
     {
-        var tmp = target + ".tmp";
-        File.Copy(source, tmp, overwrite: true);
-        File.Move(tmp, target, overwrite: true);
+        var tmp = AtomicFile.TmpName(target);
+        try
+        {
+            File.Copy(source, tmp, overwrite: true);
+            File.Move(tmp, target, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch (Exception) { }
+            throw;
+        }
     }
 
     private string Stamp => _now().ToString("yyyyMMdd-HHmmss");
@@ -135,59 +160,97 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private static string McpHash(JsonNode? node) => HashBytes(Encoding.UTF8.GetBytes(node?.ToJsonString() ?? "null"));
 
+    /// <summary>Test hook: runs just before the profile .claude.json is replaced.</summary>
+    public Action? BeforeMcpCommit { get; set; }
+
+    private static (DateTime, long)? Signature(string file) =>
+        File.Exists(file) ? (File.GetLastWriteTimeUtc(file), new FileInfo(file).Length) : null;
+
+    private JsonNode? ReadHomeMcp(string profile, SyncReport report, out bool ok)
+    {
+        ok = true;
+        if (!File.Exists(cfg.HomeJson)) return null;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var fs = new FileStream(cfg.HomeJson, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                return (JsonNode.Parse(fs) as JsonObject)?[SharedItems.McpServers];
+            }
+            catch (JsonException)
+            {
+                // Claude may be mid-write: wait once and retry before reporting.
+                if (attempt == 0) { Thread.Sleep(200); continue; }
+                report.Problems.Add($"{profile}: home .claude.json is not valid JSON; MCP servers not synced");
+                ok = false;
+                return null;
+            }
+        }
+    }
+
     private void SyncMcp(string profile, ProfileEntry entry, string dir, SyncState state, SyncReport report)
     {
         const string key = SharedItems.McpServers;
         if (entry.Overrides.Contains(key)) return;
 
-        JsonNode? homeMcp = null;
-        if (File.Exists(cfg.HomeJson))
-        {
-            try
-            {
-                using var fs = new FileStream(cfg.HomeJson, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                homeMcp = (JsonNode.Parse(fs) as JsonObject)?[key];
-            }
-            catch (JsonException)
-            {
-                report.Problems.Add($"{profile}: home .claude.json is not valid JSON; MCP servers not synced");
-                return;
-            }
-        }
+        var homeMcp = ReadHomeMcp(profile, report, out var ok);
+        if (!ok) return;
         var homeHash = McpHash(homeMcp);
 
         var file = Path.Combine(dir, ".claude.json");
-        JsonObject root;
-        if (File.Exists(file))
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            try { root = JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? throw new JsonException(); }
-            catch (JsonException)
+            var sig = Signature(file);
+            JsonObject root;
+            if (sig != null)
             {
-                report.Problems.Add($"{profile}: .claude.json is not valid JSON; MCP servers not synced");
-                return;
+                try { root = JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? throw new JsonException(); }
+                catch (JsonException)
+                {
+                    report.Problems.Add($"{profile}: .claude.json is not valid JSON; MCP servers not synced");
+                    return;
+                }
             }
-        }
-        else root = new JsonObject();
+            else root = new JsonObject();
 
-        var current = root[key];
-        var curHash = McpHash(current);
-        state.Hashes.TryGetValue(key, out var recorded);
-        var hasUserValue = current != null && !(current is JsonObject { Count: 0 });
-        if (hasUserValue && curHash != recorded && curHash != homeHash && File.Exists(file))
-        {
-            var backup = $"mcpServers.bak-{Stamp}.json";
-            File.WriteAllText(Path.Combine(dir, backup), current?.ToJsonString() ?? "null");
-            report.Notices.Add(Notice(profile, key, backup));
-        }
+            var current = root[key];
+            var curHash = McpHash(current);
+            state.Hashes.TryGetValue(key, out var recorded);
+            var hasUserValue = current != null && !(current is JsonObject { Count: 0 });
+            string? notice = null;
+            if (hasUserValue && curHash != recorded && curHash != homeHash && sig != null)
+            {
+                var backup = $"mcpServers.bak-{Stamp}.json";
+                File.WriteAllText(Path.Combine(dir, backup), current?.ToJsonString() ?? "null");
+                notice = Notice(profile, key, backup);
+            }
 
-        if (curHash != homeHash || !File.Exists(file))
-        {
-            if (homeMcp == null) root.Remove(key);
-            else root[key] = homeMcp.DeepClone();
-            var tmp = file + ".tmp";
-            File.WriteAllText(tmp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            File.Move(tmp, file, overwrite: true);
+            if (curHash != homeHash || sig == null)
+            {
+                if (homeMcp == null) root.Remove(key);
+                else root[key] = homeMcp.DeepClone();
+                var tmp = AtomicFile.TmpName(file);
+                try
+                {
+                    File.WriteAllText(tmp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                    BeforeMcpCommit?.Invoke();
+                    if (Signature(file) != sig)
+                    {
+                        File.Delete(tmp);
+                        continue; // Claude wrote the file meanwhile: re-read and redo the merge
+                    }
+                    File.Move(tmp, file, overwrite: true);
+                }
+                catch
+                {
+                    try { File.Delete(tmp); } catch (Exception) { }
+                    throw;
+                }
+            }
+            if (notice != null) report.Notices.Add(notice);
+            state.Hashes[key] = homeHash;
+            return;
         }
-        state.Hashes[key] = homeHash;
+        report.Problems.Add($"{profile}: .claude.json kept changing; MCP servers not synced");
     }
 }
