@@ -15,7 +15,7 @@ public static class Commands
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
-  remove <name>                       remove a profile (its folder is moved, not deleted)
+  remove <name> [--force]             remove a profile (its folder is moved, not deleted)
   status                              show the default profile and any problems
   tray                                start the tray app
   autostart on|off                    start the tray app at login
@@ -61,8 +61,12 @@ public static class Commands
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
         // Commands that work without an initialised config skip the pre-sync.
-        if (cmd is not ("init" or "install" or "autostart" or "tray"))
-            Print(pm.SyncAll(), output, err, "warning: ");
+        // 'status' syncs itself. A failing pre-sync must never make a command fail.
+        if (cmd is not ("init" or "install" or "autostart" or "tray" or "status"))
+        {
+            try { Print(pm.SyncAll(), output, err, "warning: "); }
+            catch (Exception e) { err.WriteLine($"warning: sync failed: {e.Message}"); }
+        }
 
         var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
 
@@ -111,12 +115,12 @@ public static class Commands
             {
                 if (pos.Count == 1 && pos[0] == "--clear")
                 {
-                    pm.SetDefault(null);
+                    Print(pm.SetDefault(null), output, err);
                     output.WriteLine($"Default cleared ({pm.Config.DefaultProfile} is the default). Open a new terminal for plain 'claude' to use it.");
                 }
                 else
                 {
-                    pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]);
+                    Print(pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]), output, err);
                     output.WriteLine($"Default is now {pm.Config.DefaultProfile}. Open a new terminal for plain 'claude' to use it.");
                 }
                 return 0;
@@ -137,8 +141,9 @@ public static class Commands
             }
             case "remove":
             {
-                var name = Need(pos, 1, "clauderoo remove <name>")[0];
-                pm.Remove(name);
+                var force = pos.Remove("--force");
+                var name = Need(pos, 1, "clauderoo remove <name> [--force]")[0];
+                pm.Remove(name, force);
                 output.WriteLine($"Removed '{name}'. Its folder was moved to {pm.Paths.RemovedDir}.");
                 return 0;
             }
@@ -163,7 +168,9 @@ public static class Commands
             {
                 var mode = Need(pos, 1, "clauderoo autostart on|off")[0];
                 if (mode is not ("on" or "off")) throw new ClauderooException("Usage: clauderoo autostart on|off");
-                AutoStart.Set(mode == "on", mode == "on" ? TrayExe() : Path.Combine(AppContext.BaseDirectory, "clauderoow.exe"));
+                AutoStart.Set(mode == "on", mode == "on"
+                    ? AutoStart.ResolveExe(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), TrayExe())
+                    : Path.Combine(AppContext.BaseDirectory, "clauderoow.exe"));
                 output.WriteLine(mode == "on" ? "Tray app will start at login." : "Tray app will no longer start at login.");
                 return 0;
             }

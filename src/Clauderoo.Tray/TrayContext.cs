@@ -17,6 +17,7 @@ sealed class TrayContext : ApplicationContext
     private readonly Icon _appIcon;
     private readonly SynchronizationContext _ui;
     private string? _watchedKey;
+    private readonly ProblemTracker _problems = new();
 
     public TrayContext()
     {
@@ -37,7 +38,7 @@ sealed class TrayContext : ApplicationContext
             {
                 var cfg = _pm.Config;
                 EnsureWatchers(cfg);
-                Show(new Syncer(cfg, _paths, () => DateTime.Now).SyncAll());
+                Show(new Syncer(cfg, _paths, () => DateTime.Now).SyncAll(), dedupe: true);
             });
         };
 
@@ -134,7 +135,12 @@ sealed class TrayContext : ApplicationContext
             var name = p.Name;
             item.DropDownItems.Add("Start session", null, (_, _) => Guard(() => StartSession(name, null)));
             item.DropDownItems.Add("Start session in folder…", null, (_, _) => Guard(() => StartInFolder(name)));
-            item.DropDownItems.Add("Set as default", null, (_, _) => Guard(() => _pm.SetDefault(name)));
+            item.DropDownItems.Add("Set as default", null, (_, _) => Guard(() =>
+            {
+                var report = _pm.SetDefault(name);
+                Balloon($"Default is now {name}. New terminals will use it.", warning: false);
+                Show(report);
+            }));
             _menu.Items.Add(item);
         }
 
@@ -147,7 +153,8 @@ sealed class TrayContext : ApplicationContext
         }));
         var auto = new ToolStripMenuItem("Start with Windows");
         try { auto.Checked = AutoStart.IsOn(); } catch (Exception) { }
-        auto.Click += (_, _) => Guard(() => AutoStart.Set(!auto.Checked, Environment.ProcessPath!));
+        auto.Click += (_, _) => Guard(() => AutoStart.Set(!auto.Checked, AutoStart.ResolveExe(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!)));
         _menu.Items.Add(auto);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Exit", null, (_, _) => ExitThread());
@@ -177,16 +184,17 @@ sealed class TrayContext : ApplicationContext
 
     private void NewProfile()
     {
-        var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):");
+        var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):")?.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(name)) return;
         Show(_pm.Add(name));
         Balloon($"Profile '{name}' created. Run 'claude' in it to log in.", warning: false);
     }
 
-    private void Show(SyncReport report)
+    // dedupe: for full syncs, only problems not shown on the previous sync are surfaced again.
+    private void Show(SyncReport report, bool dedupe = false)
     {
         foreach (var n in report.Notices) Balloon(n, warning: false);
-        foreach (var p in report.Problems) Balloon(p, warning: true);
+        foreach (var p in dedupe ? _problems.NewOnly(report.Problems) : report.Problems) Balloon(p, warning: true);
     }
 
     private void Guard(Action action)

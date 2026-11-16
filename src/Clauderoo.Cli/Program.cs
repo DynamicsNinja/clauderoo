@@ -13,6 +13,8 @@ return Commands.Run(args, Console.Out, Console.Error, pm,
     runInPlace: spec =>
     {
         using var p = Launcher.Start(spec);
+        // Ctrl+C belongs to claude while it runs; don't let it kill the wrapper first.
+        Console.CancelKeyPress += (_, e) => e.Cancel = true;
         p.WaitForExit();
         return p.ExitCode;
     });
