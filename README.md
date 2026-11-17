@@ -75,7 +75,19 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 
 ## Installation
 
-clauderoo is installed from source. Publish both projects as single-file builds into one folder, then run the installer from that folder:
+### Install from Releases
+
+Download `clauderoo-<version>-win-x64.zip` from the GitHub Releases page, unzip it and run the installer from the unzipped folder:
+
+```powershell
+.\clauderoo.exe install
+```
+
+The release also has a `.sha256` file if you want to check the download yourself. The zip holds the same three programs described below, so the notes after the source instructions apply to both ways.
+
+### Build from source
+
+Publish both projects as single-file builds into one folder, then run the installer from that folder:
 
 ```powershell
 git clone <repo-url> clauderoo
@@ -95,7 +107,9 @@ publish\clauderoo.exe install
 
 Open a new terminal afterwards so the `PATH` change takes effect.
 
-**Upgrading:** pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
+**Upgrading:** from a release install, run `cr upgrade`. It downloads the latest release, checks its SHA256 and runs its installer. The tray app also checks once a day and offers "Update to vX" in its menu (turn this off under Advanced). From a source build, pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
+
+**Uninstalling:** quit the tray app, then run `cr uninstall`. It turns autostart off, removes the install folder from your `PATH` and removes the folder a few seconds later. Your profiles, logins and settings in `%USERPROFILE%\.clauderoo` are kept.
 
 ## Quick start
 
@@ -172,6 +186,9 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |
+| `version` | Print the installed version (`--version` works too) |
+| `upgrade [--check]` | Install the latest GitHub release after verifying its SHA256. `--check` only says whether a newer one exists. Builds not made from a release can't upgrade |
+| `uninstall [--yes]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept. Quit the tray app first |
 
 ## Providers
 

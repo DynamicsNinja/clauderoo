@@ -19,6 +19,10 @@ sealed class TrayContext : ApplicationContext
     private readonly Timer _runningTimer = new() { Interval = 15000 };
     private readonly Timer _clickTimer = new() { Interval = Math.Max(100, SystemInformation.DoubleClickTime) };
     private readonly Timer _noticeTimer = new();
+    private readonly Timer _updateTimer = new() { Interval = 60_000 }; // first check a minute after start, then hourly
+    private readonly UpdateStore _updateStore;
+    private UpdateState _updateState;
+    private bool _updateChecking;
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly SynchronizationContext _ui;
     private readonly OwnerWindow _owner;
@@ -95,6 +99,14 @@ sealed class TrayContext : ApplicationContext
         _runningTimer.Tick += async (_, _) => await RefreshRunningInBackground();
         _runningTimer.Start();
         _noticeTimer.Tick += (_, _) => { _noticeTimer.Stop(); FlushNotices(); };
+        _updateStore = UpdateStore.For(_paths);
+        _updateState = _updateStore.Load();
+        _updateTimer.Tick += (_, _) =>
+        {
+            _updateTimer.Interval = 3_600_000;
+            Guard(CheckForUpdate);
+        };
+        _updateTimer.Start();
 
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -265,6 +277,8 @@ sealed class TrayContext : ApplicationContext
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
+            UpdateNow = () => Guard(UpdateNow),
+            SetUpdateChecks = on => Guard(() => SetUpdateChecks(on)),
             SetUp = () => Guard(SetUp),
             Retry = () => Guard(FullSync),
             CopyConfigDetails = () => Guard(() => Clipboard.SetText(
@@ -286,7 +300,66 @@ sealed class TrayContext : ApplicationContext
 
         var autoOn = false;
         try { autoOn = AutoStart.IsOn(); } catch (Exception) { }
-        TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count), actions);
+        var releaseBuild = !string.IsNullOrEmpty(AppVersion.Repo);
+        var newer = releaseBuild ? UpdateCheck.NewerThan(_updateState, AppVersion.Current) : null;
+        TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
+            newer?.ToString(), _updateState.CheckEnabled, releaseBuild), actions);
+    }
+
+    // ---------- update check ----------
+
+    // Runs on the UI timer, does the network call on a background task and marshals the result back with Post.
+    private void CheckForUpdate()
+    {
+        var repo = AppVersion.Repo;
+        if (string.IsNullOrEmpty(repo) || _updateChecking) return;
+        var state = _updateState;
+        if (!UpdateCheck.IsDue(state, DateTime.UtcNow)) return;
+        _updateChecking = true;
+        _ = Task.Run(async () =>
+        {
+            UpdateState? result = null;
+            try
+            {
+                using var handler = new SocketsHttpHandler();
+                result = await UpdateCheck.RunAsync(state, new Updater(handler, repo), DateTime.UtcNow, default);
+            }
+            catch (Exception) { /* offline or unwritable: try again at the next due check */ }
+            Post(() => Guard(() => FinishUpdateCheck(result)));
+        });
+    }
+
+    private void FinishUpdateCheck(UpdateState? result)
+    {
+        _updateChecking = false;
+        if (result == null) return;
+        // Keep a toggle the user flipped while the check ran.
+        _updateState = UpdateCheck.Merge(result, _updateState);
+        var newer = UpdateCheck.NewerThan(result, AppVersion.Current);
+        var announce = newer != null && result.NotifiedVersion != newer.ToString();
+        if (announce) result.NotifiedVersion = newer!.ToString();
+        SaveUpdateState();
+        if (announce) Balloon(TrayText.UpdateBalloon(newer!.ToString()), ToolTipIcon.Info);
+    }
+
+    private void SaveUpdateState()
+    {
+        var copy = UpdateCheck.Snapshot(_updateState); // taken on the UI thread; the write happens in the background
+        _ = Task.Run(() => { try { _updateStore.Save(copy); } catch (Exception) { } });
+    }
+
+    private void SetUpdateChecks(bool on)
+    {
+        _updateState.CheckEnabled = on;
+        SaveUpdateState();
+    }
+
+    // Runs the installed clauderoo.exe's upgrade in its own terminal window, so its progress and errors are visible.
+    private void UpdateNow()
+    {
+        var exe = Path.Combine(AppContext.BaseDirectory, "clauderoo.exe");
+        if (!File.Exists(exe)) throw new ClauderooException("clauderoo.exe wasn't found next to the tray app, so it can't update itself.");
+        Process.Start(new ProcessStartInfo("cmd.exe", $"/k \"\"{exe}\" upgrade\"") { UseShellExecute = true })?.Dispose();
     }
 
     /// <summary>
@@ -594,6 +667,7 @@ sealed class TrayContext : ApplicationContext
             _runningTimer.Dispose();
             _clickTimer.Dispose();
             _noticeTimer.Dispose();
+            _updateTimer.Dispose();
             _icon.Visible = false;
             _icon.Dispose();
             _menu.Dispose();

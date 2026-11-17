@@ -8,7 +8,10 @@ internal sealed record TrayMenuState(
     IReadOnlyList<Problem> Problems,
     IReadOnlyDictionary<string, int> Running,
     bool AutoStartOn,
-    int RecentCount = 0)
+    int RecentCount = 0,
+    string? UpdateVersion = null,
+    bool UpdateChecksOn = true,
+    bool UpdateChecksAvailable = false)
 {
     public int RunningTotal => Running.Values.Sum();
     public ProfileInfo? Default => Profiles.FirstOrDefault(p => p.IsDefault) ?? Profiles.FirstOrDefault(p => p.IsHome);
@@ -29,6 +32,8 @@ internal sealed class TrayMenuActions
     public Action NewProfile { get; init; } = () => { };
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
+    public Action UpdateNow { get; init; } = () => { };
+    public Action<bool> SetUpdateChecks { get; init; } = _ => { };
     public Action SetUp { get; init; } = () => { };
     public Action Retry { get; init; } = () => { };
     public Action CopyConfigDetails { get; init; } = () => { };
@@ -95,7 +100,20 @@ internal static class TrayMenu
         var auto = new ToolStripMenuItem("Start with &Windows") { Checked = s.AutoStartOn };
         auto.Click += (_, _) => a.SetAutoStart(!auto.Checked);
         advanced.DropDownItems.Add(auto);
+        if (s.UpdateChecksAvailable)
+        {
+            var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
+            checks.Click += (_, _) => a.SetUpdateChecks(!checks.Checked);
+            advanced.DropDownItems.Add(checks);
+        }
         items.Add(advanced);
+
+        if (s.UpdateVersion is { } newer)
+        {
+            var upd = Item(TrayText.UpdateItem(newer), Neutral(Glyph.Refresh, dpi), a.UpdateNow);
+            upd.Font = Bold(menu.Font);
+            items.Add(upd);
+        }
 
         items.Add(new ToolStripSeparator());
         items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));

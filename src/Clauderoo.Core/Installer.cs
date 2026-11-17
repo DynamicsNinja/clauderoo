@@ -3,6 +3,32 @@ using Microsoft.Win32;
 
 namespace Clauderoo.Core;
 
+/// <summary>The raw user PATH value (REG_EXPAND_SZ, %VAR% entries unexpanded).</summary>
+public interface IUserPath
+{
+    string Read();
+    void Write(string raw);
+}
+
+/// <summary>The real user PATH in HKCU\Environment. Writing it keeps REG_EXPAND_SZ and broadcasts the change.</summary>
+public sealed class RegistryUserPath : IUserPath
+{
+    public string Read()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey("Environment")
+            ?? throw new ClauderooException("Could not open the user environment registry key.");
+        return key.GetValue("Path", "", RegistryValueOptions.DoNotExpandEnvironmentNames) as string ?? "";
+    }
+
+    public void Write(string raw)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey("Environment", writable: true)
+            ?? throw new ClauderooException("Could not open the user environment registry key.");
+        key.SetValue("Path", raw, RegistryValueKind.ExpandString);
+        Installer.BroadcastEnvironmentChange();
+    }
+}
+
 public static class Installer
 {
     private static readonly string[] Files = ["clauderoo.exe", "clauderoow.exe"];
@@ -32,16 +58,28 @@ public static class Installer
         Replace(Path.Combine(dest, "clauderoo.exe"), Path.Combine(dest, ShortAlias));
 
         // Read/write the raw registry value so REG_EXPAND_SZ entries (%VAR%) are preserved.
-        using var key = Registry.CurrentUser.OpenSubKey("Environment", writable: true)
-            ?? throw new ClauderooException("Could not open the user environment registry key.");
-        var raw = key.GetValue("Path", "", RegistryValueOptions.DoNotExpandEnvironmentNames) as string ?? "";
-        var updated = AppendToPath(raw, dest);
-        if (updated != null)
-        {
-            key.SetValue("Path", updated, RegistryValueKind.ExpandString);
-            BroadcastEnvironmentChange();
-        }
+        var userPath = new RegistryUserPath();
+        var updated = AppendToPath(userPath.Read(), dest);
+        if (updated != null) userPath.Write(updated);
         return dest;
+    }
+
+    /// <summary>
+    /// Returns rawPath without the entry for dir (matched raw or expanded, case-insensitively), or null when dir
+    /// isn't an entry. Every other entry is kept verbatim, so %VAR% entries survive.
+    /// </summary>
+    public static string? RemoveFromPath(string rawPath, string dir)
+    {
+        var want = Norm(dir);
+        var kept = new List<string>();
+        var found = false;
+        foreach (var entry in rawPath.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var e = entry.Trim().Trim('"');
+            if (Norm(e) == want || Norm(Environment.ExpandEnvironmentVariables(e)) == want) found = true;
+            else kept.Add(entry);
+        }
+        return found ? string.Join(';', kept) : null;
     }
 
     /// <summary>
@@ -105,7 +143,7 @@ public static class Installer
         uint flags, uint timeout, out UIntPtr result);
 
     /// <summary>Tells running programs (Explorer, new terminals) that the environment changed.</summary>
-    private static void BroadcastEnvironmentChange()
+    internal static void BroadcastEnvironmentChange()
     {
         const uint WM_SETTINGCHANGE = 0x001A, SMTO_ABORTIFHUNG = 0x2;
         try { SendMessageTimeout(new IntPtr(0xffff), WM_SETTINGCHANGE, UIntPtr.Zero, "Environment", SMTO_ABORTIFHUNG, 5000, out _); }

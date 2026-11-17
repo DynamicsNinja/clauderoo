@@ -156,6 +156,13 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void UpdateTexts_NameTheVersion()
+    {
+        Assert.Equal("&Update to v1.2.0", TrayText.UpdateItem("1.2.0"));
+        Assert.Contains("v1.2.0", TrayText.UpdateBalloon("1.2.0"));
+    }
+
+    [Fact]
     public void Header_AllGoodOrProblems()
     {
         Assert.Equal("clauderoo — all good", TrayText.Header(0));

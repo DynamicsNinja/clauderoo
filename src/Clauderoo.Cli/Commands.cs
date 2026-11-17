@@ -38,6 +38,9 @@ public static class Commands
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
   install                             copy clauderoo to %LOCALAPPDATA%\clauderoo and add it to PATH
+  version | --version                 print the clauderoo version
+  upgrade [--check]                   install the latest GitHub release (--check only reports)
+  uninstall [--yes]                   remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
   help                                show this help";
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
@@ -46,13 +49,13 @@ public static class Commands
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
-        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null)
+        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null)
     {
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
-                hookCancel ?? HookConsoleCancel);
+                hookCancel ?? HookConsoleCancel, hooks);
         }
         catch (SessionsRunningException e)
         {
@@ -82,7 +85,7 @@ public static class Commands
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
-        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel)
+        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -90,9 +93,10 @@ public static class Commands
             return 0;
         }
 
-        var cmd = args[0];
+        var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
+            "version", "upgrade", "uninstall"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -103,7 +107,8 @@ public static class Commands
 
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
-        if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"))
+        if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
+            or "version" or "upgrade" or "uninstall"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -389,6 +394,12 @@ public static class Commands
                 output.WriteLine(mode == "on" ? "Tray app will start at login." : "Tray app will no longer start at login.");
                 return 0;
             }
+            case "version":
+                return ReleaseCommands.Version(output, hooks);
+            case "upgrade":
+                return ReleaseCommands.Upgrade(pos, output, err, hooks);
+            case "uninstall":
+                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks);
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);
