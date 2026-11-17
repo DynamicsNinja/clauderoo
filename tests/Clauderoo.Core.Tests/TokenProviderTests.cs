@@ -208,6 +208,33 @@ public class TokenProviderTests
     }
 
     [Fact]
+    public void SetupProbe_StripsInheritedOauthToken()
+    {
+        Environment.SetEnvironmentVariable(TokenVar, "sk-ant-oat01-inherited");
+        try
+        {
+            var psi = ProcessClaudeRunner.BuildStartInfo(@"C:\x\claude.exe", ["-p", "hi"], @"C:\p\work");
+            Assert.False(psi.Environment.ContainsKey(TokenVar));
+        }
+        finally { Environment.SetEnvironmentVariable(TokenVar, null); }
+    }
+
+    [Theory]
+    [InlineData("claude_code_oauth_token")]
+    [InlineData("anthropic_api_key")]
+    [InlineData("Claude_Code_Use_Vertex")]
+    public void Env_Set_ReservedName_CaseInsensitive_Rejected(string name)
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        Assert.Throws<ClauderooException>(() => ProviderOverlay.ValidateEnvName(name));
+        var r = Run(pm, null, true, "env", "work", "set", $"{name}={Token}");
+        Assert.Equal(1, r.code);
+        Assert.Contains("is managed by the provider and cannot be set.", r.e);
+        Assert.DoesNotContain(Token, r.o + r.e);
+        Assert.DoesNotContain(pm.GetEnv("work").Keys, k => k.Equals(name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Env_Set_OauthToken_Rejected()
     {
         var (pm, home, _, _) = Make(); using var _h = home;

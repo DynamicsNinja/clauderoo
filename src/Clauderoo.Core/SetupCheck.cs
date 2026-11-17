@@ -157,6 +157,8 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         else foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["CLAUDE_CONFIG_DIR"] = configDir;
         psi.Environment["DISABLE_AUTOUPDATER"] = "1";
+        // As in Launcher.StartInfo: an inherited token would sign the probe in as some other account.
+        psi.Environment.Remove(ProfileManager.TokenEnvVar);
         return psi;
     }
 

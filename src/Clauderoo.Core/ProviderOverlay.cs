@@ -7,7 +7,8 @@ public record Overlay(IReadOnlyDictionary<string, string> Env, IReadOnlyDictiona
 
 public static partial class ProviderOverlay
 {
-    public static IReadOnlySet<string> ReservedEnv { get; } = new HashSet<string>(StringComparer.Ordinal)
+    // Windows environment names are case-insensitive, so "claude_code_oauth_token" would override the real one.
+    public static IReadOnlySet<string> ReservedEnv { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "CLAUDE_CODE_USE_VERTEX",
         "ANTHROPIC_VERTEX_PROJECT_ID",
