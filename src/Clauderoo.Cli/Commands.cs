@@ -269,6 +269,7 @@ public static class Commands
                 if (r.Updated.Count > 0) output.WriteLine($"Updated: {string.Join(", ", r.Updated)}");
                 foreach (var s in r.Skipped) output.WriteLine($"Skipped {s}");
                 foreach (var s in r.NeedSecret) output.WriteLine($"Needs a secret: {s}");
+                foreach (var s in r.KeptProvider ?? []) output.WriteLine($"Kept {s}");
                 if (r.Created.Count + r.Updated.Count + r.Skipped.Count + r.NeedSecret.Count == 0)
                     output.WriteLine("Nothing to import.");
                 return 0;

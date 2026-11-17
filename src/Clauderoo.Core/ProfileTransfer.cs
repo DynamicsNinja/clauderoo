@@ -5,7 +5,7 @@ namespace Clauderoo.Core;
 
 /// <summary>What an import did. Skipped and NeedSecret entries are ready-to-print text, "name: reason".</summary>
 public record ImportResult(IReadOnlyList<string> Created, IReadOnlyList<string> Updated,
-    IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret);
+    IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret, IReadOnlyList<string>? KeptProvider = null);
 
 public partial class ProfileManager
 {
@@ -48,7 +48,7 @@ public partial class ProfileManager
             if (includeEnv)
             {
                 var env = new JsonObject();
-                foreach (var kv in e.Env.OrderBy(k => k.Key, StringComparer.Ordinal)) env[kv.Key] = kv.Value;
+                foreach (var kv in e.Env.Where(k => !ProviderOverlay.ReservedEnv.Contains(k.Key)).OrderBy(k => k.Key, StringComparer.Ordinal)) env[kv.Key] = kv.Value;
                 o["env"] = env;
             }
             o["overrides"] = new JsonArray(e.Overrides.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
@@ -117,11 +117,12 @@ public partial class ProfileManager
             var updated = new List<string>();
             var skipped = new List<string>();
             var needSecret = new List<string>();
+            var kept = new List<string>();
             var startDirs = new Dictionary<string, string?>();
 
             if (root.TryGetProperty("profiles", out var plist) && plist.ValueKind == JsonValueKind.Array)
                 foreach (var p in plist.EnumerateArray())
-                    ImportProfile(p, force, created, updated, skipped, needSecret, startDirs);
+                    ImportProfileSafe(p, force, created, updated, skipped, needSecret, kept, startDirs);
 
             // Everything below edits config directly; one load and one save, and only when something changed.
             var cfg = Config;
@@ -174,12 +175,25 @@ public partial class ProfileManager
             }
 
             if (dirty) ConfigStore.Save(paths, cfg);
-            return new ImportResult(created, updated, skipped, needSecret);
+            return new ImportResult(created, updated, skipped, needSecret, kept);
+        }
+    }
+
+    // One profile's failure must not abort the rest: it is reported in Skipped and the import carries on.
+    private void ImportProfileSafe(JsonElement p, bool force, List<string> created, List<string> updated,
+        List<string> skipped, List<string> needSecret, List<string> kept, Dictionary<string, string?> startDirs)
+    {
+        try { ImportProfile(p, force, created, updated, skipped, needSecret, kept, startDirs); }
+        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
+        {
+            var name = Str(p, "name") ?? "";
+            created.Remove(name); updated.Remove(name);
+            skipped.Add($"{name}: failed - {e.Message}");
         }
     }
 
     private void ImportProfile(JsonElement p, bool force, List<string> created, List<string> updated,
-        List<string> skipped, List<string> needSecret, Dictionary<string, string?> startDirs)
+        List<string> skipped, List<string> needSecret, List<string> kept, Dictionary<string, string?> startDirs)
     {
         var name = Str(p, "name") ?? "";
         try { ProfileName.Validate(name); }
@@ -225,17 +239,20 @@ public partial class ProfileManager
         }
 
         var overrides = new List<string>();
-        if (p.TryGetProperty("overrides", out var ov) && ov.ValueKind == JsonValueKind.Array)
+        var hasOverrides = p.TryGetProperty("overrides", out var ov) && ov.ValueKind == JsonValueKind.Array;
+        if (hasOverrides)
             foreach (var o in ov.EnumerateArray())
                 if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(o.GetString()!)) overrides.Add(o.GetString()!);
 
         if (!exists) Add(name);
 
-        // A secret-based profile keeps a secret it already has; otherwise it starts on login and is listed as needing one.
+        // A profile that holds a stored secret never has its provider changed: switching would delete the secret.
+        var holdsSecret = exists && (HasApiKey(name) || HasToken(name));
+        if (holdsSecret && provider != Providers.Of(current!))
+            kept.Add($"{name}: kept its {(Providers.Of(current!) == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
         switch (provider)
         {
-            case Providers.ApiKey when exists && HasApiKey(name):
-            case Providers.Token when exists && HasToken(name):
+            case var _ when holdsSecret:
                 break;
             case Providers.ApiKey or Providers.Token:
                 SetProvider(name, Providers.Login);
@@ -255,7 +272,7 @@ public partial class ProfileManager
 
         var have = Get(name).Overrides.ToList();
         foreach (var item in overrides.Where(i => !have.Contains(i))) Own(name, item);
-        if (exists)
+        if (exists && hasOverrides)
             foreach (var item in have.Where(i => !overrides.Contains(i))) Share(name, item);
 
         startDirs[name] = Str(p, "startDir");

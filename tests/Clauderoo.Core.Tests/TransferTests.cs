@@ -154,6 +154,70 @@ public class TransferTests
         Assert.Equal(Providers.Login, Providers.Of(dst.Get("t")));
     }
 
+    [Theory]
+    [InlineData("apikey")]
+    [InlineData("token")]
+    public void Import_Force_ExistingSecretProfile_KeepsSecret(string kind)
+    {
+        var (pm, home, keys, tokens) = Make(); using var _h = home;
+        pm.Add("s");
+        if (kind == "apikey") pm.SetProvider("s", Providers.ApiKey, apiKey: Key);
+        else pm.SetProvider("s", Providers.Token, token: Token);
+        var dir = home.Paths.ProfileDir("s");
+        foreach (var provider in new[] { "login", "vertex" })
+        {
+            var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"s\",\"provider\":\"" + provider +
+                       "\",\"vertex\":{\"project\":\"p\",\"region\":\"r\"},\"env\":{\"A\":\"1\"}}]}";
+            var r = pm.Import(json, force: true);
+            Assert.Equal(["s"], r.Updated);
+            Assert.Contains(r.KeptProvider!, k => k.StartsWith("s:"));
+            Assert.Equal(kind, pm.Get("s").Provider);
+            Assert.Equal("1", pm.Get("s").Env["A"]);
+        }
+        Assert.True((kind == "apikey" ? keys : tokens).Exists(dir));
+    }
+
+    [Fact]
+    public void Import_OneProfileFails_OthersAndFoldersStillApplied()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        // A file where the profile folder should be makes Add throw for "bad".
+        Directory.CreateDirectory(home.Paths.ProfilesDir);
+        File.WriteAllText(home.Paths.ProfileDir("bad"), "x");
+        var folder = Path.Combine(home.Paths.Root, "f");
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"bad\",\"provider\":\"login\"},{\"name\":\"good\",\"provider\":\"login\"}]," +
+                   "\"folders\":[{\"dir\":" + JsonSerializer.Serialize(folder) + ",\"profile\":\"good\"}],\"autoSwitch\":{\"t\":1}}";
+        var r = pm.Import(json, false);
+        Assert.Equal(["good"], r.Created);
+        Assert.Contains(r.Skipped, s => s.StartsWith("bad:"));
+        Assert.Equal("good", pm.Maps().Single().Profile);
+        Assert.True(pm.Config.Extra!.ContainsKey("autoSwitch"));
+    }
+
+    [Fact]
+    public void Export_FiltersReservedEnv()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("w");
+        var cfg = pm.Config;
+        cfg.Profiles["w"].Env["anthropic_api_key"] = "sk-hand-edited";
+        cfg.Profiles["w"].Env["OK_VAR"] = "fine";
+        ConfigStore.Save(home.Paths, cfg);
+        var json = pm.Export(null, true);
+        Assert.DoesNotContain("sk-hand-edited", json);
+        Assert.Contains("OK_VAR", json);
+    }
+
+    [Fact]
+    public void Import_Force_AbsentOverrides_LeavesOverridesUnchanged()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("o");
+        pm.Own("o", "CLAUDE.md");
+        pm.Import("{\"schemaVersion\":1,\"profiles\":[{\"name\":\"o\",\"provider\":\"login\"}]}", force: true);
+        Assert.Contains("CLAUDE.md", pm.Get("o").Overrides);
+    }
+
     [Fact]
     public void Import_NewerSchema_Refused()
     {
