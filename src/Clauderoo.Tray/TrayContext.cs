@@ -160,17 +160,18 @@ sealed class TrayContext : ApplicationContext
                 Providers.ApiKey => "API key",
                 _ => p.Email,
             };
-            var text = (p.IsDefault ? "● " : "") + p.Name + (who != null ? $"  ({who})" : "");
-            var item = new ToolStripMenuItem(text.Replace("&", "&&"));
+            var text = p.Name + (p.IsDefault ? " (default)" : "") + (who != null ? $"  ({who})" : "");
+            var item = new ToolStripMenuItem(text.Replace("&", "&&")) { Checked = p.IsDefault };
             var name = p.Name;
             item.DropDownItems.Add("Start session", null, (_, _) => Guard(() => StartSession(name, null)));
             item.DropDownItems.Add("Start session in folder…", null, (_, _) => Guard(() => StartInFolder(name)));
-            item.DropDownItems.Add("Set as default", null, (_, _) => Guard(() =>
+            var setDefault = item.DropDownItems.Add(p.IsDefault ? "Already the default" : "Set as default", null, (_, _) => Guard(() =>
             {
                 var report = _pm.SetDefault(name);
                 Balloon($"Default is now {name}. New terminals will use it.", warning: false);
                 Show(report);
             }));
+            setDefault.Enabled = !p.IsDefault;
             _menu.Items.Add(item);
         }
 
