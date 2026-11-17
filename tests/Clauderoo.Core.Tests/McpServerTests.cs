@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -32,16 +33,19 @@ public class McpServerTests
     private sealed class Runner
     {
         public LaunchSpec? Spec;
+        public string? Stdin;
         public TimeSpan Timeout;
         public int Calls;
         public Func<LaunchSpec, (int, string, string)> Answer = _ => (0, "done", "");
+        public Func<LaunchSpec, CancellationToken, Task<(int, string, string)>>? AnswerAsync;
 
-        public Task<(int code, string stdout, string stderr)> Run(LaunchSpec spec, TimeSpan timeout, CancellationToken ct)
+        public Task<(int code, string stdout, string stderr)> Run(LaunchSpec spec, string stdin, TimeSpan timeout, CancellationToken ct)
         {
             Spec = spec;
+            Stdin = stdin;
             Timeout = timeout;
             Calls++;
-            return Task.FromResult(Answer(spec));
+            return AnswerAsync != null ? AnswerAsync(spec, ct) : Task.FromResult(Answer(spec));
         }
     }
 
@@ -55,6 +59,7 @@ public class McpServerTests
         public readonly StringWriter Log = new();
         public DateTimeOffset Now = Start;
         public string? CallerProfile;
+        public readonly string Proj;
         public readonly McpServer Server;
 
         public Fixture(Func<HttpRequestMessage, HttpResponseMessage>? answer = null, string claude = "claude.exe")
@@ -66,11 +71,12 @@ public class McpServerTests
             Pm.SetProvider("ci", Providers.Token, token: StoredToken);
             PlantCredential(Pm.ConfigDirOf("work"), Token);
             PlantCredential(Pm.ConfigDirOf(Pm.Config.HomeProfileName!), HomeToken);
+            Proj = Directory.CreateDirectory(Path.Combine(Home.Dir, "proj")).FullName;
             Http = new Handler(answer ?? (_ => OkUsage()));
             Usage = new UsageClient(Http, () => Now, "1.0");
             Server = new McpServer(Pm, Usage, Runner.Run, now: () => Now,
                 getEnv: n => n == "CLAUDEROO_PROFILE" ? CallerProfile : null,
-                claudePath: claude, defaultCwd: Home.Dir, log: Log);
+                claudePath: claude, defaultCwd: Proj, log: Log);
         }
 
         public void PlantCredential(string dir, string token)
@@ -91,11 +97,27 @@ public class McpServerTests
     }
 
     /// <summary>Feeds the lines to the server and returns every line it wrote, each checked to be a JSON object.</summary>
+    // stdin stays open until every request (and every line that isn't JSON) has been answered, because EOF cancels
+    // in-flight delegates, as a client going away should.
     private static async Task<List<JsonObject>> Talk(McpServer s, params string[] lines)
     {
-        var output = new StringWriter();
-        await s.RunAsync(new StringReader(string.Join("\n", lines) + "\n"), output, CancellationToken.None);
-        var outLines = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r'));
+        var inner = new StringWriter();
+        var output = TextWriter.Synchronized(inner);
+        string Snapshot() { lock (output) return inner.ToString(); }
+        var expected = lines.Count(l =>
+        {
+            if (string.IsNullOrWhiteSpace(l)) return false;
+            try { return JsonNode.Parse(l) is not JsonObject o || o.ContainsKey("id"); }
+            catch (System.Text.Json.JsonException) { return true; }
+        });
+        var input = new PipeReader();
+        var run = s.RunAsync(input, output, CancellationToken.None);
+        foreach (var l in lines) input.Send(l);
+        var sw = Stopwatch.StartNew();
+        while (Snapshot().Count(c => c == '\n') < expected && sw.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(5);
+        input.Complete();
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        var outLines = Snapshot().Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r'));
         return outLines.Select(l => Assert.IsType<JsonObject>(JsonNode.Parse(l))).ToList();
     }
 
@@ -203,8 +225,8 @@ public class McpServerTests
 
         var spec = f.Runner.Spec!;
         Assert.Equal("claude.exe", spec.FileName);
-        Assert.Equal(["-p", "say \"hi\" & bye", "--output-format", "text", "--strict-mcp-config", "--mcp-config", """{"mcpServers":{}}"""],
-            spec.Args);
+        Assert.Equal(FixedArgs, spec.Args);
+        Assert.Equal("say \"hi\" & bye", f.Runner.Stdin);
         Assert.DoesNotContain(spec.Args, a => a.Contains("dangerously", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(spec.Args, a => a.Contains("permission", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(cwd, spec.WorkingDir);
@@ -223,7 +245,197 @@ public class McpServerTests
         var spec = f.Runner.Spec!;
         Assert.Equal(StoredToken, spec.ExtraEnv!["CLAUDE_CODE_OAUTH_TOKEN"]);
         Assert.DoesNotContain(spec.Args, a => a.Contains("CANARY"));
-        Assert.Equal(f.Home.Dir, spec.WorkingDir);
+        Assert.Equal(f.Proj, spec.WorkingDir);
+    }
+
+    private static readonly string[] FixedArgs =
+        ["-p", "--output-format", "text", "--strict-mcp-config", "--mcp-config", """{"mcpServers":{}}"""];
+
+    // The prompt never reaches argv, so it can't be read as a claude option or cut the command line short.
+    [Fact]
+    public async Task Delegate_PromptNeverInArgs()
+    {
+        foreach (var prompt in new[] { "hi", "--permission-mode=bypassPermissions", "--mcp-config={\"mcpServers\":{}} --add-dir=C:\\" })
+        {
+            using var f = new Fixture();
+            var r = await CallOne(f, "delegate", new { profile = "work", prompt });
+            Assert.False(IsError(r));
+            Assert.Equal(FixedArgs, f.Runner.Spec!.Args);
+            Assert.Equal(FixedArgs, Launcher.StartInfo(f.Runner.Spec!).ArgumentList);
+            Assert.Equal(prompt, f.Runner.Stdin);
+        }
+
+        using var g = new Fixture();
+        foreach (var prompt in new[] { "a\u0000b", new string('x', 100 * 1024 + 1) })
+        {
+            var resp = Assert.Single(await Talk(g.Server, Call(1, "delegate", new { profile = "work", prompt })));
+            var refused = resp["error"] != null || IsError(resp["result"]!.AsObject());
+            Assert.True(refused);
+        }
+        Assert.Equal(0, g.Runner.Calls);
+    }
+
+    [Fact]
+    public async Task Delegate_PromptSentOnStdin()
+    {
+        using var f = new Fixture();
+        const string prompt = "line one\nline \"two\" & ünïcode %PATH% !x!";
+        await CallOne(f, "delegate", new { profile = "work", prompt });
+        Assert.Equal(prompt, f.Runner.Stdin);
+        Assert.DoesNotContain(f.Runner.Spec!.Args, a => a.Contains("line"));
+    }
+
+    // Reading files in the working folder needs no approval, so it must never be one holding sign-ins or settings.
+    [Fact]
+    public async Task Delegate_CwdUnderClauderooOrClaude_Refused()
+    {
+        using var f = new Fixture();
+        var cfg = f.Pm.Config;
+        Directory.CreateDirectory(Path.Combine(cfg.HomeDir, "projects"));
+        Directory.CreateDirectory(f.Home.Paths.IsolatedDir("work"));
+        var link = Path.Combine(f.Proj, "sneaky");
+        Junction.Create(link, f.Home.Paths.ProfileDir("work")); // a project-looking folder that is really a profile
+        string[] refused =
+        [
+            link,
+            f.Home.Paths.Root,
+            f.Home.Paths.Root.ToUpperInvariant() + "\\",
+            f.Home.Paths.ProfileDir("work"),
+            f.Home.Paths.IsolatedDir("work"),
+            cfg.HomeDir,
+            Path.Combine(cfg.HomeDir, "projects"),
+            Path.GetDirectoryName(cfg.HomeJson)!, // the user-profile folder itself
+            Path.GetDirectoryName(cfg.HomeJson)! + "\\",
+            Path.Combine(f.Proj, "..", ".claude"),
+        ];
+        foreach (var cwd in refused)
+        {
+            var r = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd });
+            Assert.True(IsError(r), cwd);
+        }
+        Assert.Equal(0, f.Runner.Calls);
+
+        var ok = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd = f.Proj });
+        Assert.False(IsError(ok));
+    }
+
+    [Fact]
+    public async Task Delegate_OutputScrubsTargetAccessToken()
+    {
+        using var f = new Fixture();
+        const string Fresh = "sk-ant-oat01-FRESHCANARY-0000111122223333";
+        f.Runner.Answer = spec =>
+        {
+            // claude prints the sign-in file, after refreshing it mid-run
+            var before = File.ReadAllText(Path.Combine(spec.ConfigDirEnv!, ".credentials.json"));
+            f.PlantCredential(spec.ConfigDirEnv!, Fresh);
+            var after = File.ReadAllText(Path.Combine(spec.ConfigDirEnv!, ".credentials.json"));
+            return (0, before + after, after);
+        };
+        var text = Text(await CallOne(f, "delegate", new { profile = "work", prompt = "print .credentials.json" }));
+        Assert.Contains("accessToken", text); // the fake really echoed it
+        Assert.DoesNotContain("LEAKCANARY", text);
+        Assert.DoesNotContain("FRESHCANARY", text);
+    }
+
+    /// <summary>A stdin the test feeds line by line; EOF only when Complete is called.</summary>
+    private sealed class PipeReader : TextReader
+    {
+        private readonly System.Threading.Channels.Channel<string> _ch = System.Threading.Channels.Channel.CreateUnbounded<string>();
+        public void Send(string line) => _ch.Writer.TryWrite(line);
+        public void Complete() => _ch.Writer.TryComplete();
+        public override async ValueTask<string?> ReadLineAsync(CancellationToken ct)
+        {
+            try { return await _ch.Reader.ReadAsync(ct); }
+            catch (System.Threading.Channels.ChannelClosedException) { return null; }
+        }
+        public override Task<string?> ReadLineAsync() => ReadLineAsync(CancellationToken.None).AsTask();
+    }
+
+    private static Func<LaunchSpec, CancellationToken, Task<(int, string, string)>> BlockUntilCancelled(TaskCompletionSource cancelled) =>
+        async (_, ct) =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            finally { cancelled.TrySetResult(); }
+            return (0, "never", "");
+        };
+
+    [Fact]
+    public async Task Delegate_CancelledRequest_NoResponse()
+    {
+        using var f = new Fixture();
+        var cancelled = new TaskCompletionSource();
+        f.Runner.AnswerAsync = BlockUntilCancelled(cancelled);
+        var input = new PipeReader();
+        var output = new StringWriter();
+        var run = f.Server.RunAsync(input, output, CancellationToken.None);
+        input.Send(Call(5, "delegate", new { profile = "work", prompt = "x" }));
+        input.Send("""{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}""");
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(100);
+        input.Send("""{"jsonrpc":"2.0","id":6,"method":"tools/list"}""");
+        input.Complete();
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        var line = Assert.Single(output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal(6, JsonNode.Parse(line)!["id"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Eof_CancelsInflightDelegates()
+    {
+        using var f = new Fixture();
+        var cancelled = new TaskCompletionSource();
+        f.Runner.AnswerAsync = BlockUntilCancelled(cancelled);
+        var output = new StringWriter();
+        await f.Server.RunAsync(new StringReader(Call(1, "delegate", new { profile = "work", prompt = "x" }) + "\n"), output,
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(cancelled.Task.IsCompleted);
+        Assert.Equal("", output.ToString());
+    }
+
+    private sealed class ClosedWriter : TextWriter
+    {
+        public int Writes;
+        public override Encoding Encoding => Encoding.UTF8;
+        public override void Write(char value) { Writes++; throw new IOException("The pipe has been ended."); }
+        public override Task WriteAsync(string? value) { Writes++; throw new IOException("The pipe has been ended."); }
+    }
+
+    [Fact]
+    public async Task StdoutClosed_ExitsCleanly()
+    {
+        using var f = new Fixture();
+        var input = new PipeReader(); // never completes: the server must stop on its own
+        input.Send("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""");
+        input.Send("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""");
+        var output = new ClosedWriter();
+        await f.Server.RunAsync(input, output, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, output.Writes);
+    }
+
+    // The real runner, with harmless Windows tools standing in for claude.
+    [Fact]
+    public async Task ProcessRunner_SendsStdin_CapturesOutput()
+    {
+        using var home = new TempHome();
+        var runner = McpServer.ProcessRunner(new SessionTracker(home.Paths));
+        var sort = Path.Combine(Environment.SystemDirectory, "sort.exe");
+        var (code, stdout, _) = await runner(new LaunchSpec(sort, [], home.Dir, null), "hello from stdin ü", TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+        Assert.Equal(0, code);
+        Assert.Contains("hello from stdin", stdout);
+    }
+
+    [Fact]
+    public async Task ProcessRunner_Timeout_KillsAndThrows()
+    {
+        using var home = new TempHome();
+        var runner = McpServer.ProcessRunner(new SessionTracker(home.Paths));
+        var ping = Path.Combine(Environment.SystemDirectory, "ping.exe");
+        var sw = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            runner(new LaunchSpec(ping, ["-n", "60", "127.0.0.1"], home.Dir, null), "", TimeSpan.FromSeconds(1), CancellationToken.None));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20));
     }
 
     [DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -250,8 +462,7 @@ public class McpServerTests
         using var f = new Fixture();
         await CallOne(f, "delegate", new { profile = "work", prompt = "a \"quoted\" prompt with \\ and spaces" });
         var psi = Launcher.StartInfo(f.Runner.Spec!);
-        string[] expected = ["-p", "a \"quoted\" prompt with \\ and spaces", "--output-format", "text", "--strict-mcp-config",
-            "--mcp-config", """{"mcpServers":{}}"""];
+        var expected = FixedArgs;
         Assert.Equal(expected, psi.ArgumentList);
         Assert.Equal("", psi.Arguments); // an argument list, never one pre-joined string
 
@@ -329,17 +540,15 @@ public class McpServerTests
         Assert.Contains("truncated", text);
     }
 
-    // cmd.exe re-parses a .cmd's command line, so quoting can't protect a prompt there: risky prompts are refused.
+    // cmd.exe re-parses a .cmd's command line, but the prompt goes on stdin, so nothing user-supplied reaches it.
     [Fact]
-    public async Task Delegate_CmdClaude_UnsafePromptRefused()
+    public async Task Delegate_CmdClaude_PromptStaysOffCommandLine()
     {
         using var f = new Fixture(claude: "C:\\npm\\claude.cmd");
-        var bad = await CallOne(f, "delegate", new { profile = "work", prompt = "x\" & calc & \"" });
-        Assert.True(IsError(bad));
-        Assert.Equal(0, f.Runner.Calls);
-        var ok = await CallOne(f, "delegate", new { profile = "work", prompt = "summarise the repo, briefly" });
-        Assert.False(IsError(ok));
-        Assert.Equal(1, f.Runner.Calls);
+        var r = await CallOne(f, "delegate", new { profile = "work", prompt = "x\" & calc & \"" });
+        Assert.False(IsError(r));
+        Assert.Equal(FixedArgs, f.Runner.Spec!.Args);
+        Assert.Equal("x\" & calc & \"", f.Runner.Stdin);
     }
 
     [Fact]

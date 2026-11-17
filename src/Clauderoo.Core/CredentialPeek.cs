@@ -54,6 +54,31 @@ public static class CredentialPeek
         }
     }
 
+    /// <summary>
+    /// The access and refresh tokens in the file, expired or not, for scrubbing them from text a profile's claude run
+    /// produced (MCP delegate). Never for use; empty when the file is missing or unreadable.
+    /// </summary>
+    internal static IReadOnlyList<string> SecretsToScrub(string configDir)
+    {
+        var file = Path.Combine(configDir, ".credentials.json");
+        if (!File.Exists(file)) return [];
+        try
+        {
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var doc = JsonDocument.Parse(fs);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("claudeAiOauth", out var oauth)
+                || oauth.ValueKind != JsonValueKind.Object)
+                return [];
+            return new[] { Str(oauth, "accessToken"), Str(oauth, "refreshToken") }
+                .Where(s => !string.IsNullOrEmpty(s)).Select(s => s!).ToList();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
     /// <summary>"max" + "default_claude_max_5x" gives "Max 5x"; "pro" gives "Pro".</summary>
     internal static string? PlanOf(string? subscription, string? tier)
     {

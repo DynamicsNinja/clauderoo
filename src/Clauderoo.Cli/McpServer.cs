@@ -14,7 +14,7 @@ namespace Clauderoo.Cli;
 /// carries a token, a stored key or the contents of a .credentials.json.
 /// </summary>
 public sealed class McpServer(ProfileManager pm, UsageClient usage,
-    Func<LaunchSpec, TimeSpan, CancellationToken, Task<(int code, string stdout, string stderr)>> runCapture,
+    Func<LaunchSpec, string, TimeSpan, CancellationToken, Task<(int code, string stdout, string stderr)>> runCapture,
     Func<DateTimeOffset>? now = null, Func<string, string?>? getEnv = null, string? claudePath = null,
     string? defaultCwd = null, TextWriter? log = null)
 {
@@ -54,12 +54,31 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
 
     public async Task RunAsync(TextReader input, TextWriter output, CancellationToken ct)
     {
+        // Cancelled at stdin EOF, when stdout turns out to be closed, or by the caller: every in-flight delegate is
+        // linked to it, so the client going away stops (and kills) their runs.
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var running = new List<Task>();
-        while (true)
+        try
+        {
+            await ReadLoop(input, output, stop, running).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { stop.Cancel(); } catch (ObjectDisposedException) { }
+            await Task.WhenAll(running).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ReadLoop(TextReader input, TextWriter output, CancellationTokenSource stop, List<Task> running)
+    {
+        var ct = stop.Token;
+        while (!ct.IsCancellationRequested)
         {
             string? line;
-            try { line = await input.ReadLineAsync(ct).ConfigureAwait(false); }
+            // WaitAsync: a console stdin read can't be cancelled, so the loop stops waiting for it instead.
+            try { line = await input.ReadLineAsync(CancellationToken.None).AsTask().WaitAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
+            catch (Exception e) when (e is IOException or ObjectDisposedException) { break; }
             if (line == null) break;
             if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -68,12 +87,12 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             catch (JsonException)
             {
                 await Log("mcp: ignored a line that isn't JSON").ConfigureAwait(false);
-                await Send(output, Error(null, -32700, "Parse error"), ct).ConfigureAwait(false);
+                await Send(output, Error(null, -32700, "Parse error"), stop).ConfigureAwait(false);
                 continue;
             }
             if (msg is not JsonObject obj)
             {
-                await Send(output, Error(null, -32600, "Invalid Request"), ct).ConfigureAwait(false);
+                await Send(output, Error(null, -32600, "Invalid Request"), stop).ConfigureAwait(false);
                 continue;
             }
 
@@ -90,7 +109,7 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             var id = idNode?.DeepClone();
             if (method == null)
             {
-                await Send(output, Error(id, -32600, "Invalid Request"), ct).ConfigureAwait(false);
+                await Send(output, Error(id, -32600, "Invalid Request"), stop).ConfigureAwait(false);
                 continue;
             }
 
@@ -107,21 +126,24 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 if (work == null)
                 {
                     cts.Dispose();
-                    await Send(output, immediate!, ct).ConfigureAwait(false);
+                    await Send(output, immediate!, stop).ConfigureAwait(false);
                     continue;
                 }
                 _inflight[key] = cts;
                 running.Add(Task.Run(async () =>
                 {
                     JsonObject resp;
+                    bool cancelled;
                     try { resp = Result(id, ToolJson(await work.ConfigureAwait(false))); }
                     catch (Exception e) { resp = ToolErrorResponse(id, e); }
                     finally
                     {
                         _inflight.TryRemove(key, out _);
+                        cancelled = cts.IsCancellationRequested;
                         cts.Dispose();
                     }
-                    await Send(output, resp, CancellationToken.None).ConfigureAwait(false);
+                    // A request cancelled by the client (or by EOF) gets no response.
+                    if (!cancelled) await Send(output, resp, stop).ConfigureAwait(false);
                 }, CancellationToken.None));
                 continue;
             }
@@ -129,9 +151,8 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             JsonObject response;
             try { response = await Handle(id, method, prms, ct).ConfigureAwait(false); }
             catch (Exception e) { response = ToolErrorResponse(id, e); }
-            await Send(output, response, ct).ConfigureAwait(false);
+            await Send(output, response, stop).ConfigureAwait(false);
         }
-        await Task.WhenAll(running).ConfigureAwait(false);
     }
 
     private async Task<JsonObject> Handle(JsonNode? id, string method, JsonObject? prms, CancellationToken ct)
@@ -219,7 +240,8 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 {
                     ["profile"] = Str("Profile to run under."),
                     ["prompt"] = Str("The prompt."),
-                    ["cwd"] = Str("Folder to run in. Defaults to the server's working folder."),
+                    ["cwd"] = Str("Project folder to run in. Defaults to the server's working folder. Your user folder, " +
+                        "~/.claude and ~/.clauderoo are refused."),
                 },
                 "profile", "prompt"),
         ];
@@ -374,18 +396,24 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
 
     // ---- delegate ----
 
-    /// <summary>The arguments a delegated run gets. Never a permission override; always no MCP servers.</summary>
-    public static IReadOnlyList<string> DelegateArgs(string prompt) =>
-        ["-p", prompt, "--output-format", "text", "--strict-mcp-config", "--mcp-config", EmptyMcpConfig];
+    /// <summary>
+    /// The arguments every delegated run gets, whatever the prompt: the prompt itself goes on stdin, so it can never be
+    /// read as a claude option, cut the command line short (NUL) or meet cmd.exe's parsing (claude.cmd). Never a
+    /// permission override; always no MCP servers.
+    /// </summary>
+    public static readonly IReadOnlyList<string> DelegateArgs =
+        ["-p", "--output-format", "text", "--strict-mcp-config", "--mcp-config", EmptyMcpConfig];
 
-    // Characters cmd.exe acts on when it re-parses a .cmd/.bat command line, where quoting can't be trusted.
-    private static readonly char[] BatchUnsafe = ['"', '%', '!', '^', '&', '|', '<', '>', '\r', '\n'];
+    /// <summary>The longest prompt delegate accepts, in characters.</summary>
+    public const int MaxPromptChars = 100 * 1024;
 
     private Task<ToolResult> StartDelegate(JsonObject? args, CancellationToken ct)
     {
         var profile = RequiredString(args, "profile");
         var prompt = RequiredString(args, "prompt");
         var cwdArg = OptionalString(args, "cwd");
+        if (prompt.Contains('\0')) throw new InvalidParamsException("'prompt' can't contain a NUL character.");
+        if (prompt.Length > MaxPromptChars) throw new InvalidParamsException("'prompt' is longer than 100 KB.");
         pm.Get(profile); // unknown profile: a plain error
 
         var caller = _getEnv(WhichProfile.SessionVar);
@@ -393,32 +421,92 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             throw new ClauderooException(
                 $"This session already runs under {profile}; delegate to a different profile.");
 
-        var dir = Path.GetFullPath(string.IsNullOrWhiteSpace(cwdArg) ? defaultCwd ?? Environment.CurrentDirectory : cwdArg);
-        if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
-
-        var spec = Launcher.InPlace(pm.Config, pm.Paths, profile, dir, DelegateArgs(prompt), claudePath);
-        var ext = Path.GetExtension(spec.FileName);
-        if ((ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) || ext.Equals(".bat", StringComparison.OrdinalIgnoreCase))
-            && prompt.IndexOfAny(BatchUnsafe) >= 0)
-            throw new ClauderooException(
-                "This claude is a .cmd script, which can't safely receive a prompt containing quotes, line breaks or any of % ! ^ & | < >. " +
-                "Rephrase the prompt, or install Claude Code's native build (claude.exe).");
+        var cfg = pm.Config;
+        var dir = SafeCwd(cfg, string.IsNullOrWhiteSpace(cwdArg) ? defaultCwd ?? Environment.CurrentDirectory : cwdArg);
 
         // A token profile's token is decrypted here, into the child's environment only.
-        spec = pm.WithToken(spec, profile);
-        return RunDelegate(profile, spec, ct);
+        var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, DelegateArgs, claudePath), profile);
+        return RunDelegate(profile, prompt, spec, ct);
     }
 
-    private async Task<ToolResult> RunDelegate(string profile, LaunchSpec spec, CancellationToken ct)
+    /// <summary>
+    /// The folder a delegated run may work in. Reading files in the working folder needs no approval, so it must not
+    /// be (or be under) clauderoo's folder (profiles, isolated dirs, saved keys) or the home Claude folder, nor be the
+    /// user-profile folder itself (~/.claude.json). Compared after normalising, case-insensitively, and again after
+    /// resolving links.
+    /// </summary>
+    private string SafeCwd(ClauderooConfig cfg, string requested)
     {
-        var secret = spec.ExtraEnv?.GetValueOrDefault(ProfileManager.TokenEnvVar);
-        string Clean(string s) => Secrets.Scrub(s, secret);
+        var dir = Path.GetFullPath(requested);
+        if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
+
+        string[] under = [pm.Paths.Root, pm.Paths.DefaultHomeDir, cfg.HomeDir];
+        string?[] exact = [pm.Paths.UserProfile, Path.GetDirectoryName(cfg.HomeJson),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)];
+        foreach (var candidate in new[] { dir, FinalPath(dir) })
+        {
+            if (candidate == null) continue;
+            var c = Norm(candidate);
+            if (under.Where(u => !string.IsNullOrEmpty(u)).Select(Norm)
+                    .Any(u => c.Equals(u, StringComparison.OrdinalIgnoreCase)
+                              || c.StartsWith(u + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                || exact.Where(e => !string.IsNullOrEmpty(e)).Select(e => Norm(e!))
+                    .Any(e => c.Equals(e, StringComparison.OrdinalIgnoreCase)))
+                throw new ClauderooException(
+                    $"Delegate can't run in {dir}: it holds Claude or clauderoo settings and sign-ins. Pick a project folder.");
+        }
+        return dir;
+    }
+
+    private static string Norm(string p) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p));
+
+    // The folder's real path after junctions and symlinks, or null when it can't be resolved.
+    private static string? FinalPath(string dir)
+    {
+        try
+        {
+            // FILE_FLAG_BACKUP_SEMANTICS is what lets CreateFile open a directory; no access rights are needed.
+            using var h = CreateFile(dir, 0, 7 /* read|write|delete sharing */, IntPtr.Zero, 3 /* OPEN_EXISTING */,
+                0x02000000, IntPtr.Zero);
+            if (h.IsInvalid) return null;
+            var sb = new StringBuilder(1024);
+            var n = GetFinalPathNameByHandle(h, sb, (uint)sb.Capacity, 0);
+            if (n == 0 || n >= sb.Capacity) return null;
+            var s = sb.ToString();
+            if (s.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + s[8..];
+            return s.StartsWith(@"\\?\", StringComparison.Ordinal) ? s[4..] : s;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle h, StringBuilder path, uint size, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security,
+        uint disposition, uint flags, IntPtr template);
+
+    private async Task<ToolResult> RunDelegate(string profile, string prompt, LaunchSpec spec, CancellationToken ct)
+    {
+        // Scrubbed from everything the run returns: the injected setup token, and the target's own sign-in tokens as
+        // they were before and after the run (claude may refresh them while it runs). Longest first, so a token that
+        // contains another is removed whole.
+        var configDir = spec.ConfigDirEnv ?? pm.Config.HomeDir;
+        var secrets = new HashSet<string>(StringComparer.Ordinal);
+        if (spec.ExtraEnv?.GetValueOrDefault(ProfileManager.TokenEnvVar) is { Length: > 0 } setup) secrets.Add(setup);
+        foreach (var s in CredentialPeek.SecretsToScrub(configDir)) secrets.Add(s);
+        string Clean(string text)
+        {
+            foreach (var s in CredentialPeek.SecretsToScrub(configDir)) secrets.Add(s);
+            foreach (var s in secrets.OrderByDescending(x => x.Length)) text = Secrets.Scrub(text, s);
+            return text;
+        }
 
         int code;
         string stdout, stderr;
         try
         {
-            (code, stdout, stderr) = await runCapture(spec, DelegateTimeout, ct).ConfigureAwait(false);
+            (code, stdout, stderr) = await runCapture(spec, prompt, DelegateTimeout, ct).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -445,11 +533,12 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
         s.Length <= MaxStreamChars ? s : s[..MaxStreamChars] + "\n[output truncated to 100 KB]";
 
     /// <summary>
-    /// The real runner: starts the spec with its stdin closed, captures both streams (bounded), records the session, and
-    /// kills the whole process tree when the timeout or cancellation hits. A timeout surfaces as TimeoutException.
+    /// The real runner: starts the spec inside a kill-on-close job (so the children die with the server), writes
+    /// <c>stdin</c> to it as UTF-8 and closes it, captures both streams (bounded), records the session, and kills the
+    /// whole process tree when the timeout or cancellation hits. A timeout surfaces as TimeoutException.
     /// </summary>
-    public static Func<LaunchSpec, TimeSpan, CancellationToken, Task<(int code, string stdout, string stderr)>> ProcessRunner(
-        SessionTracker sessions) => async (spec, timeout, ct) =>
+    public static Func<LaunchSpec, string, TimeSpan, CancellationToken, Task<(int code, string stdout, string stderr)>> ProcessRunner(
+        SessionTracker sessions) => async (spec, stdin, timeout, ct) =>
     {
         var psi = Launcher.StartInfo(spec);
         psi.RedirectStandardInput = true; // never the server's own stdin, which carries the protocol
@@ -457,23 +546,39 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
         psi.RedirectStandardError = true;
         psi.StandardOutputEncoding = new UTF8Encoding(false);
         psi.StandardErrorEncoding = new UTF8Encoding(false);
+        psi.StandardInputEncoding = new UTF8Encoding(false);
         psi.CreateNoWindow = true;
 
         using var p = Process.Start(psi) ?? throw new ClauderooException($"Failed to start {spec.FileName}.");
+        KillOnCloseJob.Add(p);
         if (spec.Profile != null)
         {
             try { sessions.Record(spec.Profile, p); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* best effort */ }
         }
-        try { p.StandardInput.Close(); } catch (IOException) { }
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         var outTask = ReadCapped(p.StandardOutput, linked.Token);
         var errTask = ReadCapped(p.StandardError, linked.Token);
+        // Written while the output is being read, so a child that talks before it reads can't deadlock us.
+        var inTask = Task.Run(async () =>
+        {
+            try
+            {
+                await p.StandardInput.WriteAsync(stdin.AsMemory(), linked.Token).ConfigureAwait(false);
+                await p.StandardInput.FlushAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException) { }
+            finally
+            {
+                try { p.StandardInput.Close(); } catch (Exception e) when (e is IOException or ObjectDisposedException) { }
+            }
+        }, CancellationToken.None);
         try
         {
             await p.WaitForExitAsync(linked.Token).ConfigureAwait(false);
+            await inTask.WaitAsync(linked.Token).ConfigureAwait(false);
             var so = await outTask.WaitAsync(linked.Token).ConfigureAwait(false);
             var se = await errTask.WaitAsync(linked.Token).ConfigureAwait(false);
             return (p.ExitCode, so, se);
@@ -528,17 +633,27 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
     private static JsonObject Error(JsonNode? id, int code, string message) =>
         new() { ["jsonrpc"] = "2.0", ["id"] = id, ["error"] = new JsonObject { ["code"] = code, ["message"] = message } };
 
-    private async Task Send(TextWriter output, JsonObject message, CancellationToken ct)
+    // A closed stdout means the client is gone: stop the server (and its runs) instead of faulting.
+    private async Task Send(TextWriter output, JsonObject message, CancellationTokenSource stop)
     {
         var text = message.ToJsonString(Compact); // one line: JSON escapes any newline inside strings
         await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            if (_outputClosed) return;
             await output.WriteAsync(text + "\n").ConfigureAwait(false);
             await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         }
+        catch (Exception e) when (e is IOException or ObjectDisposedException)
+        {
+            _outputClosed = true;
+            await Log("mcp: stdout is closed; stopping").ConfigureAwait(false);
+            try { stop.Cancel(); } catch (ObjectDisposedException) { }
+        }
         finally { _writeLock.Release(); }
     }
+
+    private volatile bool _outputClosed;
 
     private async Task Log(string line)
     {
