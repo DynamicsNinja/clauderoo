@@ -233,7 +233,8 @@ public class SetupCheckTests
         c.Claude.Responder = _ => (-1, "", "timed out after 60 s");
         var r = await c.Pm.CheckSetupAsync("work");
         Assert.Equal(CheckStatus.Fail, r[^1].Status);
-        Assert.Equal("claude-opus-4-8 answers: timed out after 60 s", r[^1].Label);
+        Assert.Equal("claude-opus-4-8 didn't answer within 60 seconds", r[^1].Label);
+        Assert.Equal("timed out after 60 s", r[^1].Detail);
         Assert.Equal("Check the model is enabled in Model Garden and served in region europe-west1.", r[^1].Hint);
     }
 
@@ -244,7 +245,22 @@ public class SetupCheckTests
         c.Claude.Responder = _ => (0, "hello there\n", "");
         var r = await c.Pm.CheckSetupAsync("work");
         Assert.Equal(CheckStatus.Fail, r[^1].Status);
-        Assert.Equal("Default model answers: hello there", r[^1].Label);
+        Assert.Equal("The default model didn't answer", r[^1].Label);
+        Assert.Equal("hello there", r[^1].Detail);
+    }
+
+    [Fact]
+    public async Task Model_404_PlainLabel_RawInDetail()
+    {
+        using var c = Make(WithModels(o: "claude-opus-4-8"));
+        var raw = "API Error: 404 {\"error\":{\"code\":404,\"message\":\"Publisher Model was not found\"}}";
+        c.Claude.Responder = _ => (1, "", raw);
+        var r = await c.Pm.CheckSetupAsync("work");
+        Assert.Equal(CheckStatus.Fail, r[^1].Status);
+        Assert.Equal("claude-opus-4-8 isn't available in europe-west1 (or your project can't use it)", r[^1].Label);
+        Assert.Equal(raw, r[^1].Detail);
+        Assert.Equal("Check the model is enabled in Model Garden and served in region europe-west1.", r[^1].Hint);
+        Assert.EndsWith("  (" + raw + ")", CheckItemFormatter.Format(r[^1]));
     }
 
     [Fact]

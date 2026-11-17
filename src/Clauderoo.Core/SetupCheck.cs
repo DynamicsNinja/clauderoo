@@ -8,7 +8,8 @@ namespace Clauderoo.Core;
 
 public enum CheckStatus { Ok, Warn, Fail, Skipped }
 
-public record CheckItem(CheckStatus Status, string Label, string? Hint);
+/// <param name="Detail">Raw technical text (e.g. the last line of an error); shown on demand, never as the label.</param>
+public record CheckItem(CheckStatus Status, string Label, string? Hint, string? Detail = null);
 
 /// <summary>One checklist line, shared by `clauderoo check` and the Profiles window.</summary>
 public static class CheckItemFormatter
@@ -20,7 +21,8 @@ public static class CheckItemFormatter
             CheckStatus.Warn => "⚠ ",
             CheckStatus.Fail => "✗ ",
             _ => "– ",
-        } + item.Label + (string.IsNullOrEmpty(item.Hint) ? "" : "  → " + item.Hint);
+        } + item.Label + (string.IsNullOrEmpty(item.Hint) ? "" : "  → " + item.Hint)
+          + (string.IsNullOrEmpty(item.Detail) ? "" : "  (" + item.Detail + ")");
 }
 
 public interface IMachineEnv
@@ -328,11 +330,23 @@ public partial class ProfileManager
             {
                 var last = Scrub(LineOf(mo + "\n" + me, first: false), token);
                 if (last.Length > 200) last = last[..200];
-                items.Add(new(CheckStatus.Fail, last.Length > 0 ? $"{modelLabels[i]}: {last}" : modelLabels[i],
-                    $"Check the model is enabled in Model Garden and served in region {v.Region}."));
+                items.Add(new(CheckStatus.Fail, ModelFailLabel(runs[i] ?? "The default model", v.Region, mx, last),
+                    $"Check the model is enabled in Model Garden and served in region {v.Region}.",
+                    last.Length > 0 ? last : null));
             }
         }
         return items;
+    }
+
+    // A plain label for a failed model probe; the raw error goes to CheckItem.Detail.
+    internal static string ModelFailLabel(string model, string region, int exit, string last)
+    {
+        if (exit == -1 && last.StartsWith("timed out", StringComparison.OrdinalIgnoreCase))
+            return $"{model} didn't answer within 60 seconds";
+        if (last.Contains("404", StringComparison.Ordinal) || last.Contains("not found", StringComparison.OrdinalIgnoreCase)
+            || last.Contains("not available", StringComparison.OrdinalIgnoreCase))
+            return $"{model} isn't available in {region} (or your project can't use it)";
+        return $"{model} didn't answer";
     }
 
     private CheckItem CheckGac()

@@ -60,7 +60,13 @@ public sealed class SessionTracker
         });
 
     /// <summary>Live sessions (optionally for one profile). Dead or pid-reused entries are dropped from disk.</summary>
-    public IReadOnlyList<RunningSession> Running(string? profile = null)
+    public IReadOnlyList<RunningSession> Running(string? profile = null) => TryRunning(profile) ?? [];
+
+    /// <summary>
+    /// Like <see cref="Running"/>, but null when it can't tell (the lock timed out or the file couldn't be read), so a
+    /// caller can keep what it showed before instead of reporting "nothing running".
+    /// </summary>
+    public IReadOnlyList<RunningSession>? TryRunning(string? profile = null)
     {
         IReadOnlyList<RunningSession> result = [];
         try
@@ -76,7 +82,7 @@ public sealed class SessionTracker
                     .ToList();
             });
         }
-        catch (IOException) { /* can't read the file right now: report nothing, change nothing */ }
+        catch (IOException) { return null; } // can't read the file right now: change nothing
         return result;
     }
 

@@ -372,8 +372,9 @@ sealed class TrayContext : ApplicationContext
 
     private void NewProfile()
     {
-        if (RequireConfig() == null) return;
-        var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):")?.Trim().ToLowerInvariant();
+        if (RequireConfig() is not { } cfg) return;
+        var name = InputDialog.Ask("New profile", "Profile name:", null, null,
+            InputDialog.ProfileNameRule(cfg.Profiles.Keys), InputDialog.ProfileNameHint, lowercase: true);
         if (string.IsNullOrEmpty(name)) return;
         var report = _pm.Add(name);
         if (_profilesForm is { IsDisposed: false } f) f.RefreshList();

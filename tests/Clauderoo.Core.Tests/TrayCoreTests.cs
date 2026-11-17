@@ -33,6 +33,21 @@ public class TrayCoreTests
     }
 
     [Fact]
+    public void Sessions_TryRunning_UnreadableFile_Null()
+    {
+        using var h = new TempHome();
+        var t = new SessionTracker(h.Paths, pid => (true, T0));
+        t.Record("work", 42, T0);
+        Assert.Single(t.TryRunning("work")!);
+        using (new FileStream(Path.Combine(h.Paths.Root, "sessions.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Null(t.TryRunning("work")); // can't tell
+            Assert.Empty(t.Running("work"));   // the CLI keeps its old behaviour
+        }
+        Assert.Single(t.TryRunning()!);
+    }
+
+    [Fact]
     public void Sessions_PidReused_NotRunning()
     {
         using var h = new TempHome();

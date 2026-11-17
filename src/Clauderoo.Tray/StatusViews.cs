@@ -141,19 +141,45 @@ internal sealed class WrapLinkLabel : LinkLabel, IWrapping
 
 /// <summary>
 /// The setup checklist: one owner-drawn row per item (status glyph in colour, bold label, grey wrapped hint), failures
-/// first. Its height follows the content up to <see cref="MaxContentHeight"/>, then it scrolls. Each row's accessible
-/// text (and Copy) is the CLI line from <see cref="CheckItemFormatter"/>.
+/// first, passed checks folded into one "N checks passed" row that expands on click, and the raw technical detail of a
+/// row behind its own "Show details" link. Rows are as tall as their wrapped text. The control's height follows the
+/// content up to <see cref="MaxContentHeight"/>, then it scrolls. Each row's accessible name (and Copy) is the CLI line
+/// from <see cref="CheckItemFormatter"/>.
 /// </summary>
-internal sealed class CheckListView : ListBox
+internal sealed class CheckListView : Control, IWrapping
 {
-    private sealed record Row(CheckItem Item)
+    /// <summary>Takes the width of its column (set by the owner, like the wrapping labels).</summary>
+    public void WrapTo(int width)
     {
-        public override string ToString() => CheckItemFormatter.Format(Item);
+        if (Width != width) Width = width;
     }
 
+    private int _desiredHeight;
+
+    // The layout asks for this: the column's width (set through WrapTo) and the content height, capped.
+    public override Size GetPreferredSize(Size proposedSize) => new(Width, _desiredHeight);
+
+    private sealed class Row
+    {
+        public CheckItem? Item;        // null: the "N checks passed" summary row
+        public int OkCount;
+        public bool DetailOpen;
+        public Rectangle Bounds;       // in content coordinates (before scrolling)
+        public Rectangle Toggle;       // the clickable part: the summary row, or the details link
+        public int LabelH, HintH, LinkH, DetailH;
+    }
+
+    private const TextFormatFlags Wrap =
+        TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+
+    private readonly VScrollBar _bar = new() { Dock = DockStyle.Right, Visible = false };
+    private readonly List<Row> _rows = [];
     private List<CheckItem> _items = [];
+    private readonly HashSet<CheckItem> _openDetails = [];
+    private bool _okExpanded;
+    private int _contentHeight;
+    private int _focus = -1;
     private Font? _bold;
-    private int _measuredWidth = -1;
 
     /// <summary>Height cap in device pixels.</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -161,11 +187,15 @@ internal sealed class CheckListView : ListBox
 
     public CheckListView()
     {
-        DrawMode = DrawMode.OwnerDrawVariable;
-        IntegralHeight = false;
-        BorderStyle = BorderStyle.FixedSingle;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint |
+                 ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        TabStop = true;
+        AccessibleRole = AccessibleRole.List;
+        AccessibleName = "Setup check results";
+        Controls.Add(_bar);
+        _bar.ValueChanged += (_, _) => Invalidate();
         var menu = new ContextMenuStrip();
-        menu.Items.Add("&Copy results", null, (_, _) => CopyAll());
+        menu.Items.Add("Cop&y results", null, (_, _) => CopyAll());
         ContextMenuStrip = menu;
     }
 
@@ -173,8 +203,15 @@ internal sealed class CheckListView : ListBox
 
     public void SetItems(IEnumerable<CheckItem> items)
     {
-        _items = items.OrderBy(i => Rank(i.Status)).ToList(); // stable: keeps the check order within a status
-        Rebuild();
+        var list = items.ToList();
+        if (!list.SequenceEqual(_items))
+        {
+            _items = list.OrderBy(i => Rank(i.Status)).ToList(); // stable: keeps the check order within a status
+            _openDetails.Clear();
+            _okExpanded = false;
+            _focus = -1;
+        }
+        Relayout();
     }
 
     private static int Rank(CheckStatus s) => s switch
@@ -193,82 +230,248 @@ internal sealed class CheckListView : ListBox
         _ => (Glyph.Remove, StatusColors.Muted),
     };
 
-    private Font Bold => _bold ??= new Font(Font, FontStyle.Bold);
+    /// <summary>All results as CLI lines (with details), for the clipboard.</summary>
+    public string ResultsText => string.Join(Environment.NewLine, _items.Select(CheckItemFormatter.Format));
 
-    private void Rebuild()
+    public void CopyAll()
     {
-        _measuredWidth = Width;
-        BeginUpdate();
-        Items.Clear();
-        foreach (var i in _items) Items.Add(new Row(i));
-        EndUpdate();
-        var h = 0;
-        for (var i = 0; i < Items.Count; i++) h += GetItemHeight(i);
-        h = Math.Min(h + 2 * SystemInformation.BorderSize.Height + 2, MaxContentHeight);
-        MaximumSize = new Size(0, h);
-        MinimumSize = new Size(0, h);
-        Height = h;
+        if (_items.Count == 0) return;
+        try { Clipboard.SetText(ResultsText); }
+        catch (System.Runtime.InteropServices.ExternalException) { /* clipboard busy: nothing to do */ }
     }
 
-    // Geometry shared by measuring and drawing (device pixels).
+    private Font Bold => _bold ??= new Font(Font, FontStyle.Bold);
     private int Pad => LogicalToDeviceUnits(4);
     private int GlyphPx => (int)Math.Round(16 * DeviceDpi / 96.0);
     private int TextLeft => Pad + GlyphPx + LogicalToDeviceUnits(6);
-    private int TextWidth => Math.Max(20, ClientSize.Width - TextLeft - Pad - SystemInformation.VerticalScrollBarWidth);
+    private int Border => 1;
+    private int TextWidth => Math.Max(20, Width - 2 * Border - TextLeft - Pad - SystemInformation.VerticalScrollBarWidth);
 
-    private const TextFormatFlags Wrap = TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+    private static string SummaryText(int n, bool open) => (n == 1 ? "1 check passed" : $"{n} checks passed") + (open ? "  ▾" : "  ▸");
+    private static string LinkText(bool open) => open ? "Hide details" : "Show details";
 
-    private (int Label, int Hint) Measure(CheckItem item)
+    // Rebuilds the visible rows and their heights for the current width, then sizes the control.
+    private void Relayout()
     {
+        _rows.Clear();
+        var fails = _items.Where(i => i.Status is CheckStatus.Fail or CheckStatus.Warn).ToList();
+        var oks = _items.Where(i => i.Status == CheckStatus.Ok).ToList();
+        var rest = _items.Where(i => i.Status is not (CheckStatus.Fail or CheckStatus.Warn or CheckStatus.Ok)).ToList();
+        foreach (var i in fails) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+        if (oks.Count >= 2)
+        {
+            _rows.Add(new Row { OkCount = oks.Count });
+            if (_okExpanded) foreach (var i in oks) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+        }
+        else foreach (var i in oks) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+        foreach (var i in rest) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+
         var w = TextWidth;
-        var label = TextRenderer.MeasureText(item.Label, Bold, new Size(w, int.MaxValue), Wrap).Height;
-        var hint = string.IsNullOrEmpty(item.Hint) ? 0
-            : TextRenderer.MeasureText(item.Hint, Font, new Size(w, int.MaxValue), Wrap).Height;
-        return (Math.Max(label, GlyphPx), hint);
+        var y = 0;
+        var line = TextRenderer.MeasureText("Ag", Font, Size.Empty, TextFormatFlags.NoPadding).Height;
+        foreach (var r in _rows)
+        {
+            if (r.Item is not { } item)
+            {
+                r.LabelH = Math.Max(GlyphPx, TextRenderer.MeasureText(SummaryText(r.OkCount, _okExpanded), Bold, new Size(w, int.MaxValue), Wrap).Height);
+                r.Bounds = new Rectangle(0, y, Width, 2 * Pad + r.LabelH);
+                r.Toggle = r.Bounds;
+            }
+            else
+            {
+                r.LabelH = Math.Max(GlyphPx, TextRenderer.MeasureText(item.Label, Bold, new Size(w, int.MaxValue), Wrap).Height);
+                r.HintH = string.IsNullOrEmpty(item.Hint) ? 0 : TextRenderer.MeasureText(item.Hint, Font, new Size(w, int.MaxValue), Wrap).Height;
+                r.LinkH = string.IsNullOrEmpty(item.Detail) ? 0 : line + LogicalToDeviceUnits(2);
+                r.DetailH = r.DetailOpen && r.LinkH > 0
+                    ? TextRenderer.MeasureText(item.Detail, Font, new Size(w, int.MaxValue), Wrap).Height : 0;
+                r.Bounds = new Rectangle(0, y, Width, 2 * Pad + r.LabelH + r.HintH + r.LinkH + r.DetailH);
+                if (r.LinkH > 0)
+                {
+                    var lw = TextRenderer.MeasureText(LinkText(r.DetailOpen), Font, Size.Empty, TextFormatFlags.NoPadding).Width;
+                    r.Toggle = new Rectangle(TextLeft + Border, y + Pad + r.LabelH + r.HintH, lw, r.LinkH);
+                }
+                else r.Toggle = Rectangle.Empty;
+            }
+            y += r.Bounds.Height;
+        }
+        _contentHeight = y;
+
+        _desiredHeight = Math.Min(y + 2 * Border, MaxContentHeight);
+        Height = _desiredHeight;
+        var view = Math.Max(1, ClientSize.Height - 2 * Border);
+        _bar.Visible = y > view;
+        _bar.Maximum = Math.Max(0, y - 1);
+        _bar.LargeChange = view;
+        _bar.SmallChange = Math.Max(1, line);
+        if (_bar.Value > Math.Max(0, y - view)) _bar.Value = Math.Max(0, y - view);
+        if (!_bar.Visible) _bar.Value = 0;
+        if (_focus >= _rows.Count) _focus = _rows.Count - 1;
+        Invalidate();
     }
 
-    protected override void OnMeasureItem(MeasureItemEventArgs e)
+    private int Scroll => _bar.Visible ? _bar.Value : 0;
+
+    protected override void OnPaint(PaintEventArgs e)
     {
-        if (e.Index < 0 || e.Index >= _items.Count) return;
-        var (label, hint) = Measure(_items[e.Index]);
-        e.ItemHeight = Math.Min(255, 2 * Pad + label + hint);
+        var g = e.Graphics;
+        g.Clear(SystemColors.Window);
+        var clip = new Rectangle(Border, Border, Width - 2 * Border - (_bar.Visible ? _bar.Width : 0), Height - 2 * Border);
+        g.SetClip(clip);
+        var w = TextWidth;
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            var r = _rows[i];
+            var top = r.Bounds.Top - Scroll + Border;
+            if (top > Height || top + r.Bounds.Height < 0) continue;
+            var x = Border + TextLeft;
+            var (glyph, color) = r.Item is { } it ? Look(it.Status) : Look(CheckStatus.Ok);
+            var bmp = Glyphs.Get(glyph, 16, DeviceDpi, color);
+            g.DrawImage(bmp, new Rectangle(Border + Pad, top + Pad, bmp.Width, bmp.Height));
+            var lineH = TextRenderer.MeasureText(g, "Ag", Bold, Size.Empty, TextFormatFlags.NoPadding).Height;
+            var labelTop = top + Pad + Math.Max(0, (GlyphPx - lineH) / 2);
+            if (r.Item is not { } item)
+            {
+                TextRenderer.DrawText(g, SummaryText(r.OkCount, _okExpanded), Bold, new Rectangle(x, labelTop, w, r.LabelH), SystemColors.WindowText, Wrap);
+            }
+            else
+            {
+                TextRenderer.DrawText(g, item.Label, Bold, new Rectangle(x, labelTop, w, r.LabelH), SystemColors.WindowText, Wrap);
+                var y = top + Pad + r.LabelH;
+                if (r.HintH > 0) TextRenderer.DrawText(g, item.Hint, Font, new Rectangle(x, y, w, r.HintH), SystemColors.GrayText, Wrap);
+                y += r.HintH;
+                if (r.LinkH > 0)
+                {
+                    using var link = new Font(Font, FontStyle.Underline);
+                    TextRenderer.DrawText(g, LinkText(r.DetailOpen), link, new Rectangle(x, y, w, r.LinkH),
+                        SystemInformation.HighContrast ? SystemColors.HotTrack : Color.FromArgb(0x00, 0x5A, 0x9E), TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+                    y += r.LinkH;
+                }
+                if (r.DetailH > 0) TextRenderer.DrawText(g, item.Detail, Font, new Rectangle(x, y, w, r.DetailH), SystemColors.GrayText, Wrap);
+            }
+            if (Focused && i == _focus)
+                ControlPaint.DrawFocusRectangle(g, new Rectangle(Border, top, clip.Width, r.Bounds.Height));
+        }
+        g.ResetClip();
+        ControlPaint.DrawBorder(g, ClientRectangle, SystemColors.ControlDark, ButtonBorderStyle.Solid);
     }
 
-    protected override void OnDrawItem(DrawItemEventArgs e)
+    private int RowAt(Point p)
     {
-        if (e.Index < 0 || e.Index >= _items.Count) return;
-        var item = _items[e.Index];
-        var selected = (e.State & DrawItemState.Selected) != 0 && Focused;
-        var back = selected ? SystemColors.Highlight : SystemColors.Window;
-        var fore = selected ? SystemColors.HighlightText : SystemColors.WindowText;
-        var muted = selected ? SystemColors.HighlightText : SystemColors.GrayText;
-        using (var b = new SolidBrush(back)) e.Graphics.FillRectangle(b, e.Bounds);
-
-        var (glyph, color) = Look(item.Status);
-        var bmp = Glyphs.Get(glyph, 16, DeviceDpi, selected ? SystemColors.HighlightText : color);
-        var top = e.Bounds.Top + Pad;
-        e.Graphics.DrawImage(bmp, new Rectangle(e.Bounds.Left + Pad, top, bmp.Width, bmp.Height));
-
-        var (labelH, hintH) = Measure(item);
-        var x = e.Bounds.Left + TextLeft;
-        var lineH = TextRenderer.MeasureText(e.Graphics, "Ag", Bold, Size.Empty, TextFormatFlags.NoPadding).Height;
-        var labelTop = top + Math.Max(0, (GlyphPx - lineH) / 2);
-        TextRenderer.DrawText(e.Graphics, item.Label, Bold, new Rectangle(x, labelTop, TextWidth, labelH), fore, Wrap);
-        if (hintH > 0)
-            TextRenderer.DrawText(e.Graphics, item.Hint, Font, new Rectangle(x, top + labelH, TextWidth, hintH), muted, Wrap);
-        if ((e.State & DrawItemState.Focus) != 0 && Focused) e.DrawFocusRectangle();
+        var y = p.Y - Border + Scroll;
+        for (var i = 0; i < _rows.Count; i++)
+            if (y >= _rows[i].Bounds.Top && y < _rows[i].Bounds.Bottom) return i;
+        return -1;
     }
+
+    private bool OnToggle(int i, Point? at)
+    {
+        var r = _rows[i];
+        if (r.Item == null)
+        {
+            _okExpanded = !_okExpanded;
+            Relayout();
+            return true;
+        }
+        if (r.LinkH == 0) return false;
+        if (at is { } p && !r.Toggle.Contains(p.X, p.Y - Border + Scroll)) return false;
+        if (!_openDetails.Remove(r.Item)) _openDetails.Add(r.Item);
+        Relayout();
+        return true;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        Focus();
+        var i = RowAt(e.Location);
+        if (i < 0) return;
+        _focus = i;
+        if (e.Button == MouseButtons.Left) OnToggle(i, e.Location);
+        Invalidate();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        var i = RowAt(e.Location);
+        var hot = i >= 0 && (_rows[i].Item == null || (_rows[i].LinkH > 0 && _rows[i].Toggle.Contains(e.X, e.Y - Border + Scroll)));
+        Cursor = hot ? Cursors.Hand : Cursors.Default;
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (!_bar.Visible) return;
+        var max = Math.Max(0, _bar.Maximum - _bar.LargeChange + 1);
+        _bar.Value = Math.Clamp(_bar.Value - e.Delta / 120 * 3 * _bar.SmallChange, 0, max);
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Up or Keys.Down or Keys.Space || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        switch (e.KeyData)
+        {
+            case Keys.Control | Keys.C:
+                CopyAll();
+                e.Handled = true;
+                break;
+            case Keys.Up when _rows.Count > 0:
+                _focus = Math.Max(0, _focus - 1);
+                ScrollToFocus();
+                e.Handled = true;
+                break;
+            case Keys.Down when _rows.Count > 0:
+                _focus = Math.Min(_rows.Count - 1, _focus + 1);
+                ScrollToFocus();
+                e.Handled = true;
+                break;
+            case Keys.Space when _focus >= 0:
+                OnToggle(_focus, null);
+                e.Handled = true;
+                break;
+        }
+        base.OnKeyDown(e);
+    }
+
+    private void ScrollToFocus()
+    {
+        if (_focus < 0) return;
+        var r = _rows[_focus].Bounds;
+        var view = ClientSize.Height - 2 * Border;
+        if (_bar.Visible)
+        {
+            if (r.Top < _bar.Value) _bar.Value = r.Top;
+            else if (r.Bottom > _bar.Value + view) _bar.Value = Math.Min(Math.Max(0, _bar.Maximum - _bar.LargeChange + 1), r.Bottom - view);
+        }
+        Invalidate();
+        AccessibilityNotifyClients(AccessibleEvents.Focus, _focus);
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        if (_focus < 0 && _rows.Count > 0) _focus = 0;
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    private int _laidOutWidth = -1;
 
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        if (Width != _measuredWidth && _items.Count > 0 && IsHandleCreated) Rebuild();
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        if (_items.Count > 0) BeginInvoke(Rebuild); // item heights measured before the handle existed are guesses
+        if (Width != _laidOutWidth)
+        {
+            _laidOutWidth = Width;
+            if (_items.Count > 0) Relayout();
+        }
     }
 
     protected override void OnFontChanged(EventArgs e)
@@ -276,24 +479,48 @@ internal sealed class CheckListView : ListBox
         _bold?.Dispose();
         _bold = null;
         base.OnFontChanged(e);
-        if (_items.Count > 0) Rebuild();
+        if (_items.Count > 0) Relayout();
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    protected override void OnDpiChangedAfterParent(EventArgs e)
     {
-        if (e.KeyData == (Keys.Control | Keys.C))
+        base.OnDpiChangedAfterParent(e);
+        if (_items.Count > 0) Relayout();
+    }
+
+    // ---- accessibility: one list item per visible row ----
+
+    private string RowName(Row r) => r.Item is { } i
+        ? CheckItemFormatter.Format(i)
+        : SummaryText(r.OkCount, _okExpanded).TrimEnd(' ', '▸', '▾') + (_okExpanded ? " (expanded)" : " (collapsed)");
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new ListAccessible(this);
+
+    private sealed class ListAccessible(CheckListView owner) : ControlAccessibleObject(owner)
+    {
+        public override int GetChildCount() => owner._rows.Count;
+        public override AccessibleObject? GetChild(int index) =>
+            index >= 0 && index < owner._rows.Count ? new RowAccessible(owner, this, index) : null;
+        public override AccessibleObject? GetFocused() =>
+            owner.Focused && owner._focus >= 0 ? GetChild(owner._focus) : base.GetFocused();
+    }
+
+    private sealed class RowAccessible(CheckListView owner, AccessibleObject parent, int index) : AccessibleObject
+    {
+        public override string? Name => index < owner._rows.Count ? owner.RowName(owner._rows[index]) : null;
+        public override AccessibleRole Role => AccessibleRole.ListItem;
+        public override AccessibleObject Parent => parent;
+        public override AccessibleStates State =>
+            AccessibleStates.Focusable | (owner.Focused && owner._focus == index ? AccessibleStates.Focused : 0);
+        public override Rectangle Bounds
         {
-            CopyAll();
-            e.Handled = true;
+            get
+            {
+                if (index >= owner._rows.Count) return Rectangle.Empty;
+                var b = owner._rows[index].Bounds;
+                return owner.RectangleToScreen(new Rectangle(0, b.Top - owner.Scroll + owner.Border, owner.Width, b.Height));
+            }
         }
-        base.OnKeyDown(e);
-    }
-
-    private void CopyAll()
-    {
-        if (_items.Count == 0) return;
-        try { Clipboard.SetText(string.Join(Environment.NewLine, _items.Select(CheckItemFormatter.Format))); }
-        catch (System.Runtime.InteropServices.ExternalException) { /* clipboard busy: nothing to do */ }
     }
 
     protected override void Dispose(bool disposing)

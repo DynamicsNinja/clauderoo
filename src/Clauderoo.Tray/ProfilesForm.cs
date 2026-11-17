@@ -1,18 +1,26 @@
 using Clauderoo.Core;
+using Microsoft.Win32;
 
 namespace Clauderoo.Tray;
 
 // The Profiles window: pick each profile's provider and env vars. Thin over ProfileManager.
 // Layout is driven by auto-sizing panels (no fixed pixel positions), so it fits at any display scaling.
+// Provider and sign-in words come from TrayText, so the window and the tray say the same thing.
 sealed class ProfilesForm : Form
 {
-    // One word per concept, used everywhere in this window.
-    private const string TermLogin = "Claude login";
-    private const string TermVertex = "Google Vertex AI";
-    private const string TermApiKey = "API key";
-    private const string NotSignedIn = "not signed in";
     private const string BaseTitle = "clauderoo — Profiles";
     private const string RestartText = "Running sessions pick up changes when restarted.";
+    private const string CheckText = "&Check setup";
+    private const string SaveAndCheckText = "Save and &check";
+
+    private const string WhatsSharedText =
+        "Your home profile is your normal Claude setup. clauderoo shares these from it with every other profile and " +
+        "keeps them in step while it runs:\n\n" +
+        "•  settings (settings.json), CLAUDE.md and keybindings\n" +
+        "•  plugins, skills, hooks, agents, commands and output styles\n" +
+        "•  MCP servers\n\n" +
+        "Each profile keeps its own sign-in, provider and environment variables. Change a shared thing in your home " +
+        "profile and every profile gets it.";
 
     /// <summary>A profile's last check, kept for the life of the tray process (closing the window keeps it).</summary>
     private sealed record CheckRecord(DateTime At, string Provider, CheckStatus? Status, string Message, IReadOnlyList<CheckItem>? Items);
@@ -21,25 +29,28 @@ sealed class ProfilesForm : Form
     private readonly ProfileManager _pm;
     private readonly Action<string> _startSession;
     private readonly Gcloud _gcloud = new();
+    private readonly ToolTip _tips = new();
 
     private readonly ListBox _list = new()
     {
         Dock = DockStyle.Fill, IntegralHeight = false, Margin = new Padding(0, 0, 0, 6), DrawMode = DrawMode.OwnerDrawFixed,
     };
+    private readonly FlowLayoutPanel _leftButtons;
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
-    private readonly Button _remove = Btn("&Remove");
+    private readonly Button _remove = Btn("Remo&ve");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
     private readonly GlyphLabel _homeHeading = new() { GlyphSize = 16, Margin = new Padding(0, 0, 0, 4) };
-    private readonly WrapLabel _homeText = new() { Margin = new Padding(0, 0, 0, 6) };
+    private readonly WrapLabel _homeText = new() { Margin = new Padding(0, 0, 0, 2) };
+    private readonly LinkLabel _whatsShared = new() { Text = "What's shared?", AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
     private readonly GlyphLabel _homeAccount = new() { Margin = new Padding(0, 0, 0, 8) };
 
     private readonly TableLayoutPanel _providerRow;
-    private readonly RadioButton _rbLogin = Radio(TermLogin.Replace("login", "&login"));
-    private readonly RadioButton _rbVertex = Radio("Google &Vertex AI");
-    private readonly RadioButton _rbApiKey = Radio("API &key");
+    private readonly RadioButton _rbLogin = Radio("Claude &login");
+    private readonly RadioButton _rbVertex = Radio("Google Verte&x AI");
+    private readonly RadioButton _rbApiKey = Radio("&API key");
 
     private readonly TableLayoutPanel _vertexPanel = FieldGrid();
     private readonly TextBox _project = Field("e.g. my-gcp-project");
@@ -62,12 +73,13 @@ sealed class ProfilesForm : Form
     // Required fields that are still empty (provider part).
     private readonly GlyphLabel _fieldError = new() { Margin = new Padding(0, 0, 0, 6) };
 
-    private readonly Button _check = Btn("&Check setup");
+    private readonly Button _check = Btn(CheckText);
+    private readonly Button _copy = Btn("Cop&y results");
     private readonly Button _signIn = Btn("Sign &in to Google…");
     private readonly GlyphLabel _checkStatus = new() { Margin = new Padding(0, 0, 0, 6) };
     private readonly CheckListView _checkList = new()
     {
-        Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 6), Visible = false,
+        Margin = new Padding(0, 0, 0, 6), Visible = false,
     };
     private readonly FlowLayoutPanel _checkRow;
     private readonly TableLayoutPanel _root;
@@ -114,9 +126,12 @@ sealed class ProfilesForm : Form
 
     private readonly System.Windows.Forms.Timer _runningTimer = new() { Interval = 3000 };
     private Dictionary<string, int> _running = new(StringComparer.Ordinal);
+    private volatile bool _runningBusy; // a background Running() read is in flight
     private Icon? _icon;
     private Font? _boldFont;
+    private bool _highContrast = SystemInformation.HighContrast;
 
+    private ProfileInfo? _currentInfo;
     private string? _current;      // profile shown in the editor
     private bool _currentIsHome;
     private bool _currentIsDefault;
@@ -125,7 +140,9 @@ sealed class ProfilesForm : Form
     private bool _loading;         // suppresses change handlers while filling controls
     private bool _switching;       // suppresses re-entrant selection changes
     private string? _undoName;     // removed profile the status line offers to restore
-    private int _checkSeq;         // ignores stale async check results
+    private bool _showRestart;     // the last action saved the current profile (the restart note may apply)
+    private string? _checkingFor;  // profile a check is running for (one at a time)
+    private int _checkSeq;         // bumped when a check is cancelled: its result is dropped
     private CancellationTokenSource? _checkCts; // the running setup check, if any
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
     private int _baseMinHeight;    // minimum window height for the content measured at startup
@@ -139,12 +156,13 @@ sealed class ProfilesForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Padding = new Padding(12);
         ShowInTaskbar = true;
-        try { Icon = _icon = AppIcons.Load(AppIconState.Normal, SystemInformation.HighContrast); }
+        try { Icon = _icon = AppIcons.Load(AppIconState.Normal, _highContrast); }
         catch (Exception) { /* keep the default icon */ }
 
         // Left: profile list + New / Rename / Remove.
         _list.MinimumSize = new Size(230, 200);
-        var leftButtons = Flow(FlowDirection.LeftToRight);
+        _list.AccessibleName = "Profiles";
+        var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
         var left = Table(1);
         left.Dock = DockStyle.Fill;
@@ -161,30 +179,32 @@ sealed class ProfilesForm : Form
         _homePanel.Margin = new Padding(0, 0, 0, 6);
         _homePanel.Controls.Add(_homeHeading, 0, 0);
         _homePanel.Controls.Add(_homeText, 0, 1);
-        _homePanel.Controls.Add(_homeAccount, 0, 2);
+        _homePanel.Controls.Add(_whatsShared, 0, 2);
+        _homePanel.Controls.Add(_homeAccount, 0, 3);
 
         var radios = Flow(FlowDirection.TopDown);
         radios.Controls.AddRange([_rbLogin, _rbVertex, _rbApiKey]);
         _providerRow = Table(2);
-        _providerRow.Controls.Add(new Label { Text = "Provider:", AutoSize = true, Margin = new Padding(0, 4, 12, 0) }, 0, 0);
+        // Each label sits right before its control in the tab order, so its mnemonic moves focus there.
+        _providerRow.Controls.Add(new Label { Text = "Pr&ovider:", AutoSize = true, Margin = new Padding(0, 4, 12, 0) }, 0, 0);
         _providerRow.Controls.Add(radios, 1, 0);
         _providerRow.Margin = new Padding(0, 0, 0, 6);
 
-        AddField(_vertexPanel, "Project:", _project);
-        AddField(_vertexPanel, "Region:", _region);
-        AddField(_vertexPanel, "Sonnet model:", _sonnet);
-        AddField(_vertexPanel, "Opus model:", _opus);
-        AddField(_vertexPanel, "Haiku model:", _haiku);
+        AddField(_vertexPanel, "&Project:", _project);
+        AddField(_vertexPanel, "&Region:", _region);
+        AddField(_vertexPanel, "Sonn&et model:", _sonnet);
+        AddField(_vertexPanel, "Op&us model:", _opus);
+        AddField(_vertexPanel, "&Haiku model:", _haiku);
         _vertexPanel.Margin = new Padding(0, 0, 0, 2);
         foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey })
             tb.MinimumSize = new Size(240, 0);
         _apiKey.UseSystemPasswordChar = true;
-        AddField(_apiKeyPanel, "API key:", _apiKey);
+        AddField(_apiKeyPanel, "API &key:", _apiKey);
         AddField(_loginPanel, "Account:", _account);
 
         _checkRow = Flow(FlowDirection.LeftToRight);
         _checkRow.Margin = new Padding(0, 0, 0, 4);
-        _checkRow.Controls.AddRange([_check, _signIn]);
+        _checkRow.Controls.AddRange([_check, _copy, _signIn]);
 
         var envButtons = _envButtons = Flow(FlowDirection.LeftToRight);
         envButtons.Controls.Add(_envDelete);
@@ -281,7 +301,7 @@ sealed class ProfilesForm : Form
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
 
         // Status labels wrap to the width of their column.
-        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _fieldError, _checkStatus, _envHint);
+        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _fieldError, _checkStatus, _checkList, _envHint);
         WrapTo(right, _envError);
         WrapTo(root, _result);
         // SizeChanged: a wrapped label takes its new height after TextChanged has been raised.
@@ -294,6 +314,8 @@ sealed class ProfilesForm : Form
         };
         _result.SizeChanged += (_, _) => EnsureFits();
         _result.LinkClicked += (_, _) => Guard(UndoRemove);
+        _whatsShared.LinkClicked += (_, _) =>
+            MessageBox.Show(this, WhatsSharedText, "What's shared?", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
         _list.DrawItem += DrawProfile;
         _list.SelectedIndexChanged += (_, _) => OnListSelection();
@@ -318,12 +340,14 @@ sealed class ProfilesForm : Form
         _env.RowsAdded += (_, _) => OnEdited();
         _env.RowsRemoved += (_, _) => OnEdited();
         _check.Click += (_, _) => RunCheck();
+        _copy.Click += (_, _) => CopyResults();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
         _setDefault.Click += (_, _) => Guard(SetDefault);
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
         _runningTimer.Tick += (_, _) => RefreshRunning();
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         Reload(null);
     }
@@ -331,10 +355,11 @@ sealed class ProfilesForm : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
+        RefreshRunning();
         _runningTimer.Start();
     }
 
-    // ---------- DPI-dependent resources ----------
+    // ---------- DPI / theme dependent resources ----------
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
     {
@@ -343,7 +368,7 @@ sealed class ProfilesForm : Form
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
     }
 
-    // Button glyphs, the bold fonts and the list's row height, for the current DPI.
+    // Button glyphs, the bold fonts and the list's row height, for the current DPI and theme.
     private void ApplyDpiResources()
     {
         var dpi = DeviceDpi;
@@ -354,7 +379,7 @@ sealed class ProfilesForm : Form
                      (_start, Glyph.Play), (_save, Glyph.Save),
                  })
         {
-            b.Image = Glyphs.Get(g, 16, dpi);
+            b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
             b.ImageAlign = ContentAlignment.MiddleLeft;
             b.TextImageRelation = TextImageRelation.ImageBeforeText;
         }
@@ -368,6 +393,31 @@ sealed class ProfilesForm : Form
         var line = TextRenderer.MeasureText("Ag", _boldFont).Height;
         _list.ItemHeight = Math.Min(255, 2 * line + LogicalToDeviceUnits(12));
         _list.Invalidate();
+    }
+
+    // High Contrast switched on or off while the window is open: new icon, re-inked glyphs and status colours.
+    private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || SystemInformation.HighContrast == _highContrast) return;
+                _highContrast = SystemInformation.HighContrast;
+                var oldIcon = _icon;
+                try { Icon = _icon = AppIcons.Load(AppIconState.Normal, _highContrast); }
+                catch (Exception) { _icon = oldIcon; oldIcon = null; }
+                oldIcon?.Dispose();
+                ApplyDpiResources();
+                if (_currentIsHome && _currentInfo != null) ShowHome(_currentInfo);
+                ShowCheckRecord();
+                OnEdited();
+                _checkList.Invalidate();
+                _list.Invalidate();
+            });
+        }
+        catch (InvalidOperationException) { /* handle went away meanwhile */ }
     }
 
     // ---------- profile list ----------
@@ -424,15 +474,8 @@ sealed class ProfilesForm : Form
     {
         // The accessible name of the row (the visible row is owner-drawn).
         public override string ToString() =>
-            Info.Name + (Info.IsDefault ? ", default" : "") + (Info.IsHome ? ", home" : "") + " — " + ProviderLine(Info);
+            Info.Name + (Info.IsDefault ? ", default" : "") + (Info.IsHome ? ", home" : "") + " — " + TrayText.Describe(Info);
     }
-
-    private static string ProviderLine(ProfileInfo p) => p.Provider switch
-    {
-        Providers.Vertex => TermVertex + (string.IsNullOrEmpty(p.ProviderDetail) ? "" : " · " + p.ProviderDetail),
-        Providers.ApiKey => TermApiKey,
-        _ => TermLogin + " · " + (p.Email ?? NotSignedIn),
-    };
 
     private static Glyph ProviderGlyph(string provider) => provider switch
     {
@@ -446,7 +489,13 @@ sealed class ProfilesForm : Form
         TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter |
         TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
 
-    // Two lines per profile: bold name + ★ Default / ⌂ Home badges; provider glyph + details, and "● 1 running".
+    // The profile's last check, if it was made for the provider it uses now.
+    private static CheckRecord? RecordFor(string name, string provider) =>
+        LastChecks.TryGetValue(name, out var r) && r.Provider == provider ? r : null;
+
+    private static string When(DateTime at) => at.Date == DateTime.Today ? at.ToString("HH:mm") : at.ToString("d MMM HH:mm");
+
+    // Two lines per profile: bold name + ★ Default / ⌂ Home badges; provider glyph + details, last check, "● 1 running".
     private void DrawProfile(object? sender, DrawItemEventArgs e)
     {
         if (e.Index < 0 || e.Index >= _list.Items.Count) return;
@@ -467,23 +516,24 @@ sealed class ProfilesForm : Form
         var gap = D(4);
 
         // Draws glyph + text right-aligned ending at x; returns the new right edge.
-        int Badge(int x, Rectangle line, Glyph glyph, Color ink, string text, Font font, Color textColor)
+        int Badge(int x, Rectangle line, Glyph glyph, Color ink, string text, Color textColor)
         {
-            var tw = TextRenderer.MeasureText(g, text, font, Size.Empty, RowMeasure).Width + 1;
+            var tw = text.Length == 0 ? 0 : TextRenderer.MeasureText(g, text, _list.Font, Size.Empty, RowMeasure).Width + 1;
             var img = Glyphs.Get(glyph, 12, dpi, ink);
-            var left = x - tw - gap - img.Width;
+            var left = x - tw - (tw > 0 ? gap : 0) - img.Width;
             g.DrawImage(img, new Rectangle(left, line.Top + (line.Height - img.Height) / 2, img.Width, img.Height));
-            TextRenderer.DrawText(g, text, font, new Rectangle(left + img.Width + gap, line.Top, tw, line.Height), textColor, RowText);
+            if (tw > 0)
+                TextRenderer.DrawText(g, text, _list.Font, new Rectangle(left + img.Width + gap, line.Top, tw, line.Height), textColor, RowText);
             return left - D(10);
         }
 
         // Line 1: badges from the right, then the name in what is left.
         var right1 = line1.Right;
-        if (info.IsHome) right1 = Badge(right1, line1, Glyph.Home, fore, "Home", _list.Font, fore);
-        if (info.IsDefault) right1 = Badge(right1, line1, Glyph.Star, selected ? fore : StatusColors.Accent, "Default", _list.Font, fore);
+        if (info.IsHome) right1 = Badge(right1, line1, Glyph.Home, fore, "Home", fore);
+        if (info.IsDefault) right1 = Badge(right1, line1, Glyph.Star, selected ? fore : StatusColors.Accent, "Default", fore);
         TextRenderer.DrawText(g, info.Name, bold, new Rectangle(line1.Left, line1.Top, Math.Max(0, right1 - line1.Left), line1.Height), fore, RowText);
 
-        // Line 2: running count from the right, then provider glyph + details.
+        // Line 2 from the right: running count, last check; then provider glyph + details.
         var right2 = line2.Right;
         if (_running.TryGetValue(info.Name, out var n) && n > 0)
         {
@@ -493,32 +543,56 @@ sealed class ProfilesForm : Form
                 selected ? fore : StatusColors.Ok, RowText);
             right2 -= tw + D(10);
         }
+        if (!info.IsHome && RecordFor(info.Name, info.Provider) is { } rec)
+        {
+            var (glyph, color) = rec.Status is { } s ? CheckListView.Look(s) : (Glyph.Info, StatusColors.Muted);
+            right2 = Badge(right2, line2, glyph, selected ? fore : color,
+                rec.Status == CheckStatus.Ok ? When(rec.At) : "", muted);
+        }
         var icon = Glyphs.Get(ProviderGlyph(info.Provider), 12, dpi, muted);
         g.DrawImage(icon, new Rectangle(line2.Left, line2.Top + (line2.Height - icon.Height) / 2, icon.Width, icon.Height));
         var tx = line2.Left + icon.Width + gap;
-        TextRenderer.DrawText(g, ProviderLine(info), _list.Font, new Rectangle(tx, line2.Top, Math.Max(0, right2 - tx), line2.Height), muted, RowText);
+        TextRenderer.DrawText(g, TrayText.Describe(info), _list.Font, new Rectangle(tx, line2.Top, Math.Max(0, right2 - tx), line2.Height), muted, RowText);
 
         if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
-    // Re-reads which profiles have clauderoo-started sessions running (timer, reloads).
+    // Re-reads, off the UI thread, which profiles have clauderoo-started sessions running (timer, reloads). The sessions
+    // file is read under a machine-wide lock that can take seconds; when it can't tell, the last shown counts stay.
     private void RefreshRunning()
     {
-        Dictionary<string, int> now;
-        try
+        if (_runningBusy || IsDisposed || !IsHandleCreated) return;
+        _runningBusy = true;
+        var sessions = _pm.Sessions;
+        Task.Run(() =>
         {
-            now = _pm.Sessions.Running().GroupBy(s => s.Profile)
-                .ToDictionary(grp => grp.Key, grp => grp.Count(), StringComparer.Ordinal);
-        }
-        catch (Exception) { return; } // can't tell right now: keep what we showed
+            IReadOnlyList<RunningSession>? now;
+            try { now = sessions.TryRunning(); }
+            catch (Exception) { now = null; }
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    _runningBusy = false;
+                    if (now != null && !IsDisposed) ApplyRunning(now);
+                });
+            }
+            catch (InvalidOperationException) { _runningBusy = false; /* window closed meanwhile */ }
+        });
+    }
+
+    private void ApplyRunning(IReadOnlyList<RunningSession> sessions)
+    {
+        var now = sessions.GroupBy(s => s.Profile).ToDictionary(grp => grp.Key, grp => grp.Count(), StringComparer.Ordinal);
         if (now.Count == _running.Count && now.All(kv => _running.TryGetValue(kv.Key, out var v) && v == kv.Value)) return;
         _running = now;
         _list.Invalidate();
         UpdateRestartNote();
     }
 
+    // Shown after a successful Save of a profile that has sessions running.
     private void UpdateRestartNote() =>
-        _restartNote.Visible = _current != null && _running.TryGetValue(_current, out var n) && n > 0;
+        _restartNote.Visible = _showRestart && _current != null && _running.TryGetValue(_current, out var n) && n > 0;
 
     // ---------- editor ----------
 
@@ -527,7 +601,8 @@ sealed class ProfilesForm : Form
         _loading = true;
         try
         {
-            CancelCheck();
+            if (info?.Name != _current) _showRestart = false;
+            _currentInfo = info;
             _current = info?.Name;
             _currentIsHome = info?.IsHome ?? false;
             _currentIsDefault = info?.IsDefault ?? false;
@@ -571,7 +646,6 @@ sealed class ProfilesForm : Form
                 }).Checked = true;
             }
 
-            UpdateActionStates();
             _start.Enabled = info != null;
             UpdateRestartNote();
             UpdateProviderPanels();
@@ -595,8 +669,8 @@ sealed class ProfilesForm : Form
             ? "~/.claude"
             : info.Dir;
         _homeHeading.Show(Glyph.Home, SystemColors.ControlText, $"{info.Name} is your home profile");
-        _homeText.Text = $"This is your own Claude setup ({where}). clauderoo shares its settings with your other profiles; " +
-                         "it always uses your Claude login.";
+        _homeText.Text = $"This is your own Claude setup ({where}). clauderoo shares its settings, plugins, skills, hooks, " +
+                         "agents, commands and MCP servers with your other profiles; it always uses your Claude login.";
         _homeAccount.Show(Glyph.Person, info.Email != null ? SystemColors.ControlText : SystemColors.GrayText,
             info.Email != null ? $"Signed in as {info.Email}" : "Not signed in — start a session to sign in.");
     }
@@ -620,11 +694,7 @@ sealed class ProfilesForm : Form
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
         _save.Visible = editable;
         _env.AllowUserToAddRows = editable;
-        if (!_loading)
-        {
-            CancelCheck();
-            ShowCheckRecord();
-        }
+        if (!_loading) ShowCheckRecord(); // a running check keeps running; its result is filed under its profile
         ResumeLayout(true);
         EnsureFits();
     }
@@ -642,7 +712,7 @@ sealed class ProfilesForm : Form
 
     private bool IsDirty => _current != null && !_currentIsHome && State() != _loadedState;
 
-    // After any edit: validation messages, the Save button, the "Unsaved changes" marks.
+    // After any edit: validation messages, the Save and Check buttons, the "Unsaved changes" marks.
     private void OnEdited()
     {
         if (_loading) return;
@@ -652,6 +722,8 @@ sealed class ProfilesForm : Form
         Text = BaseTitle + (dirty ? " •" : "");
         _unsaved.Visible = dirty;
         _save.Enabled = dirty && fieldsOk && envOk;
+        _check.Text = dirty ? SaveAndCheckText : CheckText;
+        UpdateActionStates();
     }
 
     // Required provider fields; shows what is missing under them.
@@ -804,6 +876,8 @@ sealed class ProfilesForm : Form
         lines.AddRange(notices.Distinct());
         lines.AddRange(problems.Distinct());
         SetResult(string.Join(Environment.NewLine, lines), problems.Count > 0 ? StatusColors.Fail : SystemColors.ControlText);
+        _showRestart = true;
+        UpdateRestartNote();
         return true;
     }
 
@@ -837,7 +911,7 @@ sealed class ProfilesForm : Form
             case Keys.Control | Keys.N:
                 Guard(NewProfile);
                 return true;
-            case Keys.F2:
+            case Keys.F2 when _list.Focused: // elsewhere (e.g. the env grid) F2 keeps its own meaning
                 if (_rename.Enabled) Guard(RenameProfile);
                 return true;
             case Keys.Control | Keys.Enter:
@@ -867,12 +941,18 @@ sealed class ProfilesForm : Form
     {
         if (disposing)
         {
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             AbortCheck(); // the tray may dispose the window without closing it
             _runningTimer.Dispose();
+            _tips.Dispose();
+        }
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            // After base: the form still uses its icon and fonts while it is torn down.
             _icon?.Dispose();
             _boldFont?.Dispose();
         }
-        base.Dispose(disposing);
     }
 
     // Stops a running setup check without touching controls (the window is going away).
@@ -887,7 +967,7 @@ sealed class ProfilesForm : Form
 
     private void RunCheck()
     {
-        if (_current == null || _currentIsHome) return;
+        if (_current == null || _currentIsHome || _checkingFor != null) return;
         ClearResult();
         if (IsDirty) // Check tests what is saved: save first
         {
@@ -906,9 +986,10 @@ sealed class ProfilesForm : Form
             return;
         }
 
-        var seq = ++_checkSeq;
-        _check.Enabled = false;
-        _checkStatus.Show(Glyph.Info, StatusColors.Muted, "Checking…");
+        var seq = _checkSeq;
+        _checkingFor = name;
+        ShowCheckRecord();
+        UpdateActionStates();
         // Can take a moment: run off the UI thread, then marshal the result back with BeginInvoke.
         Task.Run(() =>
         {
@@ -919,11 +1000,10 @@ sealed class ProfilesForm : Form
             {
                 BeginInvoke(() =>
                 {
+                    if (seq != _checkSeq) return; // cancelled (profile renamed/removed, window closing)
                     LastChecks[name] = new CheckRecord(DateTime.Now, provider,
                         !result.Ok ? CheckStatus.Fail : result.Verified ? CheckStatus.Ok : null, SignInWords(result.Message), null);
-                    if (seq != _checkSeq) return; // CancelCheck re-enabled the button
-                    _check.Enabled = true;
-                    ShowCheckRecord();
+                    CheckFinished(name);
                 });
             }
             catch (InvalidOperationException) { /* window closed meanwhile */ }
@@ -937,13 +1017,12 @@ sealed class ProfilesForm : Form
     // Vertex: the full checklist (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model).
     private void RunSetupCheck(string name)
     {
-        var seq = ++_checkSeq;
+        var seq = _checkSeq;
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
-        _check.Enabled = false;
-        UpdateActionStates(); // Set as default would reload (cancel); Rename would move the folder `claude -p` runs in
-        ShowCheckList(null);
-        _checkStatus.Show(Glyph.Info, StatusColors.Muted, "Checking… (tests a tiny prompt per model)");
+        _checkingFor = name;
+        ShowCheckRecord();
+        UpdateActionStates(); // Rename/Remove would move the folder `claude -p` runs in
         _checkTask = Task.Run(async () =>
         {
             IReadOnlyList<CheckItem>? items = null;
@@ -958,17 +1037,23 @@ sealed class ProfilesForm : Form
                     // The CTS is only touched on the UI thread, so cancelling and disposing never race.
                     if (_checkCts == cts) _checkCts = null;
                     cts.Dispose();
-                    UpdateActionStates();
+                    if (seq != _checkSeq) return; // cancelled: drop the result
                     if (items != null) LastChecks[name] = Summarise(items);
                     else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, Providers.Vertex, CheckStatus.Fail, error, null);
-                    if (seq != _checkSeq) return; // profile/provider changed or window closing: stale
-                    _check.Enabled = true;
-                    if (items != null || error != null) ShowCheckRecord();
-                    else _checkStatus.Show(Glyph.Info, StatusColors.Muted, "Check cancelled.");
+                    CheckFinished(name);
                 });
             }
-            catch (InvalidOperationException) { /* window closed meanwhile */ }
+            catch (InvalidOperationException) { cts.Dispose(); /* window closed meanwhile */ }
         });
+    }
+
+    // A check ended (its result, if any, is filed under the profile it was started for).
+    private void CheckFinished(string name)
+    {
+        if (_checkingFor == name) _checkingFor = null;
+        UpdateActionStates();
+        _list.Invalidate();
+        if (_current == name) ShowCheckRecord();
     }
 
     private static CheckRecord Summarise(IReadOnlyList<CheckItem> items)
@@ -982,19 +1067,34 @@ sealed class ProfilesForm : Form
         return new CheckRecord(DateTime.Now, Providers.Vertex, status, message, items);
     }
 
-    // The current profile's last check, if it was made for the provider now selected.
+    // The current profile's check: running, or the last result if it was made for the provider now selected.
     private void ShowCheckRecord()
     {
-        if (_current == null || _currentIsHome || !LastChecks.TryGetValue(_current, out var rec) || rec.Provider != SelectedProvider)
+        if (_current == null || _currentIsHome)
         {
             _checkStatus.Show(null, StatusColors.Muted, "");
             ShowCheckList(null);
             return;
         }
+        if (_checkingFor == _current)
+        {
+            _checkStatus.Show(Glyph.Info, StatusColors.Muted,
+                SelectedProvider == Providers.Vertex ? "Checking… (tests a tiny prompt per model)" : "Checking…");
+            ShowCheckList(null);
+            UpdateActionStates();
+            return;
+        }
+        if (RecordFor(_current, SelectedProvider) is not { } rec)
+        {
+            _checkStatus.Show(null, StatusColors.Muted, "");
+            ShowCheckList(null);
+            UpdateActionStates();
+            return;
+        }
         var (glyph, color) = rec.Status is { } s ? CheckListView.Look(s) : (Glyph.Info, StatusColors.Muted);
-        var when = rec.At.Date == DateTime.Today ? rec.At.ToString("HH:mm") : rec.At.ToString("d MMM HH:mm");
-        _checkStatus.Show(glyph, color, $"{rec.Message}  Last checked {when}.");
+        _checkStatus.Show(glyph, color, $"{rec.Message}  Last checked {When(rec.At)}.");
         ShowCheckList(rec.Items);
+        UpdateActionStates();
     }
 
     private void ShowCheckList(IReadOnlyList<CheckItem>? items)
@@ -1006,38 +1106,51 @@ sealed class ProfilesForm : Form
         EnsureFits();
     }
 
-    /// <summary>
-    /// Cancels a running setup check and waits (at most ~3 s) for its task to end; on cancellation the claude
-    /// runner kills its process tree before the task completes, so the profile folder is released.
-    /// </summary>
-    private void StopCheckAndWait()
+    private void CopyResults()
     {
+        if (_current == null || RecordFor(_current, SelectedProvider) is not { } rec) return;
+        var text = $"{_current}: {rec.Message} (checked {When(rec.At)})";
+        if (rec.Items is { Count: > 0 } items)
+            text += Environment.NewLine + string.Join(Environment.NewLine, items.Select(CheckItemFormatter.Format));
+        try { Clipboard.SetText(text); }
+        catch (System.Runtime.InteropServices.ExternalException) { /* clipboard busy */ }
+    }
+
+    /// <summary>
+    /// Cancels a check running for <paramref name="name"/> and waits (at most ~3 s) for its task to end; on cancellation
+    /// the claude runner kills its process tree before the task completes, so the profile folder is released.
+    /// </summary>
+    private void StopCheckAndWait(string name)
+    {
+        if (_checkingFor != name) return;
         var running = _checkCts != null ? _checkTask : null;
-        CancelCheck();
+        _checkSeq++;
+        _checkCts?.CancelAsync(); // callbacks run off the UI thread
+        _checkCts = null;
+        _checkingFor = null;
+        UpdateActionStates();
         if (running == null) return;
         // The task never needs the UI thread to finish (ConfigureAwait(false); results are posted with BeginInvoke).
         try { running.Wait(TimeSpan.FromSeconds(3)); }
         catch (AggregateException) { /* the task catches its own exceptions; nothing to report */ }
     }
 
-    /// <summary>Cancels any running check, drops its pending result and clears the check output.</summary>
-    private void CancelCheck()
-    {
-        _checkSeq++;
-        _checkCts?.CancelAsync(); // callbacks run off the UI thread
-        _checkCts = null;
-        _check.Enabled = true;
-        UpdateActionStates();
-        _checkStatus.Show(null, StatusColors.Muted, "");
-        ShowCheckList(null);
-    }
-
-    // Rename/Set as default need a selected profile and no setup check running in its folder.
     private void UpdateActionStates()
     {
-        _rename.Enabled = _current != null && _checkCts == null;
-        _setDefault.Enabled = _current != null && !_currentIsDefault && _checkCts == null;
-        _remove.Enabled = _current != null && !_currentIsHome;
+        var checkingHere = _checkingFor != null && _checkingFor == _current;
+        _rename.Enabled = _current != null && !checkingHere;
+        _setDefault.Enabled = _current != null && !_currentIsDefault;
+        _remove.Enabled = _current != null && !_currentIsHome && !_currentIsDefault && !checkingHere;
+        _check.Enabled = _checkingFor == null;
+        _copy.Enabled = _current != null && !checkingHere && RecordFor(_current, SelectedProvider) != null;
+        // A disabled button shows no tooltip itself: put the reason on its panel too.
+        var why = _current == null ? null
+            : _currentIsHome ? "The home profile can't be removed."
+            : _currentIsDefault ? "Choose another default first."
+            : null;
+        _tips.SetToolTip(_remove, why);
+        _tips.SetToolTip(_leftButtons, why);
+        _remove.AccessibleDescription = why;
     }
 
     // ---------- New / Rename / Remove / Undo / Start ----------
@@ -1066,7 +1179,7 @@ sealed class ProfilesForm : Form
             InputDialog.ProfileNameRule(ProfileNames(), oldName), InputDialog.ProfileNameHint, lowercase: true);
         if (string.IsNullOrEmpty(newName)) return;
         // A running setup check may have `claude -p` open in the old folder: stop it before the folder moves.
-        StopCheckAndWait();
+        StopCheckAndWait(oldName);
         SyncReport report;
         try
         {
@@ -1081,6 +1194,7 @@ sealed class ProfilesForm : Form
         {
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Rename anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (BlockIfRunning(oldName, "renamed")) return; // force skips Core's session check: check again
             report = _pm.Rename(oldName, newName, force: true);
         }
         if (LastChecks.Remove(oldName, out var rec)) LastChecks[newName] = rec;
@@ -1092,14 +1206,14 @@ sealed class ProfilesForm : Form
 
     private void RemoveProfile()
     {
-        if (_current == null || _currentIsHome) return;
+        if (_current == null || _currentIsHome || _currentIsDefault) return;
         ClearResult();
         var name = _current;
         if (BlockIfRunning(name, "removed")) return;
         if (MessageBox.Show(this, $"Remove profile '{name}'?{Environment.NewLine}{Environment.NewLine}" +
                                   "You can undo this here until you do something else.", "clauderoo",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        StopCheckAndWait();
+        StopCheckAndWait(name);
         try
         {
             _pm.Remove(name);
@@ -1113,6 +1227,7 @@ sealed class ProfilesForm : Form
         {
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Remove anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (BlockIfRunning(name, "removed")) return; // force skips Core's session check: check again
             _pm.Remove(name, force: true);
         }
         LastChecks.Remove(name);
@@ -1133,14 +1248,20 @@ sealed class ProfilesForm : Form
         ShowResult(report, $"Restored {name}.");
     }
 
-    // True (after saying why) when clauderoo-started sessions of the profile are running.
+    // True (after saying why) when clauderoo-started sessions of the profile are running, or when that can't be told.
     private bool BlockIfRunning(string name, string verb)
     {
-        int n;
-        try { n = _pm.Sessions.Running(name).Count; }
-        catch (Exception) { n = 0; } // Core refuses again if it can tell
-        if (n == 0) return false;
-        ShowBlocked(name, n, verb);
+        IReadOnlyList<RunningSession>? running;
+        try { running = _pm.Sessions.TryRunning(name); }
+        catch (Exception) { running = null; }
+        if (running == null)
+        {
+            MessageBox.Show(this, "clauderoo couldn't check for running sessions — try again in a moment.", "clauderoo",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return true;
+        }
+        if (running.Count == 0) return false;
+        ShowBlocked(name, running.Count, verb);
         return true;
     }
 
@@ -1193,7 +1314,12 @@ sealed class ProfilesForm : Form
     }
 
     // Every action starts by clearing the previous result, which also ends the offer to undo a remove.
-    private void ClearResult() => SetResult("", SystemColors.ControlText);
+    private void ClearResult()
+    {
+        SetResult("", SystemColors.ControlText);
+        _showRestart = false;
+        UpdateRestartNote();
+    }
 
     private void Guard(Action action)
     {

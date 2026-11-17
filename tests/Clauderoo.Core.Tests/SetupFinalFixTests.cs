@@ -254,6 +254,7 @@ public class SetupFinalFixTests
         Assert.Equal("\u26A0 x  \u2192 do y", CheckItemFormatter.Format(new(CheckStatus.Warn, "x", "do y")));
         Assert.Equal("\u2717 x  \u2192 do y", CheckItemFormatter.Format(new(CheckStatus.Fail, "x", "do y")));
         Assert.Equal("\u2013 x", CheckItemFormatter.Format(new(CheckStatus.Skipped, "x", "")));
+        Assert.Equal("\u2717 x  \u2192 do y  (raw)", CheckItemFormatter.Format(new(CheckStatus.Fail, "x", "do y", "raw")));
     }
 
     // ---------- 6 & 9. CLI ----------
@@ -314,7 +315,7 @@ public class SetupFinalFixTests
             : (0, "OK " + Token, "");
         var r = Cli(c.Pm, _ => new NoHook(), "check", "work");
         Assert.Equal(1, r.code);
-        Assert.Contains("\u2717 claude-opus-4-8 answers", r.o);
+        Assert.Contains("\u2717 claude-opus-4-8 didn't answer", r.o);
         Assert.DoesNotContain(Token, r.o);
         Assert.DoesNotContain(Token, r.e);
         Assert.DoesNotContain("ya29", r.o + r.e);
