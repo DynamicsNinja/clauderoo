@@ -255,4 +255,91 @@ public class TrayTextTests
     [Fact]
     public void UsageNotTracked_NamesProvider() =>
         Assert.Equal("Usage isn't tracked for Google Vertex AI.", TrayText.UsageNotTracked(Providers.Vertex));
+
+    // ---------- auto-switch ----------
+
+    [Fact]
+    public void AutoSwitchBalloon_Text() =>
+        Assert.Equal("personal is at 92% of its 5-hour limit. New terminals now use work.",
+            TrayText.AutoSwitchBalloon("personal is at 92% of its 5-hour limit.", "work"));
+
+    [Fact]
+    public void RecoveredBalloon_Text() =>
+        Assert.Equal("personal has room again. Click here to make it the default.", TrayText.RecoveredBalloon("personal"));
+
+    [Fact]
+    public void NoTargetBalloon_Text() =>
+        Assert.Equal("personal is at 92% of its 5-hour limit. No other profile has room, so the default stays personal.",
+            TrayText.NoTargetBalloon("personal is at 92% of its 5-hour limit.", "personal"));
+
+    [Fact]
+    public void AutoSwitchMenu_LabelShowsThreshold()
+    {
+        Assert.Equal("&Auto-switch default at 90%", TrayText.AutoSwitchMenu(null));
+        Assert.Equal("&Auto-switch default at 85%", TrayText.AutoSwitchMenu(new AutoSwitchSettings { Threshold = 85 }));
+    }
+
+    [Fact]
+    public void AutoSwitchToggled_Text()
+    {
+        Assert.Equal("Auto-switch is on. When the default profile reaches 85% of a limit, new terminals use another profile with room.",
+            TrayText.AutoSwitchToggled(new AutoSwitchSettings { Enabled = true, Threshold = 85 }));
+        Assert.Equal("Auto-switch is off.", TrayText.AutoSwitchToggled(new AutoSwitchSettings { Threshold = 85 }));
+    }
+
+    [Fact]
+    public void WarnThreshold_IsTheAutoSwitchThreshold_OnlyWhenOn()
+    {
+        Assert.Equal(90, TrayText.WarnThreshold(null));
+        Assert.Equal(90, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = false, Threshold = 70 }));
+        Assert.Equal(70, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = true, Threshold = 70 }));
+    }
+
+    [Fact]
+    public void UsageSuffixParts_FlagWindowsAtOrAboveThreshold()
+    {
+        var at = DateTimeOffset.Now;
+        var parts = TrayText.UsageSuffixParts(Usage(at, W("5h", 79.9), W("7d", 80), W("Opus", 99)), threshold: 80);
+        Assert.Equal([(" · ", UsageLevel.Ok), ("5h 80%", UsageLevel.Ok), (" · ", UsageLevel.Ok), ("7d 80%", UsageLevel.Warn)], parts);
+
+        // red from 90 %, whatever the threshold
+        parts = TrayText.UsageSuffixParts(Usage(at, W("5h", 95), W("7d", 10)), threshold: 90);
+        Assert.Equal([(" · ", UsageLevel.Ok), ("5h 95%", UsageLevel.High), (" · ", UsageLevel.Ok), ("7d 10%", UsageLevel.Ok)], parts);
+
+        Assert.Empty(TrayText.UsageSuffixParts(null, 90));
+        // the parts read the same as the plain suffix
+        var r = Usage(at, W("5h", 42.4), W("7d", 91));
+        Assert.Equal(TrayText.UsageSuffix(r), string.Concat(TrayText.UsageSuffixParts(r, 90).Select(p => p.Text)));
+    }
+
+    [Fact]
+    public void AutoSwitchSummary_Text()
+    {
+        Assert.Equal("Auto-switch is off.", TrayText.AutoSwitchSummary(new AutoSwitchSettings { Threshold = 85 }));
+        Assert.Equal("Auto-switch is on at 85%. Order: work, personal.",
+            TrayText.AutoSwitchSummary(new AutoSwitchSettings { Enabled = true, Threshold = 85, Order = ["work", "personal"] }));
+        Assert.Equal("Auto-switch is on at 90%. Order: every Claude-login profile, in list order.",
+            TrayText.AutoSwitchSummary(new AutoSwitchSettings { Enabled = true }));
+    }
+
+    [Fact]
+    public void AutoSwitchOrder_Items_ListedFirstThenTheRest()
+    {
+        var items = AutoSwitchOrder.Items(["work", "gone", "api"],
+            [("personal", Providers.Login), ("api", Providers.ApiKey), ("work", Providers.Login), ("vx", Providers.Vertex)]);
+        Assert.Equal([("work", true), ("api", true), ("personal", false), ("vx", false)], items);
+        Assert.Equal(["work", "api"], AutoSwitchOrder.ToOrder(items));
+        Assert.Empty(AutoSwitchOrder.ToOrder([("personal", false)]));
+    }
+
+    [Fact]
+    public void AutoSwitchOrder_Move()
+    {
+        var items = new List<(string, bool)> { ("a", true), ("b", false), ("c", true) };
+        Assert.Equal(0, AutoSwitchOrder.Move(items, 1, -1));
+        Assert.Equal([("b", false), ("a", true), ("c", true)], items);
+        Assert.Equal(0, AutoSwitchOrder.Move(items, 0, -1)); // already first: unchanged
+        Assert.Equal(2, AutoSwitchOrder.Move(items, 1, +1));
+        Assert.Equal([("b", false), ("c", true), ("a", true)], items);
+    }
 }

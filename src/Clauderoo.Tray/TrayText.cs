@@ -200,14 +200,58 @@ internal static class TrayText
     static UsageWindow? WindowOf(UsageReading r, string name) => r.Windows.FirstOrDefault(w => w.Name == name);
 
     /// <summary>The profile line's tail: " · 5h 42% · 7d 63%" (only the windows that are known), or "".</summary>
-    public static string UsageSuffix(UsageReading? r)
+    public static string UsageSuffix(UsageReading? r) =>
+        string.Concat(UsageSuffixParts(r, int.MaxValue).Select(p => p.Text));
+
+    /// <summary>
+    /// <see cref="UsageSuffix"/> in runs, so the menu can colour a window at or above <paramref name="threshold"/>:
+    /// Warn (amber), or High (red) from 90 %. Separators and windows below the threshold are Ok (normal text). The
+    /// raw percentage is compared, as the auto-switch engine does.
+    /// </summary>
+    public static IReadOnlyList<(string Text, UsageLevel Level)> UsageSuffixParts(UsageReading? r, int threshold)
     {
-        if (r == null) return "";
-        var s = "";
+        var parts = new List<(string, UsageLevel)>();
+        if (r == null) return parts;
         foreach (var name in new[] { "5h", "7d" })
-            if (WindowOf(r, name) is { } w) s += $" · {name} {Pct(w.Percent)}";
-        return s;
+        {
+            if (WindowOf(r, name) is not { } w) continue;
+            var level = w.Percent < threshold ? UsageLevel.Ok : w.Percent >= 90 ? UsageLevel.High : UsageLevel.Warn;
+            parts.Add((" · ", UsageLevel.Ok));
+            parts.Add(($"{name} {Pct(w.Percent)}", level));
+        }
+        return parts;
     }
+
+    /// <summary>The percentage the menu flags: the auto-switch threshold while auto-switch is on, otherwise 90.</summary>
+    public static int WarnThreshold(AutoSwitchSettings? s) => s is { Enabled: true } ? s.Threshold : 90;
+
+    // ---------- auto-switch ----------
+
+    static int ThresholdOf(AutoSwitchSettings? s) => s?.Threshold ?? new AutoSwitchSettings().Threshold;
+
+    /// <summary>The Advanced submenu's checkbox: "&amp;Auto-switch default at 90%".</summary>
+    public static string AutoSwitchMenu(AutoSwitchSettings? s) => $"&Auto-switch default at {ThresholdOf(s)}%";
+
+    /// <summary>The balloon after the tray switched the default.</summary>
+    public static string AutoSwitchBalloon(string reason, string target) => $"{reason} New terminals now use {target}.";
+
+    /// <summary>The balloon when the default is over the threshold and no other profile has room (once per crossing).</summary>
+    public static string NoTargetBalloon(string reason, string current) =>
+        $"{reason} No other profile has room, so the default stays {current}.";
+
+    /// <summary>The balloon when the profile switched away from has room again; clicking it makes it the default.</summary>
+    public static string RecoveredBalloon(string profile) => $"{profile} has room again. Click here to make it the default.";
+
+    /// <summary>The answer to the Advanced menu's checkbox.</summary>
+    public static string AutoSwitchToggled(AutoSwitchSettings s) => s.Enabled
+        ? $"Auto-switch is on. When the default profile reaches {s.Threshold}% of a limit, new terminals use another profile with room."
+        : "Auto-switch is off.";
+
+    /// <summary>The Profiles window's result line after the Auto-switch dialog was saved.</summary>
+    public static string AutoSwitchSummary(AutoSwitchSettings s) => s.Enabled
+        ? $"Auto-switch is on at {s.Threshold}%. Order: "
+          + (s.Order.Count > 0 ? string.Join(", ", s.Order) : "every Claude-login profile, in list order") + "."
+        : "Auto-switch is off.";
 
     /// <summary>"5-hour", "7-day", or a model's name.</summary>
     public static string UsageWindowName(string name) => name switch

@@ -41,6 +41,9 @@ sealed class TrayContext : ApplicationContext
     private bool _seeded;        // the first sync's problems are already known (no balloon for them)
     private bool _fixing;        // a Fix runs on a worker thread: full syncs wait
     private bool _countingRunning;
+    private bool _autoSwitching;   // an auto-switch pass runs on a worker thread: full syncs wait, passes don't overlap
+    private bool _autoSwitchAgain; // new readings arrived during a pass: run another one after it
+    private string? _autoSwitchError; // the last pass's failure, shown once
 
     private Icon? _trayIcon;
     private (AppIconState State, bool HighContrast, Size Size)? _trayIconKey;
@@ -49,7 +52,7 @@ sealed class TrayContext : ApplicationContext
     private readonly List<string> _recent = []; // for the Problems window's "Recent messages", handed over once
     private const int RecentMax = 20;
     private DateTime _lastBalloon = DateTime.MinValue;
-    private bool _balloonOpensProblems;
+    private Action? _balloonClick; // what clicking the last balloon does (open Problems, make a profile the default…)
     private Point _clickPos;
 
     private sealed record ConfigError(ConfigIssue Issue, string Headline, string Detail, string Message);
@@ -66,7 +69,12 @@ sealed class TrayContext : ApplicationContext
         _usageClient = new UsageClient(_usageHandler, () => DateTimeOffset.UtcNow, version);
         var cache = new UsageCache(_paths);
         _poller = new UsagePoller((t, ct) => _usageClient.FetchAsync(t.Name, t.ConfigDir, t.Entry, ct), cache, () => DateTimeOffset.UtcNow);
-        _poller.Updated += results => Post(() => Guard(() => _usage.Apply(results))); // raised on a worker thread
+        // Raised on a worker thread. New readings may move the default (auto-switch).
+        _poller.Updated += results => Post(() => Guard(() =>
+        {
+            _usage.Apply(results);
+            _ = AutoSwitchAsync();
+        }));
         _usage.Refresh = _poller.RefreshNowAsync;
         // Last known readings first (the cache's lock can take a moment: off the UI thread), then live ones.
         Task.Run(() =>
@@ -106,12 +114,12 @@ sealed class TrayContext : ApplicationContext
             _clickTimer.Stop();
             Guard(StartDefault);
         };
-        _icon.BalloonTipClicked += (_, _) => { if (_balloonOpensProblems) Guard(ShowProblems); };
+        _icon.BalloonTipClicked += (_, _) => { if (_balloonClick is { } click) Guard(click); };
 
         _debounce.Tick += (_, _) =>
         {
             _debounce.Stop();
-            if (_fixing) { _debounce.Start(); return; }
+            if (_fixing || _autoSwitching) { _debounce.Start(); return; }
             Guard(FullSync);
         };
         _runningTimer.Tick += async (_, _) => await RefreshRunningInBackground();
@@ -304,9 +312,11 @@ sealed class TrayContext : ApplicationContext
             ShowConfigFile = () => Guard(ShowConfigFile),
             Exit = () => Guard(Exit),
             RefreshUsage = () => _ = RefreshUsageAsync(),
+            SetAutoSwitch = on => Guard(() => SetAutoSwitch(on)),
         };
 
-        if (LoadConfig() is { } cfg)
+        var cfg = LoadConfig();
+        if (cfg != null)
         {
             try { EnsureWatchers(cfg); } catch (Exception e) when (e is IOException or ArgumentException) { }
             RefreshProfiles();
@@ -320,7 +330,7 @@ sealed class TrayContext : ApplicationContext
         var autoOn = false;
         try { autoOn = AutoStart.IsOn(); } catch (Exception) { }
         TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
-            _usage.Readings, _usage.Results, DateTimeOffset.Now), actions);
+            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch), actions);
     }
 
     // The fetch runs on a worker thread; the result comes back through the poller's Updated event.
@@ -461,6 +471,110 @@ sealed class TrayContext : ApplicationContext
         Kick();
     }
 
+    // ---------- auto-switch ----------
+
+    /// <summary>What a pass decided, and the default before it (the one a switch moved away from).</summary>
+    private sealed record AutoSwitchOutcome(Decision Decision, string? From, SyncReport? Report);
+
+    /// <summary>
+    /// Runs <see cref="AutoSwitchPass"/> on a worker thread with the latest readings, then shows what it did. One pass
+    /// at a time: readings that arrive meanwhile get one more pass afterwards.
+    /// </summary>
+    private async Task AutoSwitchAsync()
+    {
+        if (_autoSwitching) { _autoSwitchAgain = true; return; }
+        _autoSwitching = true;
+        try
+        {
+            do
+            {
+                _autoSwitchAgain = false;
+                if (_configError != null) return;
+                var readings = _usage.Readings; // replaced, never changed, by UsageView: safe to hand over
+                AutoSwitchOutcome? outcome;
+                try { outcome = await Task.Run(() => AutoSwitchPass(readings)); } // resumes on the UI thread
+                catch (Exception e)
+                {
+                    // The switch failed; nothing was saved, so the next readings try again. The same failure again
+                    // only goes to Recent messages: no balloon every few minutes.
+                    if (e.Message == _autoSwitchError) AddRecent([TrayText.RecentError(e.Message)]);
+                    else ReportError(e);
+                    _autoSwitchError = e.Message;
+                    return;
+                }
+                _autoSwitchError = null;
+                if (outcome != null) Guard(() => ShowAutoSwitch(outcome));
+            } while (_autoSwitchAgain);
+        }
+        catch (Exception) { /* never take the tray down from a background pass */ }
+        finally { _autoSwitching = false; }
+    }
+
+    /// <summary>
+    /// Worker thread: loads the config and the auto-switch state, decides, applies a switch (SetDefault syncs, which
+    /// can take a moment), then saves the next state. Null when the config or state can't be read right now: that
+    /// is shown elsewhere, and the next readings try again.
+    /// </summary>
+    private AutoSwitchOutcome? AutoSwitchPass(IReadOnlyDictionary<string, UsageReading> readings)
+    {
+        ClauderooConfig cfg;
+        AutoSwitchState state;
+        try
+        {
+            cfg = _pm.Config;
+            state = _pm.AutoSwitchState.Load();
+        }
+        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return null; }
+
+        var now = DateTimeOffset.UtcNow;
+        var from = cfg.DefaultProfile;
+        var decision = AutoSwitch.Decide(cfg, readings, now, state);
+        var report = decision is Decision.SwitchTo to ? _pm.SetDefault(to.Profile) : null; // throws: reported, nothing saved
+
+        var next = AutoSwitch.Next(state, decision, from, readings, now, cfg.AutoSwitch);
+        if (next != state)
+        {
+            try { _pm.AutoSwitchState.Save(next); }
+            catch (IOException) { /* best effort: the switch itself is done */ }
+        }
+        return new AutoSwitchOutcome(decision, from, report);
+    }
+
+    private void ShowAutoSwitch(AutoSwitchOutcome o)
+    {
+        switch (o.Decision)
+        {
+            case Decision.SwitchTo to:
+                RefreshProfiles();
+                if (_profilesForm is { IsDisposed: false } form) form.RefreshList();
+                Balloon(TrayText.AutoSwitchBalloon(to.Reason, to.Profile), ToolTipIcon.Info);
+                if (o.Report != null) QueueNotices(o.Report.Notices); // after the switch balloon, not over it
+                Kick();
+                break;
+            case Decision.NoTarget nt:
+                Balloon(TrayText.NoTargetBalloon(nt.Reason, o.From ?? ""), ToolTipIcon.Warning);
+                break;
+            case Decision.Recovered rec:
+                var name = rec.Profile;
+                Balloon(TrayText.RecoveredBalloon(name), ToolTipIcon.Info, onClick: () =>
+                {
+                    if (RequireConfig() is { } cfg && cfg.DefaultProfile != name) SetDefault(name);
+                });
+                break;
+        }
+    }
+
+    /// <summary>The Advanced menu's checkbox. Turning it on decides right away with the readings already known.</summary>
+    private void SetAutoSwitch(bool on)
+    {
+        if (RequireConfig() is not { } cfg) return;
+        var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
+        s.Enabled = on;
+        ConfigStore.Save(_paths, cfg);
+        QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
+        if (on) _ = AutoSwitchAsync();
+    }
+
     private void NewProfile()
     {
         if (RequireConfig() is not { } cfg) return;
@@ -598,22 +712,24 @@ sealed class TrayContext : ApplicationContext
     private void Guard(Action action)
     {
         try { action(); }
-        catch (Exception e)
-        {
-            // Core and the launcher speak to the command line: known errors get plain words, the rest a short
-            // balloon that opens the Problems window, where the original text is listed under Recent messages.
-            var (text, unknown) = TrayText.PlainError(e);
-            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
-            Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
-        }
+        catch (Exception e) { ReportError(e); }
     }
 
-    // Every balloon decides for itself whether clicking it opens the Problems window.
-    private void Balloon(string text, ToolTipIcon kind, bool opensProblems = false)
+    // Core and the launcher speak to the command line: known errors get plain words, the rest a short balloon that
+    // opens the Problems window, where the original text is listed under Recent messages.
+    private void ReportError(Exception e)
+    {
+        var (text, unknown) = TrayText.PlainError(e);
+        if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+        Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
+    }
+
+    // Every balloon decides for itself what clicking it does: open the Problems window, run onClick, or nothing.
+    private void Balloon(string text, ToolTipIcon kind, bool opensProblems = false, Action? onClick = null)
     {
         try
         {
-            _balloonOpensProblems = opensProblems;
+            _balloonClick = onClick ?? (opensProblems ? new Action(ShowProblems) : null);
             _lastBalloon = DateTime.UtcNow;
             _icon.ShowBalloonTip(5000, "clauderoo", TrayText.Cut(text, 250), kind);
         }

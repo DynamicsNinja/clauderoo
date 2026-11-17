@@ -49,6 +49,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
 - **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
+- **Auto-switch.** When the default profile nears a usage limit, new terminals move to another profile that has room.
 - **Safe by design.** Removed profiles are moved, never deleted. To fetch usage it reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only; the token is never written, copied, logged or shown.
 
 ## Screenshots
@@ -125,6 +126,8 @@ All commands work with either `clauderoo` or `cr`.
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
 | `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Provider settings come back as the Claude login |
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
+| `auto [on\|off] [--threshold N] [--order a,b,c]` | Turn [auto-switch](#auto-switch) on or off, set the threshold (6 to 100, default 90) and the profiles to switch to, in order. With no arguments, it shows the current settings |
+| `auto --once [--json]` | Check usage now and switch the default if it has reached the threshold. Exit codes: 0 switched, 2 nothing to do, 3 no other profile has room, 1 error. For Task Scheduler when the tray isn't running |
 
 ### Sessions
 
@@ -231,6 +234,28 @@ The tray checks every 5 minutes, or every 2 minutes for a profile with a session
 clauderoo never refreshes a sign-in. When a profile's sign-in has expired, usage says so; start a session of that profile and Claude refreshes it.
 
 The usage endpoint isn't documented by Anthropic. If it changes, usage shows as unavailable and everything else keeps working.
+
+### Auto-switch
+
+Auto-switch changes the default profile when the default reaches a share of its 5-hour or 7-day limit (90% unless you change it). From then on, new terminals use the new default. Sessions that are already running keep their profile.
+
+- **Turning it on:** tick **Advanced → Auto-switch default at 90%** in the tray, use the **Auto-switch…** button in the profile manager, or run `cr auto on`.
+- **Threshold and order:** set them in the **Auto-switch…** dialog, or with `cr auto --threshold 85 --order work,personal`. The threshold can be 6 to 100.
+- **Which profile it picks:** the first profile in the order whose last reading is under 15 minutes old and has both windows more than 5 points below the threshold. With no order set, every Claude-login profile is tried in list order. Vertex and API-key profiles have no limits to check, so they are used only when you list them in the order.
+- **No flip-flopping:** after a switch, nothing changes for 10 minutes. clauderoo never switches back on its own.
+- **What the tray tells you:** a balloon such as "personal is at 92% of its 5-hour limit. New terminals now use work." When no other profile has room, a balloon says so once each time the default crosses the threshold. When the profile it switched away from has room again, a balloon says "personal has room again". Click it to make that profile the default again.
+- **In the tray menu:** a usage window at or above the threshold is shown in amber, or red from 90%. While auto-switch is off, only windows at 90% or more are coloured.
+
+The tray decides each time it checks usage, every 2 to 5 minutes. When the tray isn't running, `cr auto --once` fetches usage, decides and switches once. Schedule it in Task Scheduler, for example every 10 minutes, and check its exit code:
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Switched the default |
+| 2 | Nothing to do (or auto-switch is off) |
+| 3 | The default is at the threshold, but no other profile has room |
+| 1 | Error |
+
+`--json` prints `{"schemaVersion": 1, "action", "from", "to", "reason"}` instead of plain text. The switch state (last switch time and which profile it switched from) is kept in `%USERPROFILE%\.clauderoo\autoswitch.json`.
 
 ### Profiles that own their settings.json
 

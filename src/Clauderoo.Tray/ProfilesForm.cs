@@ -41,6 +41,7 @@ sealed class ProfilesForm : Form
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
+    private readonly Button _autoSwitch = Btn("Auto-s&witch…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -184,14 +185,19 @@ sealed class ProfilesForm : Form
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
+        _autoSwitch.Margin = new Padding(0, 6, 6, 0);
+        _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
-        left.RowCount = 2;
+        left.RowCount = 3;
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_list, 0, 0);
         left.Controls.Add(leftButtons, 0, 1);
+        left.Controls.Add(_autoSwitch, 0, 2);
 
         // Right: the home explanation, or the provider choice.
         _homePanel = Table(1);
@@ -361,6 +367,7 @@ sealed class ProfilesForm : Form
         _new.Click += (_, _) => Guard(NewProfile);
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
+        _autoSwitch.Click += (_, _) => Guard(EditAutoSwitch);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey })
             rb.CheckedChanged += (_, _) =>
             {
@@ -417,7 +424,7 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -1498,6 +1505,19 @@ sealed class ProfilesForm : Form
         var report = _pm.SetDefault(name);
         Reload(name);
         ShowResult(report, $"Default is now {name}. New terminals will use it.");
+    }
+
+    /// <summary>The Auto-switch dialog. Saved straight to the config: it doesn't touch the profile being edited.</summary>
+    private void EditAutoSwitch()
+    {
+        ClearResult();
+        var cfg = _pm.Config;
+        var profiles = cfg.Profiles.Select(kv => (kv.Key, Providers.Of(kv.Value))).ToList();
+        if (AutoSwitchDialog.Edit(this, cfg.AutoSwitch ?? new AutoSwitchSettings(), profiles) is not { } edited) return;
+        cfg = _pm.Config; // read again: the tray may have changed the default while the dialog was open
+        cfg.AutoSwitch = edited;
+        ConfigStore.Save(_pm.Paths, cfg);
+        SetResult(TrayText.AutoSwitchSummary(edited), SystemColors.ControlText);
     }
 
     private void ShowResult(SyncReport report, string message) =>
