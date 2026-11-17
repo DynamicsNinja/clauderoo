@@ -42,6 +42,7 @@ public static class Commands
         Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null,
         UsageClient? usage = null)
     {
+        var json = WantsJson(args);
         try
         {
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
@@ -49,16 +50,19 @@ public static class Commands
         }
         catch (SessionsRunningException e)
         {
+            if (json) { WriteJsonError(err, $"{e.Message} (use --force to do it anyway)"); return 1; }
             err.WriteLine($"{e.Message} (use --force to do it anyway)");
             return 1;
         }
         catch (ClauderooException e)
         {
+            if (json) { WriteJsonError(err, e.Message); return 1; }
             err.WriteLine(e.Message);
             return 1;
         }
         catch (Exception e)
         {
+            if (json) { WriteJsonError(err, $"Unexpected error: {e.Message}"); return 2; }
             err.WriteLine($"Unexpected error: {e.Message}");
             return 2;
         }
@@ -459,7 +463,8 @@ public static class Commands
                     }
                     catch (OperationCanceledException) when (cts.IsCancellationRequested)
                     {
-                        err.WriteLine("Cancelled.");
+                        if (json) WriteJsonError(err, "Cancelled.");
+                        else err.WriteLine("Cancelled.");
                         return 1;
                     }
                     rows.Add(ToRow(name, r, cache, err));
@@ -527,6 +532,17 @@ public static class Commands
             ? local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
             : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    // --json before any "--" means every error must be JSON on stderr.
+    private static bool WantsJson(string[] args)
+    {
+        var end = Array.IndexOf(args, "--");
+        return args.Take(end < 0 ? args.Length : end).Contains("--json");
+    }
+
+    // The one place a JSON error is written, next to WriteUsageJson so both can move onto a shared helper.
+    private static void WriteJsonError(TextWriter err, string message) =>
+        err.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, error = message }));
 
     // The one place usage JSON is written, so it can be moved onto the shared JSON helper.
     private static void WriteUsageJson(List<UsageRow> rows, TextWriter output)

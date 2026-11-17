@@ -131,6 +131,36 @@ public class CliUsageTests
     }
 
     [Fact]
+    public void Usage_Json_UnknownProfile_JsonErrorOnStderr_Exit1()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var r = Run(pm, new Handler(() => Resp(HttpStatusCode.OK, Fixture())), "usage", "nope", "--json");
+        Assert.Equal(1, r.code);
+        Assert.Equal("", r.o);
+        using var doc = JsonDocument.Parse(r.e);
+        Assert.Equal(1, doc.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Contains("Unknown profile", doc.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public void Usage_Json_UnexpectedError_JsonShaped_Exit2()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var o = new StringWriter();
+        var e = new StringWriter();
+        using var client = new UsageClient(new Handler(() => Resp(HttpStatusCode.OK, Fixture())), () => Now, "1.0");
+        var code = Commands.Run(["usage", "work", "--json"], o, e, pm, _ => 0, _ => 0, wtAvailable: true,
+            hookCancel: _ => throw new InvalidOperationException("kaboom"), usage: client);
+        Assert.Equal(2, code);
+        Assert.Equal("", o.ToString());
+        using var doc = JsonDocument.Parse(e.ToString());
+        Assert.Equal(1, doc.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Contains("kaboom", doc.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
     public void Usage_Expired_SaysStartSession()
     {
         var (pm, home) = Make();
