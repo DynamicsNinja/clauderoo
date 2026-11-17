@@ -36,6 +36,7 @@ sealed class TrayContext : ApplicationContext
     private string? _watchedKey;
     private ProfilesForm? _profilesForm;
     private ProblemsForm? _problemsForm;
+    private ConversationsForm? _conversationsForm;
 
     // Current state: kept between syncs, shown by the icon, tooltip, menu and Problems window.
     private IReadOnlyList<Problem> _problems = [];
@@ -43,8 +44,11 @@ sealed class TrayContext : ApplicationContext
     private IReadOnlyDictionary<string, int> _running = new Dictionary<string, int>();
     private ConfigError? _configError;
     private bool _seeded;        // the first sync's problems are already known (no balloon for them)
-    private bool _fixing;        // a Fix runs on a worker thread: full syncs wait
+    private readonly WriteGate _gate = new(); // one default/config writer at a time (pass, Set default, Fix, syncs…)
     private bool _countingRunning;
+    private bool _autoSwitching;   // an auto-switch pass is queued or running: passes don't overlap
+    private bool _autoSwitchAgain; // new readings arrived during a pass: run another one after it
+    private string? _autoSwitchError; // the last pass's failure, shown once
 
     private Icon? _trayIcon;
     private (AppIconState State, bool HighContrast, Size Size)? _trayIconKey;
@@ -53,7 +57,7 @@ sealed class TrayContext : ApplicationContext
     private readonly List<string> _recent = []; // for the Problems window's "Recent messages", handed over once
     private const int RecentMax = 20;
     private DateTime _lastBalloon = DateTime.MinValue;
-    private bool _balloonOpensProblems;
+    private Action? _balloonClick; // what clicking the last balloon does (open Problems, make a profile the default…)
     private Point _clickPos;
 
     private sealed record ConfigError(ConfigIssue Issue, string Headline, string Detail, string Message);
@@ -70,7 +74,12 @@ sealed class TrayContext : ApplicationContext
         _usageClient = new UsageClient(_usageHandler, () => DateTimeOffset.UtcNow, version);
         var cache = new UsageCache(_paths);
         _poller = new UsagePoller((t, ct) => _usageClient.FetchAsync(t.Name, t.ConfigDir, t.Entry, ct), cache, () => DateTimeOffset.UtcNow);
-        _poller.Updated += results => Post(() => Guard(() => _usage.Apply(results))); // raised on a worker thread
+        // Raised on a worker thread. New readings may move the default (auto-switch).
+        _poller.Updated += results => Post(() => Guard(() =>
+        {
+            _usage.Apply(results);
+            _ = AutoSwitchAsync();
+        }));
         _usage.Refresh = _poller.RefreshNowAsync;
         // Last known readings first (the cache's lock can take a moment: off the UI thread), then live ones.
         Task.Run(() =>
@@ -110,13 +119,12 @@ sealed class TrayContext : ApplicationContext
             _clickTimer.Stop();
             Guard(StartDefault);
         };
-        _icon.BalloonTipClicked += (_, _) => { if (_balloonOpensProblems) Guard(ShowProblems); };
+        _icon.BalloonTipClicked += (_, _) => { if (_balloonClick is { } click) Guard(click); };
 
         _debounce.Tick += (_, _) =>
         {
             _debounce.Stop();
-            if (_fixing) { _debounce.Start(); return; }
-            Guard(FullSync);
+            Guard(FullSyncGated);
         };
         _runningTimer.Tick += async (_, _) => await RefreshRunningInBackground();
         _runningTimer.Start();
@@ -139,7 +147,7 @@ sealed class TrayContext : ApplicationContext
 
         // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
         // The first sync also hands the poller its profiles; it starts polling after that.
-        Post(() => Guard(FullSync));
+        Post(() => Guard(FullSyncGated));
         Post(() => Guard(_poller.Start));
     }
 
@@ -180,12 +188,28 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
-    /// <summary>Syncs every profile and replaces the problem list with what it found.</summary>
+    /// <summary>
+    /// <see cref="FullSync"/> when no other write is running (the gate is only tried, never waited on: the UI thread
+    /// never blocks); otherwise it is retried after the debounce delay.
+    /// </summary>
+    private void FullSyncGated()
+    {
+        using var held = _gate.TryEnter();
+        if (held == null) { Kick(); return; }
+        FullSync();
+    }
+
+    /// <summary>Syncs every profile and replaces the problem list with what it found. Callers hold the write gate.</summary>
     private void FullSync()
     {
         if (LoadConfig() is not { } cfg) return;
         EnsureWatchers(cfg);
-        var report = _pm.SyncAll();
+        ApplySync(_pm.SyncAll());
+    }
+
+    /// <summary>A full sync's result on the UI thread: profiles, problems and notices.</summary>
+    private void ApplySync(SyncReport report)
+    {
         var first = !_seeded;
         RefreshProfiles();
         SetProblems(report.ProblemItems);
@@ -303,25 +327,28 @@ sealed class TrayContext : ApplicationContext
             Start = name => Guard(() => StartSession(name, null)),
             StartInFolder = name => Guard(() => StartInFolder(name)),
             StartIsolated = name => Guard(() => StartSession(name, null, isolated: true)),
-            SetDefault = name => Guard(() => SetDefault(name)),
+            SetDefault = name => _ = SetDefaultAsync(name),
             ShowProblems = () => Guard(ShowProblems),
             ShowProfiles = () => Guard(ShowProfiles),
-            NewProfile = () => Guard(NewProfile),
+            NewProfile = () => _ = NewProfileAsync(),
+            ContinueConversation = () => Guard(ShowConversations),
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
             UpdateNow = () => Guard(UpdateNow),
             SetUpdateChecks = on => Guard(() => SetUpdateChecks(on)),
             SetUp = () => Guard(SetUp),
-            Retry = () => Guard(FullSync),
+            Retry = () => Guard(FullSyncGated),
             CopyConfigDetails = () => Guard(() => Clipboard.SetText(
                 $"{_configError?.Headline}\r\n{_configError?.Message}\r\nSettings file: {_paths.ConfigFile}")),
             ShowConfigFile = () => Guard(ShowConfigFile),
             Exit = () => Guard(Exit),
             RefreshUsage = () => _ = RefreshUsageAsync(),
+            SetAutoSwitch = on => _ = SetAutoSwitchAsync(on),
         };
 
-        if (LoadConfig() is { } cfg)
+        var cfg = LoadConfig();
+        if (cfg != null)
         {
             try { EnsureWatchers(cfg); } catch (Exception e) when (e is IOException or ArgumentException) { }
             RefreshProfiles();
@@ -338,7 +365,7 @@ sealed class TrayContext : ApplicationContext
         var newer = releaseBuild ? UpdateCheck.NewerThan(_updateState, AppVersion.Current) : null;
         TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
             newer?.ToString(), _updateState.CheckEnabled, releaseBuild,
-            _usage.Readings, _usage.Results, DateTimeOffset.Now), actions);
+            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch), actions);
     }
 
     // The fetch runs on a worker thread; the result comes back through the poller's Updated event.
@@ -411,6 +438,7 @@ sealed class TrayContext : ApplicationContext
     private void Exit()
     {
         _problemsForm?.Close();
+        _conversationsForm?.Close();
         if (_profilesForm is { IsDisposed: false } profiles)
         {
             profiles.Close();
@@ -439,7 +467,8 @@ sealed class TrayContext : ApplicationContext
             return;
         }
         if (RequireConfig() == null) return;
-        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems), _usage);
+        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems), _usage, _gate,
+            autoSwitchChanged: () => _ = AutoSwitchAsync());
         form.FormClosed += (_, _) =>
         {
             if (_profilesForm == form) _profilesForm = null;
@@ -447,6 +476,51 @@ sealed class TrayContext : ApplicationContext
         };
         _profilesForm = form;
         form.ShowAndActivate(reload: false);
+    }
+
+    // Single picker window, like Profiles: opened on first use, brought to the front afterwards.
+    private void ShowConversations()
+    {
+        if (_conversationsForm is { IsDisposed: false } open)
+        {
+            _ = open.ShowAndActivate();
+            return;
+        }
+        if (RequireConfig() == null) return;
+        var form = new ConversationsForm(
+            // Reads conversation files: on a worker thread, the result comes back to the UI thread.
+            () => Task.Run(() => ConversationIndex.List(_pm)),
+            () => _pm.List(),
+            ContinueConversation);
+        form.FormClosed += (_, _) => { if (_conversationsForm == form) _conversationsForm = null; };
+        _conversationsForm = form;
+        _ = form.ShowAndActivate();
+    }
+
+    // Copies the conversation into the chosen profile (worker thread), then opens a new tab running
+    // `clauderoo run <profile> -- --resume <id>` in the conversation's own folder; that tab injects a token profile's
+    // token itself. Errors come back as plain words for the picker's status line.
+    private async Task<CopyOutcome> ContinueConversation(Conversation c, ContinueTarget target)
+    {
+        try
+        {
+            if (RequireConfig() is not { } cfg) throw new ClauderooException("clauderoo's settings can't be read right now.");
+            // The folder check touches the disk (it may be a slow network share), so it runs with the copy.
+            var outcome = await Task.Run(() =>
+            {
+                if (ConversationPicker.Refusal(c, Directory.Exists) is { } refusal) throw new ClauderooException(refusal);
+                return ConversationIndex.CopyTo(_pm, c, target.Profile, target.Isolated);
+            }); // back on the UI thread
+            using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, target.Profile, c.Cwd!,
+                ["--resume", c.Id], Launcher.WtAvailable(), isolated: target.Isolated));
+            return outcome;
+        }
+        catch (Exception e)
+        {
+            var (text, unknown) = TrayText.PlainError(e);
+            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+            throw new ClauderooException(text);
+        }
     }
 
     private void ShowProblems()
@@ -467,25 +541,37 @@ sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>
-    /// Runs the fix on a worker thread, then re-checks every profile. A fix that worked is reported as fixed even if
-    /// the follow-up sync fails; that is said separately.
+    /// Runs the fix and then a re-check of every profile on a worker thread, both inside the write gate. A fix that
+    /// worked is reported as fixed even if the follow-up sync fails; that is said separately.
     /// </summary>
     private async Task<FixOutcome> FixAsync(Problem p)
     {
-        SyncReport report;
-        _fixing = true;
-        try { report = await Task.Run(() => _pm.Fix(p)); } // throws with a message the window shows
-        finally { _fixing = false; }
+        var (report, after) = await _gate.RunAsync(() =>
+        {
+            var fixReport = _pm.Fix(p); // throws with a message the window shows
+            SyncReport? sync = null;
+            try { sync = _pm.SyncAll(); }
+            catch (Exception) { /* said below */ }
+            return (fixReport, sync);
+        });
 
         QueueNotices(report.Notices, now: true);
+        const string NotRechecked =
+            "Fixed. clauderoo couldn't re-check your profiles just now; it will try again the next time Claude's settings change.";
+        if (after == null) return new FixOutcome(true, NotRechecked);
         try
         {
-            FullSync();
+            // As FullSync does: a fix can change the config (and its home paths), so reload it and the watchers.
+            if (LoadConfig() is { } cfg)
+            {
+                try { EnsureWatchers(cfg); }
+                catch (Exception e) when (e is IOException or ArgumentException) { /* the next sync tries again */ }
+            }
+            ApplySync(after);
         }
         catch (Exception)
         {
-            return new FixOutcome(true,
-                "Fixed. clauderoo couldn't re-check your profiles just now; it will try again the next time Claude's settings change.");
+            return new FixOutcome(true, NotRechecked);
         }
         return _problems.Any(q => TrayText.Key(q) == TrayText.Key(p))
             ? new FixOutcome(false, "clauderoo tried, but the problem is still there. Copy the details and send them to whoever helps you with clauderoo.")
@@ -528,25 +614,136 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
-    private void SetDefault(string name)
+    /// <summary>
+    /// A default chosen by hand, inside the write gate on a worker thread (SetDefault syncs). Notes a manual hold, so
+    /// auto-switch doesn't move straight off a profile picked while it is over the threshold.
+    /// </summary>
+    private async Task SetDefaultAsync(string name)
     {
-        var report = _pm.SetDefault(name);
-        RefreshProfiles();
-        QueueNotices([$"Default is now {name}. New terminals will use it.", .. report.Notices], now: true);
-        Kick();
+        try
+        {
+            var report = await _gate.RunAsync(() => _pm.SetDefaultByUser(name));
+            RefreshProfiles();
+            if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
+            QueueNotices([$"Default is now {name}. New terminals will use it.", .. report.Notices], now: true);
+            Kick();
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
-    private void NewProfile()
+    // ---------- auto-switch ----------
+
+    /// <summary>What a pass decided, and the default before it (the one a switch moved away from).</summary>
+    private sealed record AutoSwitchOutcome(Decision Decision, string? From, SyncReport? Report);
+
+    /// <summary>
+    /// Runs <see cref="AutoSwitchPass"/> on a worker thread with the latest readings, then shows what it did. One pass
+    /// at a time: readings that arrive meanwhile get one more pass afterwards.
+    /// </summary>
+    private async Task AutoSwitchAsync()
     {
-        if (RequireConfig() is not { } cfg) return;
-        var name = InputDialog.Ask("New profile", "Profile name:", null, null,
-            InputDialog.ProfileNameRule(cfg.Profiles.Keys), InputDialog.ProfileNameHint, lowercase: true);
-        if (string.IsNullOrEmpty(name)) return;
-        var report = _pm.Add(name);
-        if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
-        RefreshProfiles();
-        QueueNotices([$"Profile '{name}' created. Start a session in it to sign in.", .. report.Notices], now: true);
-        Kick();
+        if (_autoSwitching) { _autoSwitchAgain = true; return; }
+        _autoSwitching = true;
+        try
+        {
+            do
+            {
+                _autoSwitchAgain = false;
+                if (_configError != null) return;
+                var readings = _usage.Readings; // replaced, never changed, by UsageView: safe to hand over
+                AutoSwitchOutcome? outcome;
+                try { outcome = await _gate.RunAsync(() => AutoSwitchPass(readings)); } // resumes on the UI thread
+                catch (Exception e)
+                {
+                    // The switch failed; nothing was saved, so the next readings try again. The same failure again
+                    // only goes to Recent messages: no balloon every few minutes.
+                    if (e.Message == _autoSwitchError) AddRecent([TrayText.RecentError(e.Message)]);
+                    else ReportError(e);
+                    _autoSwitchError = e.Message;
+                    return;
+                }
+                _autoSwitchError = null;
+                if (outcome != null) Guard(() => ShowAutoSwitch(outcome));
+            } while (_autoSwitchAgain);
+        }
+        catch (Exception) { /* never take the tray down from a background pass */ }
+        finally { _autoSwitching = false; }
+    }
+
+    /// <summary>
+    /// Worker thread, inside the write gate, so no other tray write (manual Set default, settings, syncs) interleaves:
+    /// the shared <see cref="AutoSwitchRunner.RunPass(ProfileManager, IReadOnlyDictionary{string, UsageReading}, DateTimeOffset)"/>.
+    /// A failed switch throws (reported, nothing saved). Null when the config or state can't be read right now: that
+    /// is shown elsewhere, and the next readings try again.
+    /// </summary>
+    private AutoSwitchOutcome? AutoSwitchPass(IReadOnlyDictionary<string, UsageReading> readings)
+    {
+        var r = AutoSwitchRunner.RunPass(_pm, readings, DateTimeOffset.UtcNow);
+        return r.ReadError != null ? null : new AutoSwitchOutcome(r.Decision, r.From, r.Report);
+    }
+
+    private void ShowAutoSwitch(AutoSwitchOutcome o)
+    {
+        switch (o.Decision)
+        {
+            case Decision.SwitchTo to:
+                RefreshProfiles();
+                if (_profilesForm is { IsDisposed: false } form) form.RefreshList();
+                Balloon(TrayText.AutoSwitchBalloon(to.Reason, to.Profile), ToolTipIcon.Info);
+                if (o.Report != null) QueueNotices(o.Report.Notices); // after the switch balloon, not over it
+                Kick();
+                break;
+            case Decision.NoTarget nt:
+                Balloon(TrayText.NoTargetBalloon(nt.Reason, o.From ?? ""), ToolTipIcon.Warning);
+                break;
+            case Decision.Recovered rec:
+                var name = rec.Profile;
+                Balloon(TrayText.RecoveredBalloon(name), ToolTipIcon.Info, onClick: () =>
+                {
+                    if (RequireConfig() is { } cfg && cfg.DefaultProfile != name) _ = SetDefaultAsync(name);
+                });
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The Advanced menu's checkbox, saved inside the write gate (read, change and save in one go, so a running switch
+    /// can't put back the old value). Turning it on decides right away with the readings already known.
+    /// </summary>
+    private async Task SetAutoSwitchAsync(bool on)
+    {
+        try
+        {
+            if (RequireConfig() == null) return;
+            var s = await _gate.RunAsync(() =>
+            {
+                var cfg = _pm.Config;
+                var settings = cfg.AutoSwitch ??= new AutoSwitchSettings();
+                settings.Enabled = on;
+                ConfigStore.Save(_paths, cfg);
+                return settings;
+            });
+            QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
+            if (on) _ = AutoSwitchAsync();
+        }
+        catch (Exception e) { ReportError(e); }
+    }
+
+    private async Task NewProfileAsync()
+    {
+        try
+        {
+            if (RequireConfig() is not { } cfg) return;
+            var name = InputDialog.Ask("New profile", "Profile name:", null, null,
+                InputDialog.ProfileNameRule(cfg.Profiles.Keys), InputDialog.ProfileNameHint, lowercase: true);
+            if (string.IsNullOrEmpty(name)) return;
+            var report = await _gate.RunAsync(() => _pm.Add(name));
+            if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
+            RefreshProfiles();
+            QueueNotices([$"Profile '{name}' created. Start a session in it to sign in.", .. report.Notices], now: true);
+            Kick();
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
     private void OpenProfilesFolder()
@@ -563,6 +760,12 @@ sealed class TrayContext : ApplicationContext
 
     private void SetUp()
     {
+        using var held = _gate.TryEnter();
+        if (held == null)
+        {
+            Balloon(TrayText.Busy, ToolTipIcon.Info);
+            return;
+        }
         try
         {
             _pm.Init();
@@ -673,22 +876,24 @@ sealed class TrayContext : ApplicationContext
     private void Guard(Action action)
     {
         try { action(); }
-        catch (Exception e)
-        {
-            // Core and the launcher speak to the command line: known errors get plain words, the rest a short
-            // balloon that opens the Problems window, where the original text is listed under Recent messages.
-            var (text, unknown) = TrayText.PlainError(e);
-            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
-            Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
-        }
+        catch (Exception e) { ReportError(e); }
     }
 
-    // Every balloon decides for itself whether clicking it opens the Problems window.
-    private void Balloon(string text, ToolTipIcon kind, bool opensProblems = false)
+    // Core and the launcher speak to the command line: known errors get plain words, the rest a short balloon that
+    // opens the Problems window, where the original text is listed under Recent messages.
+    private void ReportError(Exception e)
+    {
+        var (text, unknown) = TrayText.PlainError(e);
+        if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+        Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
+    }
+
+    // Every balloon decides for itself what clicking it does: open the Problems window, run onClick, or nothing.
+    private void Balloon(string text, ToolTipIcon kind, bool opensProblems = false, Action? onClick = null)
     {
         try
         {
-            _balloonOpensProblems = opensProblems;
+            _balloonClick = onClick ?? (opensProblems ? new Action(ShowProblems) : null);
             _lastBalloon = DateTime.UtcNow;
             _icon.ShowBalloonTip(5000, "clauderoo", TrayText.Cut(text, 250), kind);
         }
@@ -704,6 +909,7 @@ sealed class TrayContext : ApplicationContext
             DisposeWatchers();
             _profilesForm?.Dispose();
             _problemsForm?.Dispose();
+            _conversationsForm?.Dispose();
             _manageSignal.Dispose();
             _poller.Dispose();      // stops the loop first, then the client it uses
             _usageClient.Dispose();

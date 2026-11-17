@@ -53,6 +53,7 @@ public class ClauderooConfig
     public string HomeDir { get; set; } = "";
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
+    public AutoSwitchSettings? AutoSwitch { get; set; }
 
     /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
     public Dictionary<string, string> Folders { get; set; } = new();

@@ -14,7 +14,8 @@ internal sealed record TrayMenuState(
     bool UpdateChecksAvailable = false,
     IReadOnlyDictionary<string, UsageReading>? Usage = null,
     IReadOnlyDictionary<string, UsageResult>? UsageResults = null,
-    DateTimeOffset Now = default)
+    DateTimeOffset Now = default,
+    AutoSwitchSettings? AutoSwitch = null)
 {
     /// <summary>Profiles whose usage is tracked: Claude login, home included.</summary>
     public static bool TracksUsage(ProfileInfo p) => p.IsHome || p.Provider == Providers.Login;
@@ -36,6 +37,7 @@ internal sealed class TrayMenuActions
     public Action ShowProblems { get; init; } = () => { };
     public Action ShowProfiles { get; init; } = () => { };
     public Action NewProfile { get; init; } = () => { };
+    public Action ContinueConversation { get; init; } = () => { };
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action UpdateNow { get; init; } = () => { };
@@ -46,6 +48,7 @@ internal sealed class TrayMenuActions
     public Action ShowConfigFile { get; init; } = () => { };
     public Action Exit { get; init; } = () => { };
     public Action RefreshUsage { get; init; } = () => { };
+    public Action<bool> SetAutoSwitch { get; init; } = _ => { };
 }
 
 /// <summary>Builds the tray menu. The default profile is bold (double-click starts it) and marked with a star.</summary>
@@ -57,8 +60,12 @@ internal static class TrayMenu
     /// <summary>Tag on the default profile's item: the renderer draws the star in the check column.</summary>
     sealed class DefaultMark;
 
-    /// <summary>Tag on a profile item: the text after <see cref="MutedTail"/>'s position is drawn grey.</summary>
-    sealed record ProfileMark(bool IsDefault, string? MutedTail);
+    /// <summary>
+    /// Tag on a profile item. <see cref="Runs"/>, when set, is the item's text (already &amp;-escaped) in pieces with
+    /// their own colour (null = the normal text colour): "not signed in" in grey, a usage window near its limit in
+    /// amber or red.
+    /// </summary>
+    sealed record ProfileMark(bool IsDefault, IReadOnlyList<(string Text, Color? Color)>? Runs);
 
     /// <summary>Tag on a disabled header whose glyph keeps its colour.</summary>
     sealed class ColourGlyph;
@@ -104,6 +111,9 @@ internal static class TrayMenu
         items.Add(new ToolStripSeparator());
         items.Add(Item("&Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
         items.Add(Item("&New profile…", Neutral(Glyph.Add, dpi), a.NewProfile));
+        var resume = Item("Continue a &conversation…", Neutral(Glyph.Play, dpi), a.ContinueConversation);
+        resume.ToolTipText = "Pick a past conversation and carry on with it under another profile.";
+        items.Add(resume);
 
         var advanced = new ToolStripMenuItem("&Advanced");
         PrepareDropDown(advanced, dpi);
@@ -113,6 +123,11 @@ internal static class TrayMenu
         var auto = new ToolStripMenuItem("Start with &Windows") { Checked = s.AutoStartOn };
         auto.Click += (_, _) => a.SetAutoStart(!auto.Checked);
         advanced.DropDownItems.Add(auto);
+        var autoSwitch = new ToolStripMenuItem(TrayText.AutoSwitchMenu(s.AutoSwitch)) { Checked = s.AutoSwitch is { Enabled: true } };
+        autoSwitch.ToolTipText = "When the default profile nears a usage limit, new terminals use another profile with room. "
+                                 + "Change the threshold and order in Manage profiles.";
+        autoSwitch.Click += (_, _) => a.SetAutoSwitch(!autoSwitch.Checked);
+        advanced.DropDownItems.Add(autoSwitch);
         if (s.UpdateChecksAvailable)
         {
             var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
@@ -167,22 +182,36 @@ internal static class TrayMenu
         var reading = tracked ? s.Usage?.GetValueOrDefault(name) : null;
         var lastFetch = tracked ? s.UsageResults?.GetValueOrDefault(name) : null;
         // "not signed in" stays the muted end of the line: no usage after it.
-        var label = TrayText.ProfileLabel(p) + (TrayText.IsSignedOut(p) ? "" : TrayText.UsageSuffix(reading));
+        var signedOut = TrayText.IsSignedOut(p);
+        var head = TrayText.ProfileLabel(p);
+        IReadOnlyList<(string Text, UsageLevel Level)> parts = signedOut ? [] : TrayText.UsageSuffixParts(reading, TrayText.WarnThreshold(s.AutoSwitch));
+        var label = head + string.Concat(parts.Select(x => x.Text));
+        var nearLimit = parts.Any(x => x.Level != UsageLevel.Ok);
+        List<(string Text, Color? Color)>? runs = null;
+        if (signedOut && head.EndsWith(TrayText.NotSignedIn, StringComparison.Ordinal))
+            runs = [(Esc(head[..^TrayText.NotSignedIn.Length]), null), (Esc(TrayText.NotSignedIn), StatusColors.Muted)];
+        else if (nearLimit)
+            runs = [(Esc(head), null), .. parts.Select(x => (Esc(x.Text), x.Level switch
+            {
+                UsageLevel.High => StatusColors.Fail,
+                UsageLevel.Warn => StatusColors.Warn,
+                _ => (Color?)null,
+            }))];
         var glyph = p.Provider switch
         {
             Providers.Vertex => Glyph.Cloud,
             Providers.ApiKey or Providers.Token => Glyph.Key,
             _ => Glyph.Person,
         };
-        var item = new ToolStripMenuItem(label.Replace("&", "&&"))
+        var item = new ToolStripMenuItem(Esc(label))
         {
             // A profile with problems: its provider glyph turns amber.
             Image = Glyphs.Get(glyph, GlyphSize, dpi, hasProblems ? StatusColors.Warn : SystemColors.MenuText),
-            AccessibleName = label + (p.IsDefault ? ", default" : "") + (hasProblems ? ", has problems" : "")
-                             + (running > 0 ? ", " + TrayText.Running(running) : ""),
+            AccessibleName = label + (p.IsDefault ? ", default" : "") + (nearLimit ? ", near its usage limit" : "")
+                             + (hasProblems ? ", has problems" : "") + (running > 0 ? ", " + TrayText.Running(running) : ""),
             ToolTipText = p.IsDefault ? "Default profile: double-click the tray icon to start it."
                 : hasProblems ? "This profile has problems: see the first menu item." : null,
-            Tag = new ProfileMark(p.IsDefault, TrayText.IsSignedOut(p) ? TrayText.NotSignedIn : null),
+            Tag = new ProfileMark(p.IsDefault, runs),
         };
         if (p.IsDefault) item.Font = Bold(menu.Font);
         item.Click += (_, _) =>
@@ -211,7 +240,7 @@ internal static class TrayMenu
             item.DropDownItems.Add(new ToolStripMenuItem("● " + TrayText.Running(running)) { Enabled = false });
         }
         IReadOnlyList<string> usageRows = TrayText.UsageNotTrackedFor(p) is { } notTracked ? [notTracked]
-            : TrayText.IsSignedOut(p) ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
+            : signedOut ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
         if (usageRows.Count > 0)
         {
             item.DropDownItems.Add(new ToolStripSeparator());
@@ -220,6 +249,9 @@ internal static class TrayMenu
         }
         return item;
     }
+
+    /// <summary>Menu text: a literal &amp; is doubled so it isn't taken as a mnemonic.</summary>
+    static string Esc(string text) => text.Replace("&", "&&");
 
     static ToolStripMenuItem Header(string text, Font font) =>
         new(text.Replace("&", "&&")) { Enabled = false, Font = Bold(font), AccessibleRole = AccessibleRole.StaticText };
@@ -269,7 +301,8 @@ internal static class TrayMenu
     }
 
     /// <summary>
-    /// The professional renderer plus: the default profile's star in the check column, "not signed in" in grey, and
+    /// The professional renderer plus: the default profile's star in the check column, "not signed in" in grey, a
+    /// usage window near its limit in amber or red, and
     /// header glyphs that keep their colour although the header is disabled.
     /// </summary>
     sealed class TrayRenderer : ToolStripProfessionalRenderer
@@ -294,23 +327,25 @@ internal static class TrayMenu
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
-            if (e.Item.Tag is not ProfileMark { MutedTail: { } tail } || !e.Item.Enabled
-                || e.Text is not { } text || !text.EndsWith(tail))
+            if (e.Item.Tag is not ProfileMark { Runs: { Count: > 0 } runs } || !e.Item.Enabled
+                || e.Text is not { } text || text != string.Concat(runs.Select(run => run.Text)))
             {
                 base.OnRenderItemText(e);
                 return;
             }
-            // Draw the text in two runs: the name and provider in the normal colour, "not signed in" in grey.
+            // Draw the text in runs, each in its own colour (null: the normal one), one after the other.
             var flags = e.TextFormat | TextFormatFlags.NoPadding;
-            var head = text[..^tail.Length];
             var pad = TextRenderer.MeasureText(e.Graphics, "x", e.TextFont, e.TextRectangle.Size, e.TextFormat).Width
                       - TextRenderer.MeasureText(e.Graphics, "x", e.TextFont, e.TextRectangle.Size, flags).Width;
             var r = e.TextRectangle;
             var x = r.X + pad / 2;
-            var headWidth = TextRenderer.MeasureText(e.Graphics, head, e.TextFont, r.Size, flags).Width;
-            TextRenderer.DrawText(e.Graphics, head, e.TextFont, new Rectangle(x, r.Y, r.Right - x, r.Height), e.TextColor, flags);
-            TextRenderer.DrawText(e.Graphics, tail, e.TextFont, new Rectangle(x + headWidth, r.Y, Math.Max(0, r.Right - x - headWidth), r.Height),
-                StatusColors.Muted, flags);
+            foreach (var (part, color) in runs)
+            {
+                if (part.Length == 0) continue;
+                TextRenderer.DrawText(e.Graphics, part, e.TextFont, new Rectangle(x, r.Y, Math.Max(0, r.Right - x), r.Height),
+                    color ?? e.TextColor, flags);
+                x += TextRenderer.MeasureText(e.Graphics, part, e.TextFont, r.Size, flags).Width;
+            }
         }
     }
 }

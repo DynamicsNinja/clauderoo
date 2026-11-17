@@ -72,6 +72,8 @@ public partial class ProfileManager
             foreach (var kv in cfg.Profiles) profiles[kv.Key == oldName ? newName : kv.Key] = kv.Value;
             cfg.Profiles = profiles;
             if (cfg.DefaultProfile == oldName) cfg.DefaultProfile = newName;
+            if (cfg.AutoSwitch is { } auto)
+                auto.Order = auto.Order.Select(n => n == oldName ? newName : n).ToList();
             foreach (var k in cfg.Folders.Keys.ToList())
                 if (cfg.Folders[k] == oldName) cfg.Folders[k] = newName;
             ConfigStore.Save(paths, cfg);
@@ -86,6 +88,7 @@ public partial class ProfileManager
 
             try { Sessions.Rename(oldName, newName); } catch (IOException) { /* tracking is best effort */ }
             try { Usage.Rename(oldName, newName); } catch (IOException) { /* the cache is best effort */ }
+            try { AutoSwitchState.Rename(oldName, newName); } catch (IOException) { /* state is best effort */ }
 
             return entry.Home ? new SyncReport() : NewSyncer(cfg).Sync(newName);
         }

@@ -42,7 +42,7 @@ public partial class ProfileManager
 
     private const string EnvVar = "CLAUDE_CONFIG_DIR";
 
-    private string Stamp => now().ToString("yyyyMMdd-HHmmss");
+    internal string Stamp => now().ToString("yyyyMMdd-HHmmss");
 
     public ClauderooPaths Paths => paths;
     public IEnvStore Env => env;
@@ -171,10 +171,12 @@ public partial class ProfileManager
         try { tokens.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
+        cfg.AutoSwitch?.Order.RemoveAll(n => n == name);
         foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
             cfg.Folders.Remove(k);
         ConfigStore.Save(paths, cfg);
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
+        try { AutoSwitchState.Remove(name); } catch (IOException) { /* state is best effort */ }
     }
 
     // Shared by Remove and Rename: refuses while home's plugin records point inside the profile folder.

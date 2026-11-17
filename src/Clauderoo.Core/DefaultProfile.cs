@@ -35,4 +35,20 @@ public partial class ProfileManager
         ConfigStore.Save(paths, cfg);
         return report;
     }
+
+    /// <summary>
+    /// <see cref="SetDefault"/> chosen by the user (tray, Profiles window, <c>cr default</c>): also notes a manual hold,
+    /// so auto-switch doesn't move straight off a profile picked while it is over the threshold. The hold is best
+    /// effort: the default is set even when the auto-switch state can't be written.
+    /// </summary>
+    public SyncReport SetDefaultByUser(string? name)
+    {
+        var report = SetDefault(name);
+        try
+        {
+            if (Config.DefaultProfile is { } chosen) AutoSwitchState.NoteManualDefault(chosen);
+        }
+        catch (IOException) { /* state is best effort */ }
+        return report;
+    }
 }

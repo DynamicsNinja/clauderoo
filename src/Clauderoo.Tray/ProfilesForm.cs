@@ -29,6 +29,8 @@ sealed class ProfilesForm : Form
     private readonly ProfileManager _pm;
     private readonly Action<string> _startSession;
     private readonly Action? _showProblems;
+    private readonly WriteGate? _gate;
+    private readonly Action? _autoSwitchChanged;
     private Action? _resultLink;   // what the link at the end of the result line does (Undo, Open Problems…)
     private readonly Gcloud _gcloud = new();
     private readonly ToolTip _tips = new();
@@ -41,6 +43,9 @@ sealed class ProfilesForm : Form
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
+    private readonly Button _autoSwitch = Btn("Auto-s&witch…");
+    private readonly Button _export = Btn("E&xport…");
+    private readonly Button _import = Btn("Import…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -196,12 +201,17 @@ sealed class ProfilesForm : Form
 
     /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
     /// <param name="usage">The tray's usage readings and Refresh; without it the Usage group says nothing is known yet.</param>
-    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null, UsageView? usage = null)
+    /// <param name="gate">The tray's write gate: the window's writes take turns with the tray's (syncs, auto-switch).</param>
+    /// <param name="autoSwitchChanged">Called after the Auto-switch settings were saved (the tray decides again).</param>
+    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null, UsageView? usage = null,
+        WriteGate? gate = null, Action? autoSwitchChanged = null)
     {
         _pm = pm;
         _startSession = startSession;
         _showProblems = showProblems;
         _usageView = usage;
+        _gate = gate;
+        _autoSwitchChanged = autoSwitchChanged;
 
         Text = BaseTitle;
         StartPosition = FormStartPosition.CenterScreen;
@@ -215,14 +225,24 @@ sealed class ProfilesForm : Form
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        var transferButtons = Flow(FlowDirection.LeftToRight);
+        transferButtons.Margin = new Padding(0, 6, 0, 0);
+        transferButtons.Controls.AddRange([_export, _import]);
+        // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
+        _autoSwitch.Margin = new Padding(0, 6, 6, 0);
+        _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
-        left.RowCount = 2;
+        left.RowCount = 4;
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_list, 0, 0);
         left.Controls.Add(leftButtons, 0, 1);
+        left.Controls.Add(transferButtons, 0, 2);
+        left.Controls.Add(_autoSwitch, 0, 3);
 
         // Right: the home explanation, or the provider choice.
         _homePanel = Table(1);
@@ -416,6 +436,9 @@ sealed class ProfilesForm : Form
         _new.Click += (_, _) => Guard(NewProfile);
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
+        _autoSwitch.Click += async (_, _) => await EditAutoSwitchAsync();
+        _export.Click += (_, _) => Guard(ExportProfiles);
+        _import.Click += (_, _) => Guard(ImportProfiles);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -440,8 +463,8 @@ sealed class ProfilesForm : Form
         _copy.Click += (_, _) => CopyResults();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
-        _setDefault.Click += (_, _) => Guard(SetDefault);
-        // Only shows and copies the command; never runs it or writes ~/.claude.json.
+        _setDefault.Click += async (_, _) => await SetDefaultAsync();
+        // Only shows and copies the command; never runs it or writes ~/.claude.json, so it needs no WriteGate.
         _useFromClaude.Click += (_, _) => Guard(() => UseFromClaudeDialog.ShowFor(this));
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
@@ -477,8 +500,9 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
                      (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
+                     (_export, Glyph.Save), (_import, Glyph.FolderOpen),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -584,6 +608,9 @@ sealed class ProfilesForm : Form
 
     private sealed record ListItem(ProfileInfo Info)
     {
+        // Settable so the default marker can be refreshed without reloading the list (see RefreshDefaultMarker).
+        public ProfileInfo Info { get; set; } = Info;
+
         // The accessible name of the row (the visible row is owner-drawn).
         public override string ToString() =>
             Info.Name + (Info.IsDefault ? ", default" : "") + (Info.IsHome ? ", home" : "") + " — " + TrayText.Describe(Info);
@@ -1117,9 +1144,12 @@ sealed class ProfilesForm : Form
             var apiKey = provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(_apiKey.Text) ? _apiKey.Text.Trim() : null;
             // An empty token box keeps the saved token (Core keeps it when none is given).
             var token = provider == Providers.Token && !string.IsNullOrWhiteSpace(_token.Text) ? _token.Text.Trim() : null;
-            Collect(_pm.SetProvider(name, provider, vertex, apiKey, token), notices, problems);
-            providerSaved = true;
-            Collect(_pm.ReplaceEnv(name, env), notices, problems);
+            Write(() =>
+            {
+                Collect(_pm.SetProvider(name, provider, vertex, apiKey, token), notices, problems);
+                providerSaved = true;
+                Collect(_pm.ReplaceEnv(name, env), notices, problems);
+            });
         }
         catch (Exception e) // file/sync errors too, not only ClauderooException: never let them reach the tray
         {
@@ -1459,9 +1489,73 @@ sealed class ProfilesForm : Form
         var name = InputDialog.Ask("New profile", "Profile name:", this, null,
             InputDialog.ProfileNameRule(ProfileNames()), InputDialog.ProfileNameHint, lowercase: true);
         if (string.IsNullOrEmpty(name)) return;
-        var report = _pm.Add(name);
+        var report = Write(() => _pm.Add(name));
         Reload(name);
         ShowResult(report, $"Profile '{name}' created. Start a session in it to sign in.");
+    }
+
+    private const string ExportEnvWarning =
+        "Environment variables are saved as plain text in the file. Check it before sharing it.";
+
+    // Export every profile except home: a small options dialog first, then the save dialog.
+    private void ExportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        bool includeEnv;
+        using (var options = new Form
+        {
+            Text = "Export profiles", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12),
+        })
+        {
+            var env = new CheckBox { Text = "Include environment variables", AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var note = new WrapLabel { Text = ExportEnvWarning, Margin = new Padding(0, 0, 0, 10) };
+            var ok = new Button { Text = "Continue", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 0) };
+            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, MinimumSize = new Size(80, 0) };
+            var buttons = Flow(FlowDirection.RightToLeft);
+            buttons.Dock = DockStyle.Fill;
+            buttons.Controls.AddRange([cancel, ok]);
+            var table = Table(1);
+            table.Controls.Add(env, 0, 0);
+            table.Controls.Add(note, 0, 1);
+            table.Controls.Add(buttons, 0, 2);
+            table.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
+            options.Controls.Add(table);
+            options.AcceptButton = ok;
+            options.CancelButton = cancel;
+            options.Font = Font;
+            if (options.ShowDialog(this) != DialogResult.OK) return;
+            includeEnv = env.Checked;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export profiles", FileName = "clauderoo-profiles.json", DefaultExt = "json",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        // The save dialog has already confirmed any overwrite.
+        // Gated too, so the export reads a config no tray write is halfway through.
+        Write(() => _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true));
+        SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
+    }
+
+    private void ImportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import profiles", Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var force = MessageBox.Show(this, "Update profiles that already exist? Choose No to skip them.", "clauderoo",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        var result = Write(() => _pm.ImportFile(dialog.FileName, force)); // changes the config: inside the write gate
+        Reload(null);
+        MessageBox.Show(this, TrayText.ImportSummary(result), "Import profiles", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void RenameProfile()
@@ -1478,7 +1572,7 @@ sealed class ProfilesForm : Form
         SyncReport report;
         try
         {
-            report = _pm.Rename(oldName, newName);
+            report = Write(() => _pm.Rename(oldName, newName));
         }
         catch (SessionsRunningException e)
         {
@@ -1490,7 +1584,7 @@ sealed class ProfilesForm : Form
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Rename anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             if (BlockIfRunning(oldName, "renamed")) return; // force skips Core's session check: check again
-            report = _pm.Rename(oldName, newName, force: true);
+            report = Write(() => _pm.Rename(oldName, newName, force: true));
         }
         if (LastChecks.Remove(oldName, out var rec)) LastChecks[newName] = rec;
         _loadedState = State(); // the editor's profile is gone under its old name: nothing left to save
@@ -1511,7 +1605,7 @@ sealed class ProfilesForm : Form
         StopCheckAndWait(name);
         try
         {
-            _pm.Remove(name);
+            Write(() => _pm.Remove(name));
         }
         catch (SessionsRunningException e)
         {
@@ -1523,7 +1617,7 @@ sealed class ProfilesForm : Form
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Remove anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             if (BlockIfRunning(name, "removed")) return; // force skips Core's session check: check again
-            _pm.Remove(name, force: true);
+            Write(() => _pm.Remove(name, force: true));
         }
         LastChecks.Remove(name);
         _loadedState = State(); // removed: nothing left to save
@@ -1538,8 +1632,10 @@ sealed class ProfilesForm : Form
     {
         var name = _undoName;
         if (name == null || !ConfirmLeave()) return;
+        // The Undo link stays until the restore is written: when the gate is busy (or the restore fails) the error is
+        // shown and Undo can be clicked again.
+        var report = Write(() => _pm.Restore(name));
         ClearResult();
-        var report = _pm.Restore(name);
         Reload(name);
         ShowResult(report, $"Restored {name}.");
     }
@@ -1625,7 +1721,7 @@ sealed class ProfilesForm : Form
         if (other != null && MessageBox.Show(this, $"{dir} uses {other} now.{Environment.NewLine}{Environment.NewLine}" +
                                                    $"Use {name} for it instead?", "clauderoo",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-        _pm.Map(name, dir);
+        Write(() => _pm.Map(name, dir));
         LoadFolders(name, dir);
         SetResult($"{dir} now uses {name}.", SystemColors.ControlText);
     }
@@ -1635,20 +1731,111 @@ sealed class ProfilesForm : Form
         if (_current == null || _folders.SelectedItem is not string dir) return;
         ClearResult();
         var name = _current;
-        _pm.Unmap(dir);
+        Write(() => _pm.Unmap(dir));
         LoadFolders(name);
         SetResult($"{dir} no longer uses {name}.", SystemColors.ControlText);
     }
 
-    private void SetDefault()
+    /// <summary>
+    /// A default chosen by hand: on a worker thread inside the tray's write gate (SetDefault syncs), and noted as a
+    /// manual hold so auto-switch doesn't move straight off it.
+    /// </summary>
+    private async Task SetDefaultAsync()
     {
         if (_current == null || _currentIsDefault || !ConfirmLeave()) return;
         ClearResult();
         var name = _current;
-        var report = _pm.SetDefault(name);
-        Reload(name);
-        ShowResult(report, $"Default is now {name}. New terminals will use it.");
+        _setDefault.Enabled = false; // no second click while the first one waits its turn in the gate
+        try
+        {
+            var report = await RunWriteAsync(() => _pm.SetDefaultByUser(name));
+            if (IsDisposed) return;
+            // Unsaved edits (made during the await) are kept: then only the default marker is refreshed.
+            if (!IsDirty) Reload(name);
+            else RefreshDefaultMarker();
+            ShowResult(report, $"Default is now {name}. New terminals will use it.");
+        }
+        catch (Exception e)
+        {
+            if (!IsDisposed) ShowError(e.Message);
+        }
+        finally
+        {
+            if (!IsDisposed) UpdateActionStates();
+        }
     }
+
+    /// <summary>
+    /// Re-reads which profile is the default and updates just that: the star in the list and the buttons that depend
+    /// on it. The editor, and any unsaved edits in it, are left alone.
+    /// </summary>
+    private void RefreshDefaultMarker()
+    {
+        string? def;
+        try { def = _pm.Config.DefaultProfile; }
+        catch (Exception) { return; } // shown elsewhere; the marker catches up on the next reload
+        foreach (ListItem item in _list.Items)
+            if (item.Info.IsDefault != (item.Info.Name == def))
+                item.Info = item.Info with { IsDefault = item.Info.Name == def };
+        _currentIsDefault = _current != null && _current == def;
+        if (_currentInfo != null) _currentInfo = _currentInfo with { IsDefault = _currentIsDefault };
+        _list.Invalidate();
+        UpdateActionStates();
+    }
+
+    /// <summary>
+    /// The Auto-switch dialog. Saved straight to the config inside the write gate (read, change and save in one go):
+    /// it doesn't touch the profile being edited. The tray then decides again with the new settings.
+    /// </summary>
+    private async Task EditAutoSwitchAsync()
+    {
+        try
+        {
+            ClearResult();
+            var cfg = _pm.Config;
+            var profiles = cfg.Profiles.Select(kv => (kv.Key, Providers.Of(kv.Value))).ToList();
+            if (AutoSwitchDialog.Edit(this, cfg.AutoSwitch ?? new AutoSwitchSettings(), profiles) is not { } edited) return;
+            _autoSwitch.Enabled = false; // no second dialog while this save waits its turn
+            try
+            {
+                await RunWriteAsync(() =>
+                {
+                    var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
+                    edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
+                    fresh.AutoSwitch = edited;
+                    ConfigStore.Save(_pm.Paths, fresh);
+                    return true;
+                });
+            }
+            finally
+            {
+                if (!IsDisposed) _autoSwitch.Enabled = true;
+            }
+            if (IsDisposed) return;
+            SetResult(TrayText.AutoSwitchSummary(edited), SystemColors.ControlText);
+            _autoSwitchChanged?.Invoke();
+        }
+        catch (Exception e)
+        {
+            if (!IsDisposed) ShowError(e.Message);
+        }
+    }
+
+    /// <summary>A write on a worker thread, waiting its turn in the tray's write gate (the window never blocks).</summary>
+    private Task<T> RunWriteAsync<T>(Func<T> write) => _gate != null ? _gate.RunAsync(write) : Task.Run(write);
+
+    /// <summary>
+    /// A write on the UI thread, as before, inside the tray's write gate. The gate is only tried, never waited on:
+    /// while another write runs (a sync, an automatic switch) this throws <see cref="TrayText.Busy"/>, shown as a message.
+    /// </summary>
+    private T Write<T>(Func<T> write)
+    {
+        if (_gate == null) return write();
+        using var held = _gate.TryEnter() ?? throw new ClauderooException(TrayText.Busy);
+        return write();
+    }
+
+    private void Write(Action write) => Write(() => { write(); return true; });
 
     private void ShowResult(SyncReport report, string message) =>
         ShowReport([message, .. report.Notices], report.Problems);
@@ -1680,6 +1867,16 @@ sealed class ProfilesForm : Form
     internal static List<string> ProblemTitles(IEnumerable<string> problems) =>
         problems.Select(p => ProblemTranslator.Translate(p).Title).Distinct().ToList();
 
+    // Test accessors: the window has no other seams for these.
+    internal string? UndoNameForTest => _undoName;
+    internal Action? ResultLinkForTest => _resultLink;
+    internal void OfferUndoForTest(string name, Action link) { _undoName = name; _resultLink = link; }
+    internal DataGridView EnvGridForTest => _env;
+    internal Button SetDefaultButtonForTest => _setDefault;
+    internal bool CurrentIsDefaultForTest => _currentIsDefault;
+    internal IReadOnlyList<ProfileInfo> ListedProfilesForTest => _list.Items.Cast<ListItem>().Select(i => i.Info).ToList();
+    internal void UndoRemoveForTest() => UndoRemove();
+
     private void SetResult(string text, Color color)
     {
         _undoName = null;
@@ -1704,10 +1901,11 @@ sealed class ProfilesForm : Form
     private void ShowError(string message) =>
         MessageBox.Show(this, message, "clauderoo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-    /// <summary>Re-reads profiles from disk unless the user has unsaved edits.</summary>
+    /// <summary>Re-reads profiles from disk unless the user has unsaved edits; then only the default marker.</summary>
     public void RefreshList()
     {
         if (!IsDirty) Reload(null);
+        else RefreshDefaultMarker();
     }
 
     /// <summary>Shows the window, restoring and bringing it to the front.</summary>

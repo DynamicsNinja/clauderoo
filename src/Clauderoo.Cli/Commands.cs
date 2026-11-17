@@ -18,6 +18,9 @@ public static class Commands
   unmap [dir]                         remove a folder mapping
   maps                                list folder mappings
   which                               show which profile this terminal is using
+  sessions [profile]                  list conversations across profiles, newest first
+  resume <id> --as <profile> [--isolated] [--tab] [-- args]
+                                      copy a conversation into <profile> and continue it there
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -30,13 +33,18 @@ public static class Commands
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
   provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  export <file> [names...] [--no-env] [--force]
+                                      save profile settings to a file (no secrets or logins)
+  import <file> [--force]             create profiles from an export (--force updates existing ones)
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
+  auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
+                                      switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
-  --json                              list, status, maps, which, check and usage: print JSON for scripts
+  --json                              list, status, maps, which, check, usage, sessions and auto --once: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -53,13 +61,14 @@ public static class Commands
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
         Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null,
-        UsageClient? usage = null, Func<string, bool>? clipboard = null, TextReader? mcpInput = null)
+        UsageClient? usage = null, Func<DateTimeOffset>? clock = null, Func<string, bool>? clipboard = null,
+        TextReader? mcpInput = null)
     {
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
-                hookCancel ?? HookConsoleCancel, hooks, usage, clipboard, mcpInput);
+                hookCancel ?? HookConsoleCancel, hooks, usage, clock ?? (() => DateTimeOffset.UtcNow), clipboard, mcpInput);
         }
         catch (SessionsRunningException e)
         {
@@ -81,7 +90,7 @@ public static class Commands
     }
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -90,7 +99,7 @@ public static class Commands
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
         Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks, UsageClient? usage,
-        Func<string, bool>? clipboard, TextReader? mcpInput)
+        Func<DateTimeOffset> clock, Func<string, bool>? clipboard, TextReader? mcpInput)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -101,7 +110,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "mcp"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -244,16 +253,55 @@ public static class Commands
                 else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
+            case "sessions":
+                return SessionsCmd(pos, output, pm, json);
+            case "resume":
+                return ResumeCmd(pos, claudeArgs, output, pm, startNewWindow, runInPlace, wtAvailable, claudePath);
+            case "export":
+            {
+                var force = pos.Remove("--force");
+                var noEnv = pos.Remove("--no-env");
+                if (pos.Count < 1) throw new ClauderooException("Usage: clauderoo export <file> [profiles...] [--no-env] [--force]");
+                var names = pos.Skip(1).ToList();
+                pm.ExportToFile(pos[0], names.Count > 0 ? names : null, !noEnv, force);
+                output.WriteLine($"Exported to {Path.GetFullPath(pos[0])}. No secrets or logins are included.");
+                if (!noEnv)
+                    err.WriteLine("warning: environment variable values are included as plain text. Check the file before sharing it, or use --no-env.");
+                return 0;
+            }
+            case "import":
+            {
+                var force = pos.Remove("--force");
+                if (pos.Count != 1) throw new ClauderooException("Usage: clauderoo import <file> [--force]");
+                var r = pm.ImportFile(pos[0], force);
+                if (r.Created.Count > 0) output.WriteLine($"Created: {string.Join(", ", r.Created)}");
+                if (r.Updated.Count > 0) output.WriteLine($"Updated: {string.Join(", ", r.Updated)}");
+                void Section(string heading, IReadOnlyList<string>? items)
+                {
+                    if (items is not { Count: > 0 }) return;
+                    output.WriteLine(heading);
+                    foreach (var i in items) output.WriteLine("  " + i);
+                }
+                Section("Folder mappings added:", r.Mapped);
+                if (r.AutoSwitchImported) output.WriteLine(ImportResult.AutoSwitchImportedText);
+                Section("Environment variables (names only):", r.EnvNames);
+                Section("Skipped:", r.Skipped);
+                Section("Kept their sign-in:", r.KeptProvider);
+                Section("Needs a key or token:", r.NeedSecret);
+                Section("Notices:", r.Notices);
+                if (!r.ChangedAnything) output.WriteLine("Nothing to import.");
+                return 0;
+            }
             case "default":
             {
                 if (pos.Count == 1 && pos[0] == "--clear")
                 {
-                    Print(pm.SetDefault(null), output, err);
+                    Print(pm.SetDefaultByUser(null), output, err);
                     output.WriteLine($"Default cleared ({pm.Config.DefaultProfile} is the default). Open a new terminal for plain 'claude' to use it.");
                 }
                 else
                 {
-                    Print(pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]), output, err);
+                    Print(pm.SetDefaultByUser(Need(pos, 1, "clauderoo default <name> | --clear")[0]), output, err);
                     output.WriteLine($"Default is now {pm.Config.DefaultProfile}. Open a new terminal for plain 'claude' to use it.");
                 }
                 return 0;
@@ -333,6 +381,8 @@ public static class Commands
                 return UsageCmd(pos, json, output, err, pm, hookCancel, usage);
             case "mcp":
                 return McpCmd(pos, claudeArgs, output, err, pm, claudePath, usage, clipboard, mcpInput);
+            case "auto":
+                return AutoCmd(pos, json, output, err, pm, hookCancel, usage, clock);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -507,6 +557,90 @@ public static class Commands
         Console.SetOut(err);
         try { server.RunAsync(input, output, CancellationToken.None).GetAwaiter().GetResult(); }
         finally { Console.SetOut(saved); }
+        return 0;
+    }
+
+    // The first prompt is the user's own text: it goes to this terminal (or the JSON payload) and nowhere else.
+    private static int SessionsCmd(List<string> pos, TextWriter output, ProfileManager pm, bool json)
+    {
+        if (pos.Count > 1) throw new ClauderooException("Usage: clauderoo sessions [profile] [--json]");
+        var all = ConversationIndex.List(pm, pos.Count == 1 ? pos[0] : null);
+        if (json)
+        {
+            // FilePath and any message content beyond the first prompt are never included.
+            JsonOut.Write(output, new
+            {
+                Conversations = all.Select(c => new { c.Id, c.Profile, c.Isolated, Folder = c.Cwd, c.When, c.FirstPrompt }),
+            });
+            return 0;
+        }
+        if (all.Count == 0)
+        {
+            output.WriteLine("No conversations found.");
+            return 0;
+        }
+        string Who(Conversation c) => c.Isolated ? $"{c.Profile} (isolated)" : c.Profile;
+        var whoW = all.Max(c => Who(c).Length);
+        var folderW = Math.Min(60, all.Max(c => (c.Cwd ?? "?").Length));
+        foreach (var c in all)
+            output.WriteLine(string.Join("  ",
+                ConversationIndex.Short(c.Id).PadRight(8),
+                Who(c).PadRight(whoW),
+                c.When.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                (c.Cwd ?? "?").PadRight(folderW),
+                c.FirstPrompt ?? "").TrimEnd());
+        return 0;
+    }
+
+    private static int ResumeCmd(List<string> pos, List<string> claudeArgs, TextWriter output, ProfileManager pm,
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath)
+    {
+        const string usage = "Usage: clauderoo resume <id> --as <profile> [--isolated] [--tab] [-- args]";
+        var tab = pos.Remove("--tab");
+        var isolated = pos.Remove("--isolated");
+        var asAt = pos.IndexOf("--as");
+        if (asAt < 0 || asAt + 1 >= pos.Count) throw new ClauderooException(usage);
+        var profile = pos[asAt + 1];
+        pos.RemoveRange(asAt, 2);
+        if (pos.Count != 1) throw new ClauderooException(usage);
+
+        var cfg = pm.Config;
+        pm.Get(profile); // unknown profile -> error before anything else
+        var c = ConversationIndex.Find(ConversationIndex.List(pm), pos[0]);
+        if (string.IsNullOrEmpty(c.Cwd))
+            throw new ClauderooException(
+                $"Conversation {ConversationIndex.Short(c.Id)} doesn't record its folder; Claude can only resume a conversation from its own folder.");
+        if (!Directory.Exists(c.Cwd))
+            throw new ClauderooException(
+                $"The folder {c.Cwd} no longer exists; Claude can only resume a conversation from its own folder.");
+
+        List<string> args = ["--resume", c.Id, .. claudeArgs];
+        // Built before the copy, so a missing token or claude fails before anything is written.
+        var spec = tab ? null
+            : pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, c.Cwd, args, claudePath, isolated), profile);
+        var where = isolated ? $"{profile} (isolated)" : profile;
+        var shortId = ConversationIndex.Short(c.Id);
+        switch (ConversationIndex.CopyTo(pm, c, profile, isolated))
+        {
+            case CopyOutcome.Copied:
+                output.WriteLine($"Copied conversation {shortId} from {c.Profile} to {where}.");
+                break;
+            case CopyOutcome.BackedUpAndCopied:
+                output.WriteLine($"Copied conversation {shortId} from {c.Profile} to {where}; the older copy there was kept as {c.Id}.jsonl.bak-*.");
+                break;
+            default:
+                output.WriteLine($"{where} already has an up-to-date copy of conversation {shortId}.");
+                break;
+        }
+
+        if (spec != null)
+        {
+            if (isolated && pm.PrepareIsolated(profile).FirstRun)
+                output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
+            return runInPlace(spec);
+        }
+        // As with start --tab: the tab runs `run <profile>`, which injects any token itself.
+        startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, c.Cwd, args, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
         return 0;
     }
 
@@ -716,6 +850,132 @@ public static class Commands
         return local.Date == DateTime.Now.Date
             ? local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
             : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private const string AutoUsage = "clauderoo auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]";
+
+    // Exit codes for --once: 0 switched, 2 nothing to do, 3 no target (1 is an error, as everywhere).
+    private static int AutoCmd(List<string> pos, bool json, TextWriter output, TextWriter err, ProfileManager pm,
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected, Func<DateTimeOffset> clock)
+    {
+        var once = pos.Remove("--once");
+        bool? enable = null;
+        int? threshold = null;
+        List<string>? order = null;
+        for (var i = 0; i < pos.Count; i++)
+        {
+            switch (pos[i])
+            {
+                case "on": enable = true; break;
+                case "off": enable = false; break;
+                case "--threshold":
+                    if (i + 1 >= pos.Count) throw new ClauderooException($"Usage: {AutoUsage}");
+                    if (!int.TryParse(pos[++i], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)
+                        || n is < 6 or > 100)
+                        throw new ClauderooException("The threshold must be a whole number from 6 to 100 (switching needs a 5-point margin below it).");
+                    threshold = n;
+                    break;
+                case "--order":
+                    if (i + 1 >= pos.Count) throw new ClauderooException($"Usage: {AutoUsage}");
+                    order = pos[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                    foreach (var name in order)
+                        if (Providers.Of(pm.Get(name)) == Providers.Token) // Get throws for an unknown profile
+                            throw new ClauderooException($"'{name}' is a Claude-token profile. Claude-token profiles are never auto-switch targets.");
+                    break;
+                default: throw new ClauderooException($"Usage: {AutoUsage}");
+            }
+        }
+
+        var cfg = pm.Config;
+        if (enable != null || threshold != null || order != null)
+        {
+            var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
+            if (enable != null) s.Enabled = enable.Value;
+            if (threshold != null) s.Threshold = threshold.Value;
+            if (order != null) s.Order = order;
+            ConfigStore.Save(pm.Paths, cfg);
+        }
+
+        if (once) return AutoOnce(output, err, pm, hookCancel, injected, clock, json);
+
+        if (json) throw new ClauderooException("--json only applies to 'auto --once'.");
+        var cur = cfg.AutoSwitch ?? new AutoSwitchSettings();
+        output.WriteLine($"Auto-switch is {(cur.Enabled ? "on" : "off")}.");
+        output.WriteLine($"Threshold: {cur.Threshold}%");
+        output.WriteLine($"Order: {(cur.Order.Count > 0 ? string.Join(", ", cur.Order) : "profile list order")}");
+        return 0;
+    }
+
+    private static int AutoOnce(TextWriter output, TextWriter err, ProfileManager pm,
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected, Func<DateTimeOffset> clock, bool json)
+    {
+        // This read only says whether to fetch, and which profiles. Decisions use a fresh read after the fetch
+        // (RunPass), so a default the user picks meanwhile is never overridden.
+        var cfg = pm.Config;
+        if (cfg.AutoSwitch is not { Enabled: true })
+        {
+            const string off = "Auto-switch is off.";
+            if (json) JsonOut.Write(output, new { action = "none", from = cfg.DefaultProfile, to = (string?)null, reason = off });
+            else output.WriteLine(off);
+            return 2;
+        }
+
+        var client = injected ?? throw new InvalidOperationException("No usage client was given.");
+        var cache = new UsageCache(pm.Paths);
+        var usage = new Dictionary<string, UsageReading>();
+        using (var cts = new CancellationTokenSource())
+        using (hookCancel(cts))
+        {
+            foreach (var (name, entry) in cfg.Profiles)
+            {
+                if (Providers.Of(entry) != Providers.Login) continue;
+                UsageResult r;
+                try { r = client.FetchAsync(name, pm.ConfigDirOf(name), entry, cts.Token).GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    if (json) JsonOut.Error(err, "Cancelled.");
+                    else err.WriteLine("Cancelled.");
+                    return 1;
+                }
+                // A failed fetch falls back to the cached reading; the engine ignores it once it is no longer fresh.
+                if (ToRow(name, r, cache, err).Reading is { } reading) usage[name] = reading;
+            }
+        }
+
+        var pass = AutoSwitchRunner.RunPass(pm, usage, clock());
+        if (pass.ReadError is { } readError) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(readError);
+        var from = pass.From;
+
+        string action, reason;
+        string? to = null;
+        int code;
+        switch (pass.Decision)
+        {
+            case Decision.SwitchTo sw:
+                // With --json stdout carries only the payload, so the switch's sync notices go to stderr.
+                if (pass.Report != null) Print(pass.Report, json ? err : output, err);
+                (action, to, reason, code) = ("switched", sw.Profile, sw.Reason, 0);
+                break;
+            case Decision.NoTarget nt:
+                (action, reason, code) = ("noTarget", nt.Reason, 3);
+                break;
+            case Decision.Recovered rec:
+                (action, reason, code) = ("none", $"{rec.Profile} has room again.", 2);
+                break;
+            default:
+                (action, reason, code) = ("none", pass.Settings is { Enabled: true } ? "Nothing to do." : "Auto-switch is off.", 2);
+                break;
+        }
+
+        // {schemaVersion:1, action, from, to, reason}: JsonOut.Write adds schemaVersion first.
+        if (json) JsonOut.Write(output, new { action, from, to, reason });
+        else
+        {
+            output.WriteLine(reason);
+            if (to != null) output.WriteLine($"New terminals now use {to}.");
+            else if (action == "noTarget") output.WriteLine("No other profile has room.");
+        }
+        return code;
     }
 
     // The usage --json payload: {profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}.
