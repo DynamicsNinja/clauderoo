@@ -181,6 +181,33 @@ public class ParallelCheckTests
         Assert.Equal([$"{Sonnet} answers", $"{Opus} didn't answer", $"{Haiku} answers"], r.Skip(6).Select(i => i.Label));
     }
 
+    private sealed class FaultingClaude : IClaudeRunner
+    {
+        public string? Find() => @"C:\fake\claude.cmd";
+        public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+            string configDir, TimeSpan timeout, CancellationToken ct)
+        {
+            await Task.Yield();
+            throw new ClauderooException("Couldn't start claude.");
+        }
+    }
+
+    [Fact]
+    public async Task ProbeFaultsBeforeToken_ThrowsAtOnce_NoIamCall()
+    {
+        using var c = Make(new FaultingClaude());
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        c.Gcloud.Responder = () => { release.Task.Wait(TimeSpan.FromSeconds(10)); return (0, Token + "\n", ""); };
+        try
+        {
+            // Throws while the token is still pending: the error isn't held back until sign-in.
+            var e = await Assert.ThrowsAsync<ClauderooException>(() => c.Pm.CheckSetupAsync("work").WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal("Couldn't start claude.", e.Message);
+            Assert.Empty(c.Iam.Tokens);
+        }
+        finally { release.TrySetResult(); }
+    }
+
     [Fact]
     public async Task UserCancelsWhileTokenPending_Throws_NothingMoreReported()
     {

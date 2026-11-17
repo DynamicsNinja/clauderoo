@@ -311,55 +311,58 @@ public partial class ProfileManager
         Put(GcloudRow, new(CheckStatus.Ok, GcloudLabel, null) { Key = "gcloud" });
 
         ct.ThrowIfCancellationRequested();
-        // The sign-in token (a few seconds of gcloud) starts first; everything else runs while it is fetched.
-        var signIn = SignInAsync();
-
-        Put(GacRow, CheckGac() with { Key = "gac" });
-
-        var leftovers = new List<string>();
-        foreach (var (scope, vars) in new[] { ("User", machineEnv.User()), ("Machine", machineEnv.Machine()) })
-            foreach (var k in vars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
-                if (IsLeftoverProviderVar(k))
-                    leftovers.Add($"{k} ({scope})");
-        Put(LeftoverRow, (leftovers.Count == 0
-            ? new CheckItem(CheckStatus.Ok, LeftoverLabel, null)
-            : new CheckItem(CheckStatus.Warn, $"Leftover variables: {string.Join(", ", leftovers)}",
-                "Remove them in Windows settings › Environment variables, then restart terminals.")) with { Key = "leftovers" });
-
         // The probes get their own token, so a failed sign-in can stop them without cancelling the whole check.
         using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var probes = new List<Task<(int exit, string stdout, string stderr)>>();
-        var claude = claudeRunner.Find();
-        if (claude == null)
-        {
-            Put(ClaudeRow, new(CheckStatus.Fail, ClaudeLabel, "Install Claude Code, then open a new terminal.") { Key = "claude" });
-            SkipModels();
-        }
-        else
-        {
-            Put(ClaudeRow, new(CheckStatus.Ok, ClaudeLabel, null) { Key = "claude" });
-            ct.ThrowIfCancellationRequested();
-            foreach (var m in models)
-                progress?.Report(new CheckItem(CheckStatus.Running, m.Subject, null) { Key = m.Key });
-            // Each probe is a full Claude Code start-up (~10 s), so all models are tested at the same time, without
-            // waiting for the token. No MCP servers from the profile and no saved session: the probes leave nothing behind.
-            foreach (var m in models)
-            {
-                var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
-                if (m.Id != null) { args.Add("--model"); args.Add(m.Id); }
-                probes.Add(claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), probeCts.Token));
-            }
-        }
-
-        // The one reporting loop: each result is reported as soon as it is known, never two at a time.
+        var waiting = new List<Task>();
+        Task<(int exit, string stdout, string stderr)>? signIn = null;
         string? token = null;
         bool signInKnown = false, signInFailed = false;
         Task<(bool? allowed, string? error)>? iamTask = null;
         var held = new List<int>(); // probes that finished before the token was known (their output is scrubbed with it)
-        var waiting = new List<Task> { signIn };
-        waiting.AddRange(probes);
         try
         {
+            // The sign-in token (a few seconds of gcloud) starts first; everything else runs while it is fetched.
+            signIn = SignInAsync();
+            waiting.Add(signIn);
+
+            Put(GacRow, CheckGac() with { Key = "gac" });
+
+            var leftovers = new List<string>();
+            foreach (var (scope, vars) in new[] { ("User", machineEnv.User()), ("Machine", machineEnv.Machine()) })
+                foreach (var k in vars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+                    if (IsLeftoverProviderVar(k))
+                        leftovers.Add($"{k} ({scope})");
+            Put(LeftoverRow, (leftovers.Count == 0
+                ? new CheckItem(CheckStatus.Ok, LeftoverLabel, null)
+                : new CheckItem(CheckStatus.Warn, $"Leftover variables: {string.Join(", ", leftovers)}",
+                    "Remove them in Windows settings › Environment variables, then restart terminals.")) with { Key = "leftovers" });
+
+            var claude = claudeRunner.Find();
+            if (claude == null)
+            {
+                Put(ClaudeRow, new(CheckStatus.Fail, ClaudeLabel, "Install Claude Code, then open a new terminal.") { Key = "claude" });
+                SkipModels();
+            }
+            else
+            {
+                Put(ClaudeRow, new(CheckStatus.Ok, ClaudeLabel, null) { Key = "claude" });
+                ct.ThrowIfCancellationRequested();
+                foreach (var m in models)
+                    progress?.Report(new CheckItem(CheckStatus.Running, m.Subject, null) { Key = m.Key });
+                // Each probe is a full Claude Code start-up (~10 s), so all models are tested at the same time, without
+                // waiting for the token. No MCP servers from the profile and no saved session: the probes leave nothing behind.
+                foreach (var m in models)
+                {
+                    var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
+                    if (m.Id != null) { args.Add("--model"); args.Add(m.Id); }
+                    var probe = claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), probeCts.Token);
+                    probes.Add(probe);
+                    waiting.Add(probe);
+                }
+            }
+
+            // The one reporting loop: each result is reported as soon as it is known, never two at a time.
             while (waiting.Count > 0)
             {
                 var done = await Task.WhenAny(waiting).ConfigureAwait(false);
@@ -407,17 +410,29 @@ public partial class ProfileManager
                     {
                         // Already reported skipped; the runner rethrows our cancellation, which is expected here.
                         try { await done.ConfigureAwait(false); }
-                        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+                        catch (OperationCanceledException) when (probeCts.IsCancellationRequested && !ct.IsCancellationRequested) { }
                     }
-                    else if (!signInKnown) held.Add(i);
+                    else if (!signInKnown)
+                    {
+                        // A probe error (not an answer) surfaces at once, as before; only answers wait for the token.
+                        if (done.IsFaulted) await done.ConfigureAwait(false);
+                        held.Add(i);
+                    }
                     else Put(FirstModelRow + i, ModelResult(i));
                 }
             }
         }
         finally
         {
-            // Leaving early (cancelled or an error): stop any probe still running before its token source goes away.
-            if (waiting.Count > 0) probeCts.Cancel();
+            // Leaving early (cancelled or an error): stop any probe still running before its token source goes away,
+            // and observe whatever is left (the sign-in included) so no task error goes unobserved.
+            if (waiting.Count > 0)
+            {
+                probeCts.Cancel();
+                foreach (var t in waiting)
+                    _ = t.ContinueWith(x => _ = x.Exception, CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
         }
         return Result();
 

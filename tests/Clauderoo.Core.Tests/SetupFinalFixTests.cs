@@ -206,7 +206,7 @@ public class SetupFinalFixTests
     // ---------- 7. progress ----------
 
     [Fact]
-    public async Task Progress_ReceivesAllItemsInOrder()
+    public async Task Progress_ReportsEachRowOnce()
     {
         using var c = Make(ThreeModels());
         c.Env.UserVars["ANTHROPIC_MODEL"] = "x";
