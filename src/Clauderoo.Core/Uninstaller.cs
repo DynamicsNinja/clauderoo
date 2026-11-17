@@ -11,6 +11,8 @@ public sealed class UninstallOptions
     public Action<string>? Schedule { get; set; }
     /// <summary>The per-user data folder that must never be touched (default %USERPROFILE%\.clauderoo).</summary>
     public string? DataDir { get; set; }
+    /// <summary>True when the tray app (clauderoow.exe) is running (default: checks the process list).</summary>
+    public Func<bool>? IsTrayRunning { get; set; }
 }
 
 public static class Uninstaller
@@ -33,6 +35,9 @@ public static class Uninstaller
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".clauderoo")).TrimEnd('\\', '/');
         AssertSafeToDelete(dir, dataDir);
 
+        if ((options.IsTrayRunning ?? TrayIsRunning)())
+            throw new ClauderooException("The clauderoo tray app is running. Quit it first (tray icon > Quit), then run uninstall again. Nothing was changed.");
+
         (options.SetAutoStart ?? (on => AutoStart.Set(on, "")))(false);
 
         var userPath = options.Path ?? new RegistryUserPath();
@@ -46,8 +51,18 @@ public static class Uninstaller
         (options.Schedule ?? StartScheduled)(BuildRemoveArguments(dir));
     }
 
+    private static bool TrayIsRunning()
+    {
+        var procs = Process.GetProcessesByName("clauderoow");
+        foreach (var p in procs) p.Dispose();
+        return procs.Length > 0;
+    }
+
     private static void AssertSafeToDelete(string dir, string dataDir)
     {
+        // cmd expands %VAR% even inside quotes, so such a path could make the delayed rd hit something else.
+        if (dir.Contains('%'))
+            throw new ClauderooException($"Refusing to remove {dir}: the path contains '%', which cmd.exe would expand. Nothing was changed.");
         if (System.IO.Path.GetPathRoot(dir)?.TrimEnd('\\', '/').Equals(dir, StringComparison.OrdinalIgnoreCase) ?? true)
             throw new ClauderooException($"Refusing to remove {dir}: it is a drive root.");
         if (Same(dir, dataDir) || Inside(dataDir, dir) || Inside(dir, dataDir))

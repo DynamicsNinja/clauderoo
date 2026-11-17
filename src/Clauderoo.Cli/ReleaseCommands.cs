@@ -40,17 +40,30 @@ internal static class ReleaseCommands
 
         var currentText = hooks?.CurrentVersion ?? AppVersion.Current;
         var current = AppVersion.Parse(currentText) ?? new Version(0, 0);
-        var handler = hooks?.Http ?? new SocketsHttpHandler();
+        var ownHandler = hooks?.Http == null ? new SocketsHttpHandler() : null;
+        try
+        {
+            return UpgradeWith(ownHandler ?? hooks!.Http!, repo, check, currentText, current, output, err, hooks);
+        }
+        finally { ownHandler?.Dispose(); }
+    }
+
+    private static int UpgradeWith(HttpMessageHandler handler, string repo, bool check, string currentText, Version current,
+        TextWriter output, TextWriter err, ReleaseHooks? hooks)
+    {
         var updater = new Updater(handler, repo);
 
-        ReleaseInfo? latest;
-        try { latest = updater.LatestAsync(default).GetAwaiter().GetResult(); }
+        ReleaseLookup lookup;
+        try { lookup = updater.LookupAsync(default).GetAwaiter().GetResult(); }
         catch (HttpRequestException) { throw new ClauderooException("Couldn't reach GitHub to look for updates."); }
         catch (TaskCanceledException) { throw new ClauderooException("Couldn't reach GitHub to look for updates."); }
 
+        var latest = lookup.Info;
         if (latest == null)
         {
-            output.WriteLine("No release found.");
+            output.WriteLine(lookup.ReleaseExists
+                ? $"The latest release ({lookup.Tag}) has no clauderoo-*-win-x64.zip / .sha256 assets."
+                : "No release found.");
             return 0;
         }
         if (latest.Version <= current)

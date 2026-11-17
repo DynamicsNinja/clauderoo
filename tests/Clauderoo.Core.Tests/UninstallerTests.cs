@@ -38,6 +38,7 @@ public class UninstallerTests
             SetAutoStart = on => AutoStarts.Add(on),
             Schedule = Scheduled.Add,
             DataDir = Data,
+            IsTrayRunning = () => false,
         };
 
         public void Dispose()
@@ -133,6 +134,30 @@ public class UninstallerTests
         Directory.CreateDirectory(Path.Combine(rig.Install, "stuff"));
         Assert.Throws<ClauderooException>(() => Uninstaller.Run(rig.Env, false, rig.Install, rig.Options));
         Assert.Empty(rig.Scheduled);
+    }
+
+    [Fact]
+    public void Uninstall_RefusesPercentInPath()
+    {
+        using var rig = new Rig("");
+        var pct = Path.Combine(rig.Root, "Local%TEMP%", "clauderoo");
+        Directory.CreateDirectory(pct);
+        var e = Assert.Throws<ClauderooException>(() => Uninstaller.Run(rig.Env, false, pct, rig.Options));
+        Assert.Contains("%", e.Message);
+        Assert.Empty(rig.Scheduled);
+        Assert.Empty(rig.AutoStarts);
+    }
+
+    [Fact]
+    public void Uninstall_TrayRunning_AsksToQuitFirst()
+    {
+        using var rig = new Rig("");
+        var opts = rig.Options;
+        opts.IsTrayRunning = () => true;
+        var e = Assert.Throws<ClauderooException>(() => Uninstaller.Run(rig.Env, false, rig.Install, opts));
+        Assert.Contains("Quit", e.Message);
+        Assert.Empty(rig.Scheduled);
+        Assert.Empty(rig.AutoStarts);
     }
 
     // CLI

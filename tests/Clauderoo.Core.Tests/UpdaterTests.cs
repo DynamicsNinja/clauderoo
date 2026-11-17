@@ -80,6 +80,26 @@ public class UpdaterTests
     }
 
     [Fact]
+    public void Version_TwoAndThreePart_Equal()
+    {
+        Assert.Equal(AppVersion.Parse("1.2.0"), AppVersion.Parse("1.2"));
+        Assert.Equal(AppVersion.Parse("v1"), AppVersion.Parse("1.0.0"));
+        Assert.True(AppVersion.Parse("1.2.1") > AppVersion.Parse("1.2"));
+    }
+
+    [Fact]
+    public void Upgrade_NoRelease_VsNoAssets_AreDistinct()
+    {
+        var none = RunCli(new ReleaseHooks { Repo = "me/clauderoo", CurrentVersion = "1.0.0",
+            Http = new FakeHttp(_ => new HttpResponseMessage(HttpStatusCode.NotFound)) }, "upgrade", "--check");
+        Assert.Contains("No release found.", none.o);
+        var noAssets = RunCli(new ReleaseHooks { Repo = "me/clauderoo", CurrentVersion = "1.0.0",
+            Http = new FakeHttp(_ => Ok("""{"tag_name":"v1.5.0","assets":[]}""")) }, "upgrade", "--check");
+        Assert.DoesNotContain("No release found.", noAssets.o);
+        Assert.Contains("has no clauderoo-*-win-x64.zip / .sha256 assets", noAssets.o);
+    }
+
+    [Fact]
     public async Task Latest_NoMatchingAssets_Null()
     {
         var http = new FakeHttp(_ => Ok("""{"tag_name":"v1.0.0","assets":[{"name":"a.zip","browser_download_url":"https://x.test/a.zip"}]}"""));

@@ -19,7 +19,11 @@ public static class AppVersion
     {
         if (string.IsNullOrWhiteSpace(s)) return null;
         var m = Regex.Match(s.Trim().TrimStart('v', 'V'), @"^\d+(\.\d+){0,3}");
-        return m.Success && Version.TryParse(m.Value.Contains('.') ? m.Value : m.Value + ".0", out var v) ? v : null;
+        if (!m.Success) return null;
+        // Pad to 3 parts so "1.2" and "1.2.0" are equal (Version treats a missing part as -1).
+        var parts = m.Value.Split('.').ToList();
+        while (parts.Count < 3) parts.Add("0");
+        return Version.TryParse(string.Join('.', parts), out var v) ? v : null;
     }
 
     private static string ReadCurrent()
@@ -40,6 +44,9 @@ public static class AppVersion
 
 public record ReleaseInfo(Version Version, string Tag, Uri ZipUrl, Uri ShaUrl);
 
+/// <summary>Info is set when a usable release exists; ReleaseExists with a null Info means it lacks the expected assets.</summary>
+public record ReleaseLookup(ReleaseInfo? Info, bool ReleaseExists, string? Tag);
+
 /// <summary>Finds the latest GitHub release and downloads it, verifying its SHA256. All HTTP goes through the injected handler.</summary>
 public sealed class Updater(HttpMessageHandler h, string repo)
 {
@@ -53,18 +60,22 @@ public sealed class Updater(HttpMessageHandler h, string repo)
         return c;
     }
 
-    public async Task<ReleaseInfo?> LatestAsync(CancellationToken ct)
+    public async Task<ReleaseInfo?> LatestAsync(CancellationToken ct) => (await LookupAsync(ct)).Info;
+
+    /// <summary>Like <see cref="LatestAsync"/>, but says whether a release existed at all (it may lack the expected assets).</summary>
+    public async Task<ReleaseLookup> LookupAsync(CancellationToken ct)
     {
         using var http = NewClient();
         using var resp = await http.GetAsync($"https://api.github.com/repos/{repo}/releases/latest", ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        if (!resp.IsSuccessStatusCode) return new(null, false, null);
         try
         {
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             var root = doc.RootElement;
             var tag = root.GetProperty("tag_name").GetString();
             var version = AppVersion.Parse(tag);
-            if (tag == null || version == null || !root.TryGetProperty("assets", out var assets)) return null;
+            if (tag == null || version == null) return new(null, false, null);
+            if (!root.TryGetProperty("assets", out var assets)) return new(null, true, tag);
             Uri? zip = null, sha = null;
             foreach (var a in assets.EnumerateArray())
             {
@@ -75,11 +86,13 @@ public sealed class Updater(HttpMessageHandler h, string repo)
                 else if (name.EndsWith("-win-x64.zip.sha256", StringComparison.OrdinalIgnoreCase)
                          && name.StartsWith("clauderoo-", StringComparison.OrdinalIgnoreCase)) sha = uri;
             }
-            return zip == null || sha == null ? null : new ReleaseInfo(version, tag, zip, sha);
+            return zip == null || sha == null
+                ? new(null, true, tag)
+                : new(new ReleaseInfo(version, tag, zip, sha), true, tag);
         }
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
         {
-            return null; // an unexpected shape: treat as "no usable release"
+            return new(null, false, null); // an unexpected shape: treat as "no usable release"
         }
     }
 
