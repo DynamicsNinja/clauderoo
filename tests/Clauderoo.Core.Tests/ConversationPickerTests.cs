@@ -112,4 +112,14 @@ public class ConversationPickerTests
         Assert.Equal("Fix the invoice rounding bug", ConversationPicker.PromptLabel(A));
         Assert.Equal("?", ConversationPicker.FolderLabel(C));
     }
+
+    [Fact]
+    public void ContinuedStatus_SaysWhenOlderCopyKept()
+    {
+        var t = new ContinueTarget("work", false, "work");
+        Assert.Equal("Opened a new tab in work.", ConversationPicker.ContinuedStatus(t, CopyOutcome.Copied));
+        Assert.Equal("Opened a new tab in work.", ConversationPicker.ContinuedStatus(t, CopyOutcome.AlreadyUpToDate));
+        Assert.Equal("Opened a new tab in work. Its older copy of the conversation was kept as a .bak file.",
+            ConversationPicker.ContinuedStatus(t, CopyOutcome.BackedUpAndCopied));
+    }
 }

@@ -25,6 +25,9 @@ public static partial class ConversationIndex
     public const string HomeTargetRefused =
         "Conversations can't be copied into the home profile, because clauderoo never writes inside ~/.claude.";
 
+    // Shown by the tray too, so it carries no command-line hint.
+    public const string NoLongerThere = "That conversation is no longer there. Refresh the list and try again.";
+
     public static IReadOnlyList<Conversation> List(ProfileManager pm, string? profile = null)
     {
         var cfg = pm.Config;
@@ -89,7 +92,7 @@ public static partial class ConversationIndex
                     using var doc = JsonDocument.Parse(l);
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object) continue;
-                    cwd ??= Str(root, "cwd") is { Length: > 0 } c ? c : null;
+                    cwd ??= SafeCwd(Str(root, "cwd"));
                     if (prompt == null && Str(root, "type") == "user") prompt = UserText(root);
                 }
                 catch (JsonException) { /* partial or foreign line */ }
@@ -97,6 +100,10 @@ public static partial class ConversationIndex
         }
         return new Conversation(id, profile, isolated, slug, cwd, when, prompt, file);
     }
+
+    // The cwd becomes a working folder and is printed, so only a plain, fully qualified path is kept.
+    private static string? SafeCwd(string? cwd) =>
+        cwd is { Length: > 0 } && !cwd.Any(char.IsControl) && Path.IsPathFullyQualified(cwd) ? cwd : null;
 
     private static string? Str(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -186,20 +193,27 @@ public static partial class ConversationIndex
         if (IsUnder(Path.GetFullPath(target), cfg.HomeDir)) throw new ClauderooException(HomeTargetRefused);
 
         var src = new FileInfo(c.FilePath);
-        if (!src.Exists) throw new ClauderooException($"Conversation {Short(c.Id)} is no longer there; run 'cr sessions' again.");
+        if (!src.Exists) throw new ClauderooException(NoLongerThere);
         var existing = new FileInfo(target);
         if (existing.Exists && (existing.LastWriteTimeUtc >= src.LastWriteTimeUtc || existing.Length >= src.Length))
             return CopyOutcome.AlreadyUpToDate;
 
-        Directory.CreateDirectory(slugDir);
         var stamp = pm.Stamp;
         var tmpFile = Path.Combine(slugDir, $".{fileName}.tmp-{Guid.NewGuid():N}");
         var srcFolder = Path.Combine(Path.GetDirectoryName(c.FilePath)!, stem);
         var tgtFolder = Path.Combine(slugDir, stem);
         string? tmpFolder = null;
         string? folderMovedTo = null;
+        string? fileMovedTo = null;
+        var folderSwapped = false;
         try
         {
+            try { Directory.CreateDirectory(slugDir); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                throw new ClauderooException(
+                    $"Couldn't create the folder {slugDir} for {targetProfile}'s copy of the conversation: {e.Message}");
+            }
             // A live conversation is open for appending, so only whole lines are copied (see CopyFile).
             CopyFile(c.FilePath, tmpFile, src.LastWriteTimeUtc, wholeLines: true);
             if (Directory.Exists(srcFolder) && !IsReparsePoint(srcFolder))
@@ -221,23 +235,27 @@ public static partial class ConversationIndex
                     Directory.Move(tgtFolder, folderBak);
                     folderMovedTo = folderBak;
                 }
+                SwapStepForTests?.Invoke("folder");
                 Directory.Move(tmpFolder, tgtFolder);
                 tmpFolder = null;
+                folderSwapped = true;
             }
-            try
+            if (fileBak != null)
             {
-                if (fileBak != null) File.Move(target, fileBak);
-                File.Move(tmpFile, target);
+                File.Move(target, fileBak);
+                fileMovedTo = fileBak;
             }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                // Put the old folder back so the target's file and folder still belong together.
-                if (folderMovedTo != null) RestoreFolder(tgtFolder, folderMovedTo, slugDir, stem);
-                throw;
-            }
+            SwapStepForTests?.Invoke("file");
+            File.Move(tmpFile, target);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
+            // Put back whatever was moved aside, so the target's file and folder are as they were. Nothing is deleted
+            // except clauderoo's own staged copies.
+            if (fileMovedTo != null && !File.Exists(target)) TryMove(() => File.Move(fileMovedTo, target));
+            if (folderSwapped) RestoreFolder(tgtFolder, folderMovedTo, slugDir, stem);
+            else if (folderMovedTo != null && !Directory.Exists(tgtFolder) && !File.Exists(tgtFolder))
+                TryMove(() => Directory.Move(folderMovedTo, tgtFolder));
             TryDeleteFile(tmpFile);
             if (tmpFolder != null) TryDeleteOwnTree(tmpFolder);
             throw new ClauderooException(
@@ -246,6 +264,10 @@ public static partial class ConversationIndex
         }
         return existing.Exists ? CopyOutcome.BackedUpAndCopied : CopyOutcome.Copied;
     }
+
+    // Tests make a swap step fail here ("folder": before the fresh folder moves in; "file": before the fresh file
+    // does), to check that everything moved aside comes back. Per thread, so parallel tests don't see it.
+    [ThreadStatic] internal static Action<string>? SwapStepForTests;
 
     // "<name>", or "<name>-1", "<name>-2"… : the first that is neither a file, a folder nor <taken>.
     private static string FreeName(string name, string? taken = null)
@@ -256,14 +278,20 @@ public static partial class ConversationIndex
             if (!Used($"{name}-{i}")) return $"{name}-{i}";
     }
 
-    // Best effort: the fresh copy goes aside under a free name (never deleted) and the old folder comes back.
-    private static void RestoreFolder(string tgtFolder, string backup, string slugDir, string stem)
+    // Best effort: the fresh copy goes aside under a free name (never deleted) and the old folder, if any, comes back.
+    private static void RestoreFolder(string tgtFolder, string? backup, string slugDir, string stem)
     {
         try
         {
             Directory.Move(tgtFolder, FreeName(Path.Combine(slugDir, $".{stem}.undone-{Guid.NewGuid():N}")));
-            Directory.Move(backup, tgtFolder);
+            if (backup != null) Directory.Move(backup, tgtFolder);
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static void TryMove(Action move)
+    {
+        try { move(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 

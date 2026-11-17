@@ -70,4 +70,10 @@ internal static class ConversationPicker
     public static string FolderLabel(Conversation c) => string.IsNullOrEmpty(c.Cwd) ? "?" : c.Cwd;
 
     public static string PromptLabel(Conversation c) => string.IsNullOrEmpty(c.FirstPrompt) ? "(no text)" : c.FirstPrompt;
+
+    /// <summary>The status line after a conversation was continued; says so when an older copy was kept as a backup.</summary>
+    public static string ContinuedStatus(ContinueTarget target, CopyOutcome outcome) =>
+        outcome == CopyOutcome.BackedUpAndCopied
+            ? $"Opened a new tab in {target.Label}. Its older copy of the conversation was kept as a .bak file."
+            : $"Opened a new tab in {target.Label}.";
 }

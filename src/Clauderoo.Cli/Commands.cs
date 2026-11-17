@@ -19,7 +19,7 @@ public static class Commands
   maps                                list folder mappings
   which                               show which profile this terminal is using
   sessions [profile]                  list conversations across profiles, newest first
-  resume <id> --as <profile> [--isolated] [--tab]
+  resume <id> --as <profile> [--isolated] [--tab] [-- args]
                                       copy a conversation into <profile> and continue it there
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
@@ -508,7 +508,7 @@ public static class Commands
     private static int ResumeCmd(List<string> pos, List<string> claudeArgs, TextWriter output, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath)
     {
-        const string usage = "Usage: clauderoo resume <id> --as <profile> [--isolated] [--tab]";
+        const string usage = "Usage: clauderoo resume <id> --as <profile> [--isolated] [--tab] [-- args]";
         var tab = pos.Remove("--tab");
         var isolated = pos.Remove("--isolated");
         var asAt = pos.IndexOf("--as");

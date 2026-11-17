@@ -13,7 +13,7 @@ internal sealed class ConversationsForm : Form
 
     readonly Func<Task<IReadOnlyList<Conversation>>> _load;
     readonly Func<IReadOnlyList<ProfileInfo>> _profiles;
-    readonly Func<Conversation, ContinueTarget, Task> _continue;
+    readonly Func<Conversation, ContinueTarget, Task<CopyOutcome>> _continue;
     readonly Icon _icon;
 
     readonly Label _searchLabel = new() { Text = "&Search", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 6, 0) };
@@ -40,7 +40,7 @@ internal sealed class ConversationsForm : Form
     bool _userPicked; // the user chose a "Continue as" entry: it stops following the selection
 
     public ConversationsForm(Func<Task<IReadOnlyList<Conversation>>> load, Func<IReadOnlyList<ProfileInfo>> profiles,
-        Func<Conversation, ContinueTarget, Task> continueAsync)
+        Func<Conversation, ContinueTarget, Task<CopyOutcome>> continueAsync)
     {
         _load = load;
         _profiles = profiles;
@@ -217,8 +217,8 @@ internal sealed class ConversationsForm : Form
         SetStatus($"Copying the conversation to {target.Label}…", null);
         try
         {
-            await _continue(c, target);
-            SetStatus($"Opened a new tab in {target.Label}.", true);
+            var outcome = await _continue(c, target);
+            SetStatus(ConversationPicker.ContinuedStatus(target, outcome), true);
         }
         catch (Exception e)
         {
@@ -227,8 +227,11 @@ internal sealed class ConversationsForm : Form
         finally
         {
             _busy = false;
-            UseWaitCursor = false;
-            if (!IsDisposed) OnSelection();
+            if (!IsDisposed)
+            {
+                UseWaitCursor = false;
+                OnSelection();
+            }
         }
     }
 

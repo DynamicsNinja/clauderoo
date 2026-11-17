@@ -432,15 +432,20 @@ sealed class TrayContext : ApplicationContext
     // Copies the conversation into the chosen profile (worker thread), then opens a new tab running
     // `clauderoo run <profile> -- --resume <id>` in the conversation's own folder; that tab injects a token profile's
     // token itself. Errors come back as plain words for the picker's status line.
-    private async Task ContinueConversation(Conversation c, ContinueTarget target)
+    private async Task<CopyOutcome> ContinueConversation(Conversation c, ContinueTarget target)
     {
         try
         {
             if (RequireConfig() is not { } cfg) throw new ClauderooException("clauderoo's settings can't be read right now.");
-            if (ConversationPicker.Refusal(c, Directory.Exists) is { } refusal) throw new ClauderooException(refusal);
-            await Task.Run(() => ConversationIndex.CopyTo(_pm, c, target.Profile, target.Isolated)); // back on the UI thread
+            // The folder check touches the disk (it may be a slow network share), so it runs with the copy.
+            var outcome = await Task.Run(() =>
+            {
+                if (ConversationPicker.Refusal(c, Directory.Exists) is { } refusal) throw new ClauderooException(refusal);
+                return ConversationIndex.CopyTo(_pm, c, target.Profile, target.Isolated);
+            }); // back on the UI thread
             using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, target.Profile, c.Cwd!,
                 ["--resume", c.Id], Launcher.WtAvailable(), isolated: target.Isolated));
+            return outcome;
         }
         catch (Exception e)
         {

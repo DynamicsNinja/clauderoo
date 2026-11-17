@@ -478,6 +478,182 @@ public class ConversationTests
         var cmdLine = string.Join(" ", r.tab.Args);
         Assert.Contains("run work --isolated -- --resume " + Id1, cmdLine);
         Assert.True(File.Exists(Path.Combine(home.Paths.IsolatedDir("work"), "projects", Slug, Id1 + ".jsonl")));
+
+        // A token profile's tab injects the token itself: it never travels in the tab's command line or environment.
+        pm.SetProvider("work", Providers.Token, token: Token);
+        var t = Run(pm, "resume", Id1[..8], "--as", "work", "--tab");
+        Assert.Equal(0, t.code);
+        Assert.NotNull(t.tab);
+        Assert.Null(t.tab!.ExtraEnv);
+        Assert.DoesNotContain(t.tab.Args, a => a.Contains(Token));
+        Assert.DoesNotContain(Token, t.o + t.e);
+    }
+
+    // Older target file and folder, newer source with a folder: the copy has something to swap.
+    private static (Conversation c, string target, string tFolder) SetUpSwap(ProfileManager pm, TempHome home)
+    {
+        var src = Write(home.Paths.DefaultHomeDir, Id1, Now.AddHours(-1), UserLine(Id1, home.Dir, "newer and longer"));
+        Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(src)!, Id1));
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(src)!, Id1, "n.txt"), "new");
+        var target = Write(home.Paths.ProfileDir("work"), Id1, Now.AddHours(-2), UserLine(Id1, home.Dir, "old"));
+        var tFolder = Path.Combine(Path.GetDirectoryName(target)!, Id1);
+        Directory.CreateDirectory(tFolder);
+        File.WriteAllText(Path.Combine(tFolder, "o.txt"), "old");
+        return (ConversationIndex.List(pm, "personal").Single(), target, tFolder);
+    }
+
+    [Fact]
+    public void Copy_TargetFileHeld_RollsBackFileAndFolder()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var (c, target, tFolder) = SetUpSwap(pm, home);
+        var old = File.ReadAllBytes(target);
+
+        // Claude has the target open without sharing delete: it can't be moved aside, after the folder already was.
+        ClauderooException ex;
+        using (new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            ex = Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.StartsWith($"Couldn't copy conversation {Id1[..8]} to work:", ex.Message);
+        Assert.Equal(old, File.ReadAllBytes(target));
+        AssertOriginalIntact(target, tFolder, old);
+    }
+
+    private static void AssertOriginalIntact(string target, string tFolder, byte[] old)
+    {
+        Assert.Equal(old, File.ReadAllBytes(target));
+        Assert.Equal(["o.txt"], Directory.GetFiles(tFolder).Select(f => Path.GetFileName(f)).ToArray());
+        Assert.Equal("old", File.ReadAllText(Path.Combine(tFolder, "o.txt")));
+        var dir = Path.GetDirectoryName(target)!;
+        Assert.Empty(Directory.GetFileSystemEntries(dir, "*.bak-*"));
+        Assert.Empty(Directory.GetFileSystemEntries(dir, "*.tmp-*"));
+    }
+
+    [Theory]
+    [InlineData("folder")] // the old folder was moved aside, the fresh one can't move in
+    [InlineData("file")]   // the old folder and file were moved aside, the fresh file can't move in
+    public void Copy_SwapFails_EverythingMovedAsideComesBack(string failAt)
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var (c, target, tFolder) = SetUpSwap(pm, home);
+        var old = File.ReadAllBytes(target);
+
+        ConversationIndex.SwapStepForTests = step => { if (step == failAt) throw new IOException("simulated"); };
+        try { Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "work", false)); }
+        finally { ConversationIndex.SwapStepForTests = null; }
+
+        AssertOriginalIntact(target, tFolder, old);
+    }
+
+    [Fact]
+    public void Copy_TargetFolderHeld_LeavesTargetAlone()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var (c, target, tFolder) = SetUpSwap(pm, home);
+        var before = HashTree(Path.GetDirectoryName(target)!);
+
+        // A file inside the old folder is held without delete sharing, so the folder can't be moved aside.
+        using (new FileStream(Path.Combine(tFolder, "o.txt"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.Equal(before, HashTree(Path.GetDirectoryName(target)!));
+    }
+
+    [Fact]
+    public void Copy_TargetFolderCantBeCreated_PlainMessage()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var cwd = Path.Combine(home.Dir, "src");
+        Directory.CreateDirectory(cwd);
+        Write(home.Paths.DefaultHomeDir, Id1, Now, UserLine(Id1, cwd, "p"));
+        // A file where the conversation's folder should go: creating the folder fails.
+        var projects = Path.Combine(home.Paths.ProfileDir("work"), "projects");
+        Directory.CreateDirectory(projects);
+        File.WriteAllText(Path.Combine(projects, Slug), "in the way");
+
+        var r = Run(pm, "resume", Id1[..8], "--as", "work");
+
+        Assert.Equal(1, r.code);
+        Assert.Contains("Couldn't create the folder", r.e);
+        Assert.DoesNotContain("Unexpected", r.e);
+        Assert.Null(r.inPlace);
+    }
+
+    [Fact]
+    public void Copy_SourceGone_PlainMessageWithoutCliHint()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var src = Write(home.Paths.DefaultHomeDir, Id1, Now, UserLine(Id1, home.Dir, "p"));
+        var c = ConversationIndex.List(pm).Single();
+        File.Delete(src);
+
+        var ex = Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.Equal("That conversation is no longer there. Refresh the list and try again.", ex.Message);
+        // The tray shows it as it is, not as "Something went wrong".
+        Assert.Equal((ex.Message, false), Clauderoo.Tray.TrayText.PlainError(ex));
+    }
+
+    [Fact]
+    public void List_RelativeOrControlCwd_Dropped()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        Write(home.Paths.DefaultHomeDir, Id1, Now, UserLine(Id1, ".", "relative"));
+        Write(home.Paths.DefaultHomeDir, Id2, Now.AddMinutes(-1), UserLine(Id2, home.Dir + "\u001b[2J", "escape"),
+            UserLine(Id2, home.Dir, "later line"));
+
+        var all = ConversationIndex.List(pm);
+
+        Assert.Null(all.Single(c => c.Id == Id1).Cwd);
+        // The bad cwd is skipped; a later plain one is used.
+        Assert.Equal(home.Dir, all.Single(c => c.Id == Id2).Cwd);
+        var r = Run(pm, "resume", Id1[..8], "--as", "work");
+        Assert.Equal(1, r.code);
+        Assert.Null(r.inPlace);
+    }
+
+    [Fact]
+    public void Copy_TargetProjectsJunctionToHome_Refused()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        Write(home.Paths.DefaultHomeDir, Id2, Now.AddHours(-1), UserLine(Id2, home.Dir, "home's own"));
+        Write(home.Paths.IsolatedDir("work"), Id1, Now, UserLine(Id1, home.Dir, "iso"));
+        var homeProjects = Path.Combine(home.Paths.DefaultHomeDir, "projects");
+        // work's projects folder is a junction into ~/.claude\projects (TempHome removes it non-recursively).
+        Junction.Create(Path.Combine(home.Paths.ProfileDir("work"), "projects"), homeProjects);
+        var before = HashTree(homeProjects);
+        var c = ConversationIndex.List(pm).Single(x => x.Id == Id1 && x.Isolated);
+
+        var ex = Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.Contains("is a link", ex.Message);
+        Assert.Equal(before, HashTree(homeProjects));
+        Assert.False(File.Exists(Path.Combine(homeProjects, Slug, Id1 + ".jsonl")));
+    }
+
+    [Fact]
+    public void Copy_CrlfTornLastLine_Trimmed_CompleteKept()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var dir = Path.Combine(home.Paths.DefaultHomeDir, "projects", Slug);
+        Directory.CreateDirectory(dir);
+        var src = Path.Combine(dir, Id1 + ".jsonl");
+        var first = UserLine(Id1, home.Dir, "first") + "\r\n";
+        File.WriteAllText(src, first + "{\"type\":\"assistant\",\"mess");
+        File.SetLastWriteTimeUtc(src, Now.AddHours(-2));
+        var c = ConversationIndex.List(pm).Single();
+        var copied = Path.Combine(home.Paths.ProfileDir("work"), "projects", Slug, Id1 + ".jsonl");
+
+        Assert.Equal(CopyOutcome.Copied, ConversationIndex.CopyTo(pm, c, "work", false));
+        Assert.Equal(first, File.ReadAllText(copied));
+
+        // Now the last line is whole (just without a newline): it's kept.
+        var whole = first + UserLine(Id1, home.Dir, "second");
+        File.WriteAllText(src, whole);
+        File.SetLastWriteTimeUtc(src, Now.AddHours(-1));
+        c = ConversationIndex.List(pm, "personal").Single();
+        Assert.Equal(CopyOutcome.BackedUpAndCopied, ConversationIndex.CopyTo(pm, c, "work", false));
+        Assert.Equal(whole, File.ReadAllText(copied));
     }
 
     [Fact]
