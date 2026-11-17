@@ -33,10 +33,14 @@ public static class Commands
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
   provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  export <file> [names...] [--no-env] [--force]
+                                      save profile settings to a file (no secrets or logins)
+  import <file> [--force]             create profiles from an export (--force updates existing ones)
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
+  usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   status                              show the default profile and any problems
-  --json                              list, status, maps, which, check and sessions: print JSON for scripts
+  --json                              list, status, maps, which, check, usage and sessions: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -52,13 +56,14 @@ public static class Commands
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
-        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null)
+        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null,
+        UsageClient? usage = null)
     {
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
-                hookCancel ?? HookConsoleCancel, hooks);
+                hookCancel ?? HookConsoleCancel, hooks, usage);
         }
         catch (SessionsRunningException e)
         {
@@ -80,7 +85,7 @@ public static class Commands
     }
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "sessions"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -88,7 +93,7 @@ public static class Commands
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
-        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks)
+        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks, UsageClient? usage)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -99,7 +104,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "sessions", "resume"];
+            "version", "upgrade", "uninstall", "usage", "export", "import", "sessions", "resume"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -156,7 +161,7 @@ public static class Commands
                     });
                     return 0;
                 }
-                foreach (var line in FormatList(pm.List())) output.WriteLine(line);
+                foreach (var line in FormatList(pm.List(), LoadUsageCache(pm))) output.WriteLine(line);
                 return 0;
             case "start":
             case "run":
@@ -245,6 +250,40 @@ public static class Commands
                 return SessionsCmd(pos, output, pm, json);
             case "resume":
                 return ResumeCmd(pos, claudeArgs, output, pm, startNewWindow, runInPlace, wtAvailable, claudePath);
+            case "export":
+            {
+                var force = pos.Remove("--force");
+                var noEnv = pos.Remove("--no-env");
+                if (pos.Count < 1) throw new ClauderooException("Usage: clauderoo export <file> [profiles...] [--no-env] [--force]");
+                var names = pos.Skip(1).ToList();
+                pm.ExportToFile(pos[0], names.Count > 0 ? names : null, !noEnv, force);
+                output.WriteLine($"Exported to {Path.GetFullPath(pos[0])}. No secrets or logins are included.");
+                if (!noEnv)
+                    err.WriteLine("warning: environment variable values are included as plain text. Check the file before sharing it, or use --no-env.");
+                return 0;
+            }
+            case "import":
+            {
+                var force = pos.Remove("--force");
+                if (pos.Count != 1) throw new ClauderooException("Usage: clauderoo import <file> [--force]");
+                var r = pm.ImportFile(pos[0], force);
+                if (r.Created.Count > 0) output.WriteLine($"Created: {string.Join(", ", r.Created)}");
+                if (r.Updated.Count > 0) output.WriteLine($"Updated: {string.Join(", ", r.Updated)}");
+                void Section(string heading, IReadOnlyList<string>? items)
+                {
+                    if (items is not { Count: > 0 }) return;
+                    output.WriteLine(heading);
+                    foreach (var i in items) output.WriteLine("  " + i);
+                }
+                Section("Folder mappings added:", r.Mapped);
+                Section("Environment variables (names only):", r.EnvNames);
+                Section("Skipped:", r.Skipped);
+                Section("Kept their sign-in:", r.KeptProvider);
+                Section("Needs a key or token:", r.NeedSecret);
+                Section("Notices:", r.Notices);
+                if (!r.ChangedAnything) output.WriteLine("Nothing to import.");
+                return 0;
+            }
             case "default":
             {
                 if (pos.Count == 1 && pos[0] == "--clear")
@@ -330,6 +369,8 @@ public static class Commands
                 Process.Start(new ProcessStartInfo(exe, "--manage") { UseShellExecute = true, WorkingDirectory = AppContext.BaseDirectory })?.Dispose();
                 return 0;
             }
+            case "usage":
+                return UsageCmd(pos, json, output, err, pm, hookCancel, usage);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -630,7 +671,7 @@ public static class Commands
     private static List<string> Need(List<string> pos, int count, string usage) =>
         pos.Count == count ? pos : throw new ClauderooException($"Usage: {usage}");
 
-    private static IEnumerable<string> FormatList(IReadOnlyList<ProfileInfo> infos)
+    private static IEnumerable<string> FormatList(IReadOnlyList<ProfileInfo> infos, IReadOnlyDictionary<string, UsageReading> cache)
     {
         const string NoLogin = "(not logged in)";
         var nameW = infos.Max(i => i.Name.Length);
@@ -642,13 +683,145 @@ public static class Commands
             _ => i.Email ?? NoLogin,
         };
         var emailW = infos.Max(i => Who(i).Length);
+        string Use(ProfileInfo i) => i.Provider == Providers.Login && cache.TryGetValue(i.Name, out var r) ? ShortUsage(r) : "";
+        var useW = infos.Max(i => Use(i).Length);
         foreach (var i in infos)
         {
             var tail = i.IsHome ? "(home)"
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
-            yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {tail}".TrimEnd();
+            yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {(useW > 0 ? Use(i).PadRight(useW) + "  " : "")}{tail}".TrimEnd();
         }
     }
+    // "42%/63%" (5h/7d), "-" for a missing window, blank when neither is known.
+    private static string ShortUsage(UsageReading r)
+    {
+        string P(string name) => r.Windows.FirstOrDefault(w => w.Name == name) is { } w
+            ? $"{Math.Round(w.Percent, MidpointRounding.AwayFromZero):0}%" : "-";
+        var s = $"{P("5h")}/{P("7d")}";
+        return s == "-/-" ? "" : s;
+    }
+
+    private static IReadOnlyDictionary<string, UsageReading> LoadUsageCache(ProfileManager pm)
+    {
+        try { return new UsageCache(pm.Paths).Load(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return new Dictionary<string, UsageReading>(); }
+    }
+
+    private static List<string> PickOne(ProfileManager pm, string name) { pm.Get(name); return [name]; }
+
+    private sealed record UsageRow(string Name, string Status, UsageReading? Reading, string? Note);
+
+    private static int UsageCmd(List<string> pos, bool json, TextWriter output, TextWriter err, ProfileManager pm,
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected)
+    {
+        const string usage = "clauderoo usage [name] [--json]";
+        if (pos.Count > 1) throw new ClauderooException($"Usage: {usage}");
+        var names = pos.Count == 1
+            ? PickOne(pm, pos[0])
+            : pm.Config.Profiles.Keys.ToList();
+
+        // Program.cs owns the one client (built on UsageClient.CreateHandler) and disposes it; tests inject a fake.
+        var client = injected ?? throw new InvalidOperationException("No usage client was given.");
+        var cache = new UsageCache(pm.Paths);
+        var rows = new List<UsageRow>();
+        using var cts = new CancellationTokenSource();
+        using (hookCancel(cts))
+        {
+            foreach (var name in names)
+            {
+                UsageResult r;
+                try
+                {
+                    r = client.FetchAsync(name, pm.ConfigDirOf(name), pm.Get(name), cts.Token).GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    if (json) JsonOut.Error(err, "Cancelled.");
+                    else err.WriteLine("Cancelled.");
+                    return 1;
+                }
+                rows.Add(ToRow(name, r, cache, err));
+            }
+        }
+
+        if (json) JsonOut.Write(output, UsagePayload(rows));
+        else foreach (var line in FormatUsage(rows)) output.WriteLine(line);
+        return rows.Any(r => r.Reading == null && r.Status is "failed" or "unavailable" or "rateLimited") ? 1 : 0;
+    }
+
+    // Ok readings are cached; RateLimited, Failed and Unavailable fall back to the cached reading (flagged stale by
+    // the Note).
+    private static UsageRow ToRow(string name, UsageResult r, UsageCache cache, TextWriter err)
+    {
+        switch (r)
+        {
+            case UsageResult.Ok ok:
+                try { cache.Put(ok.Reading); }
+                catch (IOException e) { err.WriteLine($"warning: couldn't save usage: {e.Message}"); }
+                return new UsageRow(name, "ok", ok.Reading, null);
+            case UsageResult.RateLimited or UsageResult.Failed or UsageResult.Unavailable:
+            {
+                var (status, why) = r switch
+                {
+                    UsageResult.RateLimited => ("rateLimited", "The usage service is rate limiting requests."),
+                    UsageResult.Failed f => ("failed", f.Message), // already scrubbed of the token
+                    _ => ("unavailable", "The usage service answered with something unexpected."),
+                };
+                UsageReading? cached = null;
+                try { if (cache.Load().TryGetValue(name, out var c)) cached = c; } catch (IOException) { }
+                return new UsageRow(name, status, cached, why);
+            }
+            case UsageResult.Expired:
+                return new UsageRow(name, "expired", null, $"Sign-in expired. Start a session with 'cr start {name}' to refresh it.");
+            case UsageResult.NotSignedIn:
+                return new UsageRow(name, "notSignedIn", null, "Not signed in.");
+            case UsageResult.NotTracked nt:
+                return new UsageRow(name, "notTracked", null, nt.Message);
+            default:
+                throw new InvalidOperationException($"Unknown usage result {r.GetType().Name}.");
+        }
+    }
+
+    private static IEnumerable<string> FormatUsage(List<UsageRow> rows)
+    {
+        foreach (var row in rows)
+        {
+            var plan = row.Reading?.Plan;
+            yield return plan == null ? row.Name : $"{row.Name} ({plan})";
+            if (row.Reading != null)
+                foreach (var w in row.Reading.Windows)
+                    yield return $"  {w.Name,-6} {Math.Round(w.Percent, MidpointRounding.AwayFromZero),3:0}%"
+                        + (w.ResetsAt is { } at ? $"  resets {ResetText(at)}" : "");
+            if (row.Note != null) yield return "  " + row.Note;
+            if (row.Reading != null && row.Status != "ok")
+                yield return $"  as of {row.Reading.FetchedAt.ToLocalTime():HH:mm} (last saved reading)";
+        }
+    }
+
+    private static string ResetText(DateTimeOffset at)
+    {
+        var local = at.ToLocalTime();
+        return local.Date == DateTime.Now.Date
+            ? local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
+            : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    // The usage --json payload: {profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}.
+    // JsonOut.Write adds schemaVersion first and writes the times as UTC "…Z".
+    private static object UsagePayload(List<UsageRow> rows) => new
+    {
+        Profiles = rows.Select(r => new
+        {
+            r.Name,
+            r.Status,
+            r.Reading?.Plan,
+            FetchedAt = r.Reading?.FetchedAt,
+            Windows = (r.Reading?.Windows ?? []).Select(w => new { w.Name, w.Percent, w.ResetsAt }),
+            // Additive: why a failed or unavailable row has no fresh reading (scrubbed of the token).
+            Message = r.Status is "failed" or "unavailable" ? r.Note : null,
+        }),
+    };
+
     // Writes each checklist line as soon as it's reported (synchronously, unlike Progress<T>): a "⋯ testing" line per
     // model when the probes start, then every result. The planned (Pending) rows are only for the window.
     private sealed class LineProgress(TextWriter output) : IProgress<CheckItem>

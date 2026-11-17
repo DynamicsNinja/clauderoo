@@ -105,9 +105,7 @@ public sealed class HttpIamTester : IIamTester
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception e)
         {
-            var msg = e.Message;
-            if (token.Length > 0) msg = msg.Replace(token, "***");
-            return (null, e.GetType().Name + ": " + msg);
+            return (null, e.GetType().Name + ": " + Secrets.Scrub(e.Message, token));
         }
     }
 }
@@ -386,7 +384,7 @@ public partial class ProfileManager
                     }
                     else
                     {
-                        var line = Scrub(LineOf(stderr, first: true), stdout.Trim());
+                        var line = Secrets.Scrub(LineOf(stderr, first: true), stdout.Trim());
                         Put(SignInRow, new(CheckStatus.Fail, SignInLabel,
                             "Run: gcloud auth application-default login (tick every box on the consent page).",
                             line.Length > 0 ? line : null) { Key = "signin" });
@@ -454,7 +452,7 @@ public partial class ProfileManager
             if (r.allowed == false)
                 return new(CheckStatus.Fail, iamLabel,
                     $"Ask your GCP admin for Vertex AI User (roles/aiplatform.user) on {v.Project}.") { Key = "iam" };
-            var raw = Scrub(r.error ?? "", tok);
+            var raw = Secrets.Scrub(r.error ?? "", tok);
             return new(CheckStatus.Warn, "Couldn't check the Vertex AI permission", null, raw.Length > 0 ? raw : null) { Key = "iam" };
         }
 
@@ -465,7 +463,7 @@ public partial class ProfileManager
             var (mx, mo, me) = probes[i].GetAwaiter().GetResult(); // already finished
             if (mx == 0 && mo.Contains("OK"))
                 return new(CheckStatus.Ok, ModelLabel(m), null) { Key = m.Key };
-            var last = Scrub(LineOf(mo + "\n" + me, first: false), token);
+            var last = Secrets.Scrub(LineOf(mo + "\n" + me, first: false), token);
             if (last.Length > 200) last = last[..200];
             return new(CheckStatus.Fail, ModelFailLabel(m.Id ?? "The default model", v.Region, mx, last),
                 $"Check the model is enabled in Model Garden and served in region {v.Region}.",
@@ -511,9 +509,6 @@ public partial class ProfileManager
         value = "";
         return false;
     }
-
-    private static string Scrub(string s, string? token) =>
-        string.IsNullOrEmpty(token) ? s : s.Replace(token, "***");
 
     private static string LineOf(string text, bool first)
     {

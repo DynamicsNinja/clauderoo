@@ -41,6 +41,8 @@ sealed class ProfilesForm : Form
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
+    private readonly Button _export = Btn("E&xport…");
+    private readonly Button _import = Btn("Import…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -100,6 +102,19 @@ sealed class ProfilesForm : Form
 
     private readonly TableLayoutPanel _loginPanel = FieldGrid();
     private readonly Label _account = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 0, 3), UseMnemonic = false };
+
+    // Usage: a bar per window, the plan and "as of", and Refresh (Claude login); otherwise why it isn't tracked.
+    private readonly UsageView? _usageView;
+    private readonly GroupBox _usageGroup = new()
+    {
+        Text = "Usage", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 6), Padding = new Padding(8, 4, 8, 4),
+    };
+    private readonly TableLayoutPanel _usageRows = Table(3);
+    // Right margin: the group's border and padding, so the wrapped lines stay inside it.
+    private readonly WrapLabel _usageInfo = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 20, 2) };
+    private readonly GlyphLabel _usageStatus = new() { Margin = new Padding(0, 2, 20, 2) };
+    private readonly Button _usageRefresh = Btn("Re&fresh");
 
     // Required fields that are still empty (provider part).
     private readonly GlyphLabel _fieldError = new() { Margin = new Padding(0, 0, 0, 6) };
@@ -181,11 +196,13 @@ sealed class ProfilesForm : Form
     private int _baseMinHeight;    // minimum window height for the content measured at startup
 
     /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
-    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null)
+    /// <param name="usage">The tray's usage readings and Refresh; without it the Usage group says nothing is known yet.</param>
+    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null, UsageView? usage = null)
     {
         _pm = pm;
         _startSession = startSession;
         _showProblems = showProblems;
+        _usageView = usage;
 
         Text = BaseTitle;
         StartPosition = FormStartPosition.CenterScreen;
@@ -199,14 +216,19 @@ sealed class ProfilesForm : Form
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        var transferButtons = Flow(FlowDirection.LeftToRight);
+        transferButtons.Margin = new Padding(0, 6, 0, 0);
+        transferButtons.Controls.AddRange([_export, _import]);
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
-        left.RowCount = 2;
+        left.RowCount = 3;
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_list, 0, 0);
         left.Controls.Add(leftButtons, 0, 1);
+        left.Controls.Add(transferButtons, 0, 2);
 
         // Right: the home explanation, or the provider choice.
         _homePanel = Table(1);
@@ -241,6 +263,24 @@ sealed class ProfilesForm : Form
         _tokenPanel.Margin = new Padding(0, 0, 0, 2);
         AddField(_loginPanel, "Account:", _account);
 
+        // Usage group: rows of name | bar | value, then the plan / "as of" line, a status line and Refresh.
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _usageRows.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _usageRefresh.Margin = new Padding(0, 2, 0, 2);
+        var usageBody = Table(1);
+        usageBody.Dock = DockStyle.Fill;
+        usageBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Control[] usageParts = [_usageRows, _usageInfo, _usageStatus, _usageRefresh];
+        usageBody.RowCount = usageParts.Length;
+        for (var i = 0; i < usageParts.Length; i++)
+        {
+            usageBody.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            usageBody.Controls.Add(usageParts[i], 0, i);
+        }
+        _usageGroup.Controls.Add(usageBody);
+
         // Folders: the list, with its buttons stacked on the right.
         var folderButtons = Flow(FlowDirection.TopDown);
         _addFolder.Margin = new Padding(0, 0, 0, 4);
@@ -273,7 +313,8 @@ sealed class ProfilesForm : Form
         Control[] topRows =
         [
             _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
-            _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow, _envLabel, _envHint,
+            _usageGroup, _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
+            _envLabel, _envHint,
         ];
         top.RowCount = topRows.Length;
         for (var i = 0; i < topRows.Length; i++)
@@ -355,11 +396,11 @@ sealed class ProfilesForm : Form
 
         // Status labels wrap to the width of their column.
         WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _fieldError, _checkStatus, _checkList,
-            _foldersHint, _envHint);
+            _foldersHint, _envHint, _usageInfo, _usageStatus);
         WrapTo(right, _envError);
         WrapTo(root, _result);
         // SizeChanged: a wrapped label takes its new height after TextChanged has been raised.
-        foreach (var c in new Control[] { _checkStatus, _fieldError, _envError, _homeText, _checkList })
+        foreach (var c in new Control[] { _checkStatus, _fieldError, _envError, _homeText, _checkList, _usageGroup })
             c.SizeChanged += (_, _) => EnsureFits();
         _result.TextChanged += (_, _) =>
         {
@@ -376,6 +417,8 @@ sealed class ProfilesForm : Form
         _new.Click += (_, _) => Guard(NewProfile);
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
+        _export.Click += (_, _) => Guard(ExportProfiles);
+        _import.Click += (_, _) => Guard(ImportProfiles);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -404,6 +447,8 @@ sealed class ProfilesForm : Form
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
         _runningTimer.Tick += (_, _) => RefreshRunning();
+        _usageRefresh.Click += async (_, _) => await RefreshUsageAsync();
+        if (_usageView != null) _usageView.Changed += ShowUsage;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         Reload(null);
@@ -433,8 +478,9 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save), (_addFolder, Glyph.FolderOpen),
-                     (_removeFolder, Glyph.Remove),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh),
+                     (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
+                     (_export, Glyph.Save), (_import, Glyph.FolderOpen),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -722,6 +768,7 @@ sealed class ProfilesForm : Form
 
             _start.Enabled = info != null;
             UpdateRestartNote();
+            ShowUsage();
             UpdateProviderPanels();
         }
         catch (Exception e)
@@ -747,6 +794,140 @@ sealed class ProfilesForm : Form
                          "agents, commands and MCP servers with your other profiles; it always uses your Claude login.";
         _homeAccount.Show(Glyph.Person, info.Email != null ? SystemColors.ControlText : SystemColors.GrayText,
             info.Email != null ? $"Signed in as {info.Email}" : "Not signed in — start a session to sign in.");
+    }
+
+    // ---------- usage ----------
+
+    /// <summary>
+    /// The Usage group for the profile shown: a bar per window with its value and reset time, the plan and "as of",
+    /// and a status line when the last check didn't work. Other providers: why usage isn't tracked. Follows the
+    /// saved provider, not an unsaved radio choice.
+    /// </summary>
+    private void ShowUsage()
+    {
+        if (IsDisposed) return;
+        var info = _currentInfo;
+        _usageGroup.Visible = info != null;
+        if (info == null) return;
+
+        _usageGroup.SuspendLayout();
+        try
+        {
+            var old = _usageRows.Controls.Cast<Control>().ToList();
+            _usageRows.Controls.Clear();
+            foreach (var c in old) c.Dispose();
+            _usageRows.RowStyles.Clear();
+            _usageRows.RowCount = 0;
+
+            // Vertex, API-key and token profiles: never polled, never peeked; the window just says why.
+            var notTracked = TrayText.UsageNotTrackedFor(info);
+            _usageRefresh.Visible = notTracked == null && _usageView != null;
+            if (notTracked != null)
+            {
+                _usageRows.Visible = false;
+                _usageInfo.Text = notTracked;
+                _usageStatus.Show(null, StatusColors.Muted, "");
+                return;
+            }
+
+            var now = DateTimeOffset.Now;
+            var reading = _usageView?.Readings.GetValueOrDefault(info.Name);
+            var last = _usageView?.Results.GetValueOrDefault(info.Name);
+            _usageRows.Visible = reading is { Windows.Count: > 0 };
+            if (reading != null)
+                foreach (var w in reading.Windows) AddUsageRow(w, now);
+
+            _usageInfo.Text = reading != null
+                ? (reading.Plan is { } plan ? $"Plan: {plan} · " : "") + "as of " + TrayText.UsageTime(reading.FetchedAt, now)
+                : info.Email == null ? "Not signed in — start a session to sign in."
+                : "Not checked yet.";
+            if (TrayText.UsageStatus(last) is { } why)
+                _usageStatus.Show(Glyph.Warning, StatusColors.Warn, why);
+            else
+                _usageStatus.Show(null, StatusColors.Muted, "");
+        }
+        finally
+        {
+            _usageGroup.ResumeLayout(true);
+            EnsureFits();
+        }
+    }
+
+    private void AddUsageRow(UsageWindow w, DateTimeOffset now)
+    {
+        var row = _usageRows.RowCount++;
+        _usageRows.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var name = TrayText.UsageWindowName(w.Name);
+        var value = TrayText.UsageValue(w, now);
+        _usageRows.Controls.Add(new Label
+        {
+            Text = name, AutoSize = true, Anchor = AnchorStyles.Left, UseMnemonic = false,
+            Margin = new Padding(0, LogicalToDeviceUnits(3), LogicalToDeviceUnits(12), LogicalToDeviceUnits(3)),
+        }, 0, row);
+        _usageRows.Controls.Add(new UsageBar
+        {
+            Percent = w.Percent, Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            MinimumSize = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
+            Size = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
+            Margin = new Padding(0, LogicalToDeviceUnits(3), 0, LogicalToDeviceUnits(3)),
+            AccessibleName = $"{name} usage: {value}",
+        }, 1, row);
+        _usageRows.Controls.Add(new Label
+        {
+            Text = value, AutoSize = true, Anchor = AnchorStyles.Left, UseMnemonic = false,
+            Margin = new Padding(LogicalToDeviceUnits(12), LogicalToDeviceUnits(3), 0, LogicalToDeviceUnits(3)),
+        }, 2, row);
+    }
+
+    // The fetch runs off the UI thread; the new readings arrive through the UsageView's Changed event.
+    private async Task RefreshUsageAsync()
+    {
+        if (_usageView == null) return;
+        _usageRefresh.Enabled = false;
+        try { await _usageView.Refresh(); }
+        catch (Exception) { /* a failed check shows as the status line */ }
+        finally
+        {
+            if (!IsDisposed) _usageRefresh.Enabled = true;
+        }
+    }
+
+    /// <summary>A flat bar: green below 70 %, amber from 70 %, red from 90 % (<see cref="TrayText.UsageLevelOf"/>).</summary>
+    private sealed class UsageBar : Control
+    {
+        private double _percent;
+
+        public UsageBar()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+                     | ControlStyles.ResizeRedraw, true);
+            TabStop = false;
+            AccessibleRole = AccessibleRole.ProgressBar;
+        }
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public double Percent
+        {
+            get => _percent;
+            set { _percent = Math.Clamp(value, 0, 100); Invalidate(); }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var r = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var back = new SolidBrush(SystemColors.Window)) e.Graphics.FillRectangle(back, r);
+            var ink = TrayText.UsageLevelOf(_percent) switch
+            {
+                UsageLevel.High => StatusColors.Fail,
+                UsageLevel.Warn => StatusColors.Warn,
+                _ => StatusColors.Ok,
+            };
+            var fill = (int)Math.Round(r.Width * _percent / 100.0);
+            if (fill > 0)
+                using (var b = new SolidBrush(ink)) e.Graphics.FillRectangle(b, new Rectangle(r.X, r.Y, fill, r.Height));
+            using var border = new Pen(SystemColors.ControlDark);
+            e.Graphics.DrawRectangle(border, r);
+        }
     }
 
     private string SelectedProvider =>
@@ -1028,6 +1209,7 @@ sealed class ProfilesForm : Form
         if (disposing)
         {
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            if (_usageView != null) _usageView.Changed -= ShowUsage;
             AbortCheck(); // the tray may dispose the window without closing it
             _runningTimer.Dispose();
             _tips.Dispose();
@@ -1282,6 +1464,69 @@ sealed class ProfilesForm : Form
         var report = _pm.Add(name);
         Reload(name);
         ShowResult(report, $"Profile '{name}' created. Start a session in it to sign in.");
+    }
+
+    private const string ExportEnvWarning =
+        "Environment variables are saved as plain text in the file. Check it before sharing it.";
+
+    // Export every profile except home: a small options dialog first, then the save dialog.
+    private void ExportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        bool includeEnv;
+        using (var options = new Form
+        {
+            Text = "Export profiles", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12),
+        })
+        {
+            var env = new CheckBox { Text = "Include environment variables", AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var note = new WrapLabel { Text = ExportEnvWarning, Margin = new Padding(0, 0, 0, 10) };
+            var ok = new Button { Text = "Continue", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 0) };
+            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, MinimumSize = new Size(80, 0) };
+            var buttons = Flow(FlowDirection.RightToLeft);
+            buttons.Dock = DockStyle.Fill;
+            buttons.Controls.AddRange([cancel, ok]);
+            var table = Table(1);
+            table.Controls.Add(env, 0, 0);
+            table.Controls.Add(note, 0, 1);
+            table.Controls.Add(buttons, 0, 2);
+            table.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
+            options.Controls.Add(table);
+            options.AcceptButton = ok;
+            options.CancelButton = cancel;
+            options.Font = Font;
+            if (options.ShowDialog(this) != DialogResult.OK) return;
+            includeEnv = env.Checked;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export profiles", FileName = "clauderoo-profiles.json", DefaultExt = "json",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        // The save dialog has already confirmed any overwrite.
+        _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true);
+        SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
+    }
+
+    private void ImportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import profiles", Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var force = MessageBox.Show(this, "Update profiles that already exist? Choose No to skip them.", "clauderoo",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        var result = _pm.ImportFile(dialog.FileName, force);
+        Reload(null);
+        MessageBox.Show(this, TrayText.ImportSummary(result), "Import profiles", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void RenameProfile()

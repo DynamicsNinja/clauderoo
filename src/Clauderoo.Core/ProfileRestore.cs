@@ -13,6 +13,15 @@ public partial class ProfileManager
         internal set => _sessions = value;
     }
 
+    private UsageCache? _usage;
+
+    /// <summary>The cached usage readings (see <see cref="UsageCache"/>), kept in step with renames and removals.</summary>
+    public UsageCache Usage
+    {
+        get => _usage ??= new UsageCache(paths);
+        internal set => _usage = value;
+    }
+
     /// <summary>Syncs one profile with the home profile.</summary>
     public SyncReport Sync(string name)
     {

@@ -6,6 +6,10 @@ Console.OutputEncoding = System.Text.Encoding.UTF8; // so ✓ ⚠ ✗ render
 var paths = ClauderooPaths.ForCurrentUser();
 var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
 
+var version = typeof(Commands).Assembly.GetName().Version?.ToString(3) ?? "0";
+using var usageHandler = UsageClient.CreateHandler();
+using var usage = new UsageClient(usageHandler, () => DateTimeOffset.UtcNow, version);
+
 return Commands.Run(args, Console.Out, Console.Error, pm,
     startNewWindow: spec =>
     {
@@ -19,4 +23,5 @@ return Commands.Run(args, Console.Out, Console.Error, pm,
         Console.CancelKeyPress += (_, e) => e.Cancel = true;
         p.WaitForExit();
         return p.ExitCode;
-    });
+    },
+    usage: usage);

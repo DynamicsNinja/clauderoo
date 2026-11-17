@@ -28,6 +28,11 @@ sealed class TrayContext : ApplicationContext
     private readonly OwnerWindow _owner;
     private readonly ProblemTracker _alerted = new();
     private readonly EventWaitHandle _manageSignal;
+    // Usage: one long-lived client (and its handler) for the life of the tray, polled on a background task.
+    private readonly HttpClientHandler _usageHandler = UsageClient.CreateHandler();
+    private readonly UsageClient _usageClient;
+    private readonly UsagePoller _poller;
+    private readonly UsageView _usage = new();
     private string? _watchedKey;
     private ProfilesForm? _profilesForm;
     private ProblemsForm? _problemsForm;
@@ -61,6 +66,23 @@ sealed class TrayContext : ApplicationContext
         _ui = SynchronizationContext.Current!;
         _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now);
         _owner = new OwnerWindow(() => Guard(() => UpdateStatus(forceIcon: true)));
+
+        var version = typeof(TrayContext).Assembly.GetName().Version?.ToString(3) ?? "0";
+        _usageClient = new UsageClient(_usageHandler, () => DateTimeOffset.UtcNow, version);
+        var cache = new UsageCache(_paths);
+        _poller = new UsagePoller((t, ct) => _usageClient.FetchAsync(t.Name, t.ConfigDir, t.Entry, ct), cache, () => DateTimeOffset.UtcNow);
+        _poller.Updated += results => Post(() => Guard(() => _usage.Apply(results))); // raised on a worker thread
+        _usage.Refresh = _poller.RefreshNowAsync;
+        // Last known readings first (the cache's lock can take a moment: off the UI thread), then live ones.
+        Task.Run(() =>
+        {
+            try
+            {
+                var cached = cache.Load();
+                Post(() => Guard(() => _usage.Seed(cached)));
+            }
+            catch (Exception) { /* no cache yet, or locked: the first poll fills it */ }
+        });
 
         _menu.Opening += (_, e) =>
         {
@@ -117,7 +139,9 @@ sealed class TrayContext : ApplicationContext
         if (openProfiles) Post(() => Guard(ShowProfiles));
 
         // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
+        // The first sync also hands the poller its profiles; it starts polling after that.
         Post(() => Guard(FullSync));
+        Post(() => Guard(_poller.Start));
     }
 
     // ---------- state ----------
@@ -210,7 +234,15 @@ sealed class TrayContext : ApplicationContext
     {
         try { _running = TrayMenuState.CountRunning(_pm); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* keep the last known counts */ }
+        UpdateUsageTargets();
     }
+
+    /// <summary>Claude-login profiles (home included) are polled for usage; one with a session running more often.</summary>
+    private void UpdateUsageTargets() =>
+        _poller.SetTargets(_profiles
+            .Where(TrayMenuState.TracksUsage)
+            .Select(p => new PollTarget(p.Name, p.Dir, new ProfileEntry { Home = p.IsHome },
+                _running.GetValueOrDefault(p.Name) > 0)));
 
     // The 15 s refresh probes processes and waits on the sessions lock: done on a worker thread.
     private async Task RefreshRunningInBackground()
@@ -220,6 +252,7 @@ sealed class TrayContext : ApplicationContext
         try
         {
             _running = await Task.Run(() => TrayMenuState.CountRunning(_pm)); // resumes on the UI thread
+            UpdateUsageTargets();
             UpdateStatus();
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* keep the last known counts */ }
@@ -287,6 +320,7 @@ sealed class TrayContext : ApplicationContext
                 $"{_configError?.Headline}\r\n{_configError?.Message}\r\nSettings file: {_paths.ConfigFile}")),
             ShowConfigFile = () => Guard(ShowConfigFile),
             Exit = () => Guard(Exit),
+            RefreshUsage = () => _ = RefreshUsageAsync(),
         };
 
         if (LoadConfig() is { } cfg)
@@ -305,7 +339,15 @@ sealed class TrayContext : ApplicationContext
         var releaseBuild = !string.IsNullOrEmpty(AppVersion.Repo);
         var newer = releaseBuild ? UpdateCheck.NewerThan(_updateState, AppVersion.Current) : null;
         TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
-            newer?.ToString(), _updateState.CheckEnabled, releaseBuild), actions);
+            newer?.ToString(), _updateState.CheckEnabled, releaseBuild,
+            _usage.Readings, _usage.Results, DateTimeOffset.Now), actions);
+    }
+
+    // The fetch runs on a worker thread; the result comes back through the poller's Updated event.
+    private async Task RefreshUsageAsync()
+    {
+        try { await _usage.Refresh(); }
+        catch (Exception) { /* shutting down; a failed fetch is shown as the profile's usage status */ }
     }
 
     // ---------- update check ----------
@@ -400,7 +442,7 @@ sealed class TrayContext : ApplicationContext
             return;
         }
         if (RequireConfig() == null) return;
-        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems));
+        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems), _usage);
         form.FormClosed += (_, _) =>
         {
             if (_profilesForm == form) _profilesForm = null;
@@ -712,6 +754,9 @@ sealed class TrayContext : ApplicationContext
             _problemsForm?.Dispose();
             _conversationsForm?.Dispose();
             _manageSignal.Dispose();
+            _poller.Dispose();      // stops the loop first, then the client it uses
+            _usageClient.Dispose();
+            _usageHandler.Dispose();
             _debounce.Dispose();
             _runningTimer.Dispose();
             _clickTimer.Dispose();

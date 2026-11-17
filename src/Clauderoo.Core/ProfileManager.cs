@@ -174,6 +174,7 @@ public partial class ProfileManager
         foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
             cfg.Folders.Remove(k);
         ConfigStore.Save(paths, cfg);
+        try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
     }
 
     // Shared by Remove and Rename: refuses while home's plugin records point inside the profile folder.
@@ -244,6 +245,13 @@ public partial class ProfileManager
     }
 
     public ProfileEntry Get(string name) => Entry(Config, name);
+
+    /// <summary>The profile's Claude config folder: the home dir for the home profile, else its profile folder.</summary>
+    public string ConfigDirOf(string name)
+    {
+        var cfg = Config;
+        return Entry(cfg, name).Home ? cfg.HomeDir : paths.ProfileDir(name);
+    }
 
     public void Own(string name, string item)
     {

@@ -16,6 +16,23 @@ public class TrayTextTests
     static Problem P(ProblemFix? fix, string profile = "work", string title = "t") => new(profile, title, profile + ": raw", fix);
 
     [Fact]
+    public void ImportSummary_Text()
+    {
+        var r = new ImportResult(["a"], ["b", "c"], ["d: already exists (use --force to update it)"], ["e: needs an API key"], ["f"],
+            Notices: ["a: start folder X doesn't exist on this machine, so it wasn't set."], Mapped: ["C:\\w → b"], EnvNames: ["a: A_VAR"]);
+        var nl = Environment.NewLine;
+        Assert.Equal(string.Join(nl, "Created:", "  a", "Updated:", "  b", "  c", "Folder mappings added:", "  C:\\w → b",
+            "Environment variables (names only):", "  a: A_VAR", "Skipped:",
+            "  d: already exists (answer Yes to update existing profiles)", "Kept their sign-in:", "  f",
+            "Needs a key or token:", "  e: needs an API key",
+            "Notices:", "  a: start folder X doesn't exist on this machine, so it wasn't set."), TrayText.ImportSummary(r));
+        Assert.Equal("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], [], [])));
+        // A mapping alone is a change.
+        Assert.DoesNotContain("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], [], [], Mapped: ["C:\\w → b"])));
+        Assert.StartsWith("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], ["x: already exists"], [])));
+    }
+
+    [Fact]
     public void Label_Login_WithEmail()
     {
         Assert.Equal("personal (home) — Claude login · someone@example.com",
@@ -237,5 +254,84 @@ public class TrayTextTests
             "work: skills is a real folder, not shared (run 'clauderoo share work skills')",
         ]);
         Assert.Equal(["work keeps its own copy of skills, so it isn't shared"], titles);
+    }
+
+    static UsageReading Usage(DateTimeOffset at, params UsageWindow[] w) => new("work", at, "Max 5x", w);
+
+    static UsageWindow W(string name, double percent, DateTimeOffset? resets = null) => new(name, percent, resets);
+
+    [Fact]
+    public void UsageSuffix_Format()
+    {
+        var at = DateTimeOffset.Now;
+        Assert.Equal(" · 5h 42% · 7d 63%", TrayText.UsageSuffix(Usage(at, W("5h", 42.4), W("7d", 62.5), W("Opus", 71))));
+        Assert.Equal(" · 7d 63%", TrayText.UsageSuffix(Usage(at, W("7d", 63))));
+        Assert.Equal("", TrayText.UsageSuffix(Usage(at, W("Opus", 71))));
+        Assert.Equal("", TrayText.UsageSuffix(null));
+    }
+
+    [Fact]
+    public void UsageRows_Format()
+    {
+        var now = new DateTimeOffset(DateTime.Today.AddHours(12));
+        var today = new DateTimeOffset(DateTime.Today.AddHours(15).AddMinutes(40));
+        var later = now.AddDays(3);
+        var r = Usage(now, W("5h", 42, today), W("7d", 63, later), W("Opus", 71));
+        Assert.Equal(
+        [
+            "5-hour: 42%, resets 15:40",
+            $"7-day: 63%, resets {later.LocalDateTime.ToString("d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture)}",
+            "Opus: 71%",
+        ], TrayText.UsageRows(r, new UsageResult.Ok(r), now));
+
+        // a stale reading kept after a failed fetch: "as of", then why
+        var old = Usage(now.AddMinutes(-40), W("5h", 42));
+        Assert.Equal(["5-hour: 42%", $"As of {now.AddMinutes(-40).LocalDateTime:HH:mm}", "Usage is rate limited; clauderoo will try again later."],
+            TrayText.UsageRows(old, new UsageResult.RateLimited(TimeSpan.FromMinutes(10)), now));
+
+        Assert.Equal(["Sign-in expired. Start a session of this profile to refresh it."],
+            TrayText.UsageRows(null, new UsageResult.Expired(), now));
+        Assert.Empty(TrayText.UsageRows(null, null, now));
+        Assert.Empty(TrayText.UsageRows(null, new UsageResult.NotSignedIn(), now));
+    }
+
+    [Fact]
+    public void UsageLevel_Thresholds()
+    {
+        Assert.Equal(UsageLevel.Ok, TrayText.UsageLevelOf(69.9));
+        Assert.Equal(UsageLevel.Warn, TrayText.UsageLevelOf(70));
+        Assert.Equal(UsageLevel.Warn, TrayText.UsageLevelOf(89.9));
+        Assert.Equal(UsageLevel.High, TrayText.UsageLevelOf(90));
+    }
+
+    [Fact]
+    public void UsageNotTracked_NamesProvider() =>
+        Assert.Equal("Usage isn't tracked for Google Vertex AI.", TrayText.UsageNotTracked(Providers.Vertex));
+
+    [Fact]
+    public void TokenProfile_UsageNotTracked_InTrayAndWindow()
+    {
+        var token = new ProfileInfo("ci", false, false, null, [], @"C:\x\ci", Providers.Token);
+        // Never polled (the poller's targets are the tracked profiles) ...
+        Assert.False(TrayMenuState.TracksUsage(token));
+        // ... and the window's Usage group and the tray submenu say why, in the same words as the CLI.
+        Assert.Equal("Usage isn't tracked for Claude token.", TrayText.UsageNotTrackedFor(token));
+        Assert.Equal("Usage isn't tracked for Claude token.", new UsageResult.NotTracked(Providers.Token).Message);
+        Assert.Null(TrayText.UsageNotTrackedFor(Login("work", "w@example.com")));
+        Assert.Null(TrayText.UsageNotTrackedFor(Login("personal", null, home: true)));
+
+        // A reading stored under its name (say, from before it became a token profile) isn't shown.
+        var now = DateTimeOffset.Now;
+        var stale = Usage(now, W("5h", 42));
+        using var menu = new ContextMenuStrip();
+        var state = new TrayMenuState([Login("work", "w@example.com", isDefault: true), token], [],
+            new Dictionary<string, int>(), false,
+            Usage: new Dictionary<string, UsageReading> { ["ci"] = stale with { Profile = "ci" } }, Now: now);
+        TrayMenu.Build(menu, state, new TrayMenuActions());
+        var item = menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text!.StartsWith("ci"));
+        Assert.DoesNotContain("42%", item.Text);
+        var rows = item.DropDownItems.OfType<ToolStripMenuItem>().Where(i => !i.Enabled).Select(i => i.Text).ToList();
+        Assert.Contains("Usage isn't tracked for Claude token.", rows);
+        Assert.DoesNotContain(rows, r => r!.Contains("42%"));
     }
 }
