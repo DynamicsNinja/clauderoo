@@ -153,6 +153,8 @@ All commands work with either `clauderoo` or `cr`.
 | `sessions [profile] [--json]` | List conversations across profiles (home's read-only, isolated folders included), newest first: id, profile, folder, when and your first prompt |
 | `resume <id> --as <profile> [--isolated] [--tab]` | Continue a conversation under another profile. The start of the id is enough. It's copied into that profile (a newer or bigger copy there is kept; an older one is saved as `.bak-<time>`), then Claude starts in the conversation's own folder with `--resume`. It can't copy into the home profile, because clauderoo never writes inside `~/.claude`; `--as <home> --isolated` works, since that folder is clauderoo's |
 
+The tray does the same from **Continue a conversation…**. The window lists conversations across your profiles (when, profile, folder and your first prompt; nothing else of a conversation is shown), with a search box and a profile filter. Pick one, choose **Continue as** and press **Continue**: the conversation is copied into that profile and Claude opens in a new tab, in the conversation's own folder, resumed. The home profile appears only as "(isolated)" there, because clauderoo never writes inside `~/.claude`. If the conversation's folder no longer exists, the window says so instead of starting.
+
 ### Folders
 
 | Command | What it does |
