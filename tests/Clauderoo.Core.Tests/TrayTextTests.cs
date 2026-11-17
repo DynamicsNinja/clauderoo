@@ -33,6 +33,11 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void ImportSummary_AutoSwitch_SaysItIsOff() =>
+        Assert.Equal("Auto-switch settings imported (off — turn on with 'cr auto on' or the tray)",
+            TrayText.ImportSummary(new ImportResult([], [], [], [], AutoSwitchImported: true)));
+
+    [Fact]
     public void Label_Login_WithEmail()
     {
         Assert.Equal("personal (home) — Claude login · someone@example.com",

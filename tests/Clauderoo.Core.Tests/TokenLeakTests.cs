@@ -32,11 +32,12 @@ public class TokenLeakTests
 
     private static IEnumerable<(string Name, Handler Handler)> Answers()
     {
+        // The home profile is over the auto-switch threshold and work has room, so `cr auto --once` really switches.
         yield return ("200", new Handler(r => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent($$"""
-                { "five_hour": { "utilization": 42, "resets_at": "2026-11-17T15:40:00Z" },
-                  "seven_day": { "utilization": 63, "resets_at": "2026-11-20T09:00:00Z" },
+                { "five_hour": { "utilization": {{(Tok(r) == HomeToken ? 95 : 42)}}, "resets_at": "2026-11-17T15:40:00Z" },
+                  "seven_day": { "utilization": {{(Tok(r) == HomeToken ? 95 : 63)}}, "resets_at": "2026-11-20T09:00:00Z" },
                   "limits": [ { "kind": "model", "scope": { "model": { "display_name": "Opus {{Tok(r)}}" } }, "percent": 71 } ],
                   "echo": "{{r.Headers.Authorization}}", "token": "{{Tok(r)}}" }
                 """),
@@ -75,6 +76,7 @@ public class TokenLeakTests
         pm.Add("ci");
         pm.SetProvider("ci", Providers.Token, token: StoredToken);
         var homeName = pm.Config.HomeProfileName!;
+        pm.SetDefault(homeName);
         var planted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             PlantCredential(pm.ConfigDirOf("work"), Token),
@@ -125,13 +127,14 @@ public class TokenLeakTests
                      {
                          new[] { "usage" }, ["usage", "work"], ["usage", "ci"], ["usage", "--json"], ["usage", "work", "--json"],
                          ["usage", "ci", "--json"], ["list"], ["list", "--json"], ["which"], ["which", "--json"],
+                         ["auto", "on"], ["auto", "--once"], ["auto", "--once", "--json"],
                      })
                 Capture($"[{name}] cr {string.Join(' ', args)}", () =>
                 {
                     var o = new StringWriter();
                     var e = new StringWriter();
                     var code = Commands.Run(args, o, e, pm, _ => 0, _ => 0, wtAvailable: true, claudePath: "claude.cmd",
-                        hookCancel: _ => new NoopDisposable(), usage: client);
+                        hookCancel: _ => new NoopDisposable(), usage: client, clock: () => Now);
                     return $"exit {code}\n{o}\n{e}";
                 });
         }
@@ -148,6 +151,11 @@ public class TokenLeakTests
         Assert.Contains("Usage isn't tracked for Claude token.", text); // the token profile was asked about, and said so
         Assert.Contains("\"schemaVersion\":1", text); // the --json runs printed JSON
         Assert.True(pm.HasToken("ci")); // the token is really stored (encrypted)
+        // auto --once really switched (home was over the threshold), so autoswitch.json was written and is scanned below
+        Assert.Contains($"{homeName} is at 95% of its", text);
+        Assert.Equal("work", pm.Config.DefaultProfile);
+        Assert.Equal(homeName, pm.AutoSwitchState.Load().SwitchedFrom);
+        Assert.True(File.Exists(Path.Combine(home.Paths.Root, "autoswitch.json")));
 
         // nothing under the user's folder holds any token, except the two planted credential files themselves
         // (any other .credentials.json, say a copy, is checked like every other file)

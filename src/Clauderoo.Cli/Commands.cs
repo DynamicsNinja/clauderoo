@@ -279,7 +279,7 @@ public static class Commands
                     foreach (var i in items) output.WriteLine("  " + i);
                 }
                 Section("Folder mappings added:", r.Mapped);
-                if (r.AutoSwitchImported) output.WriteLine("Auto-switch settings imported (this machine had none).");
+                if (r.AutoSwitchImported) output.WriteLine(ImportResult.AutoSwitchImportedText);
                 Section("Environment variables (names only):", r.EnvNames);
                 Section("Skipped:", r.Skipped);
                 Section("Kept their sign-in:", r.KeptProvider);
@@ -838,7 +838,9 @@ public static class Commands
                 case "--order":
                     if (i + 1 >= pos.Count) throw new ClauderooException($"Usage: {AutoUsage}");
                     order = pos[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-                    foreach (var name in order) pm.Get(name); // throws for an unknown profile
+                    foreach (var name in order)
+                        if (Providers.Of(pm.Get(name)) == Providers.Token) // Get throws for an unknown profile
+                            throw new ClauderooException($"'{name}' is a Claude-token profile. Claude-token profiles are never auto-switch targets.");
                     break;
                 default: throw new ClauderooException($"Usage: {AutoUsage}");
             }
@@ -867,9 +869,19 @@ public static class Commands
     private static int AutoOnce(TextWriter output, TextWriter err, ProfileManager pm,
         Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected, Func<DateTimeOffset> clock, bool json)
     {
+        // This read only says whether to fetch, and which profiles. Decisions use a fresh read after the fetch
+        // (RunPass), so a default the user picks meanwhile is never overridden.
+        var cfg = pm.Config;
+        if (cfg.AutoSwitch is not { Enabled: true })
+        {
+            const string off = "Auto-switch is off.";
+            if (json) JsonOut.Write(output, new { action = "none", from = cfg.DefaultProfile, to = (string?)null, reason = off });
+            else output.WriteLine(off);
+            return 2;
+        }
+
         var client = injected ?? throw new InvalidOperationException("No usage client was given.");
         var cache = new UsageCache(pm.Paths);
-        var cfg = pm.Config;
         var usage = new Dictionary<string, UsageReading>();
         using (var cts = new CancellationTokenSource())
         using (hookCancel(cts))
@@ -890,20 +902,18 @@ public static class Commands
             }
         }
 
-        var now = clock();
-        var states = pm.AutoSwitchState;
-        var state = states.Load();
-        var from = cfg.DefaultProfile;
-        var decision = AutoSwitch.Decide(cfg, usage, now, state);
+        var pass = AutoSwitchRunner.RunPass(pm, usage, clock());
+        if (pass.ReadError is { } readError) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(readError);
+        var from = pass.From;
 
         string action, reason;
         string? to = null;
         int code;
-        switch (decision)
+        switch (pass.Decision)
         {
             case Decision.SwitchTo sw:
                 // With --json stdout carries only the payload, so the switch's sync notices go to stderr.
-                Print(pm.SetDefault(sw.Profile), json ? err : output, err);
+                if (pass.Report != null) Print(pass.Report, json ? err : output, err);
                 (action, to, reason, code) = ("switched", sw.Profile, sw.Reason, 0);
                 break;
             case Decision.NoTarget nt:
@@ -913,12 +923,9 @@ public static class Commands
                 (action, reason, code) = ("none", $"{rec.Profile} has room again.", 2);
                 break;
             default:
-                (action, reason, code) = ("none", cfg.AutoSwitch is { Enabled: true } ? "Nothing to do." : "Auto-switch is off.", 2);
+                (action, reason, code) = ("none", pass.Settings is { Enabled: true } ? "Nothing to do." : "Auto-switch is off.", 2);
                 break;
         }
-
-        // Next owns the flag transitions, so it runs after every decision (it also resets the no-target notice).
-        states.Save(AutoSwitch.Next(state, decision, from, usage, now, cfg.AutoSwitch));
 
         // {schemaVersion:1, action, from, to, reason}: JsonOut.Write adds schemaVersion first.
         if (json) JsonOut.Write(output, new { action, from, to, reason });

@@ -1787,13 +1787,22 @@ sealed class ProfilesForm : Form
             var cfg = _pm.Config;
             var profiles = cfg.Profiles.Select(kv => (kv.Key, Providers.Of(kv.Value))).ToList();
             if (AutoSwitchDialog.Edit(this, cfg.AutoSwitch ?? new AutoSwitchSettings(), profiles) is not { } edited) return;
-            await RunWriteAsync(() =>
+            _autoSwitch.Enabled = false; // no second dialog while this save waits its turn
+            try
             {
-                var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
-                fresh.AutoSwitch = edited;
-                ConfigStore.Save(_pm.Paths, fresh);
-                return true;
-            });
+                await RunWriteAsync(() =>
+                {
+                    var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
+                    edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
+                    fresh.AutoSwitch = edited;
+                    ConfigStore.Save(_pm.Paths, fresh);
+                    return true;
+                });
+            }
+            finally
+            {
+                if (!IsDisposed) _autoSwitch.Enabled = true;
+            }
             if (IsDisposed) return;
             SetResult(TrayText.AutoSwitchSummary(edited), SystemColors.ControlText);
             _autoSwitchChanged?.Invoke();
@@ -1849,6 +1858,16 @@ sealed class ProfilesForm : Form
     /// <summary>The plain titles of raw sync problems, each once.</summary>
     internal static List<string> ProblemTitles(IEnumerable<string> problems) =>
         problems.Select(p => ProblemTranslator.Translate(p).Title).Distinct().ToList();
+
+    // Test accessors: the window has no other seams for these.
+    internal string? UndoNameForTest => _undoName;
+    internal Action? ResultLinkForTest => _resultLink;
+    internal void OfferUndoForTest(string name, Action link) { _undoName = name; _resultLink = link; }
+    internal DataGridView EnvGridForTest => _env;
+    internal Button SetDefaultButtonForTest => _setDefault;
+    internal bool CurrentIsDefaultForTest => _currentIsDefault;
+    internal IReadOnlyList<ProfileInfo> ListedProfilesForTest => _list.Items.Cast<ListItem>().Select(i => i.Info).ToList();
+    internal void UndoRemoveForTest() => UndoRemove();
 
     private void SetResult(string text, Color color)
     {

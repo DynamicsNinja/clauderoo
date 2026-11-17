@@ -458,4 +458,103 @@ public class AutoSwitchTests
         pm.Remove("work");
         Assert.Equal(["spare"], pm.Config.AutoSwitch!.Order);
     }
+
+    // ---- Exact boundaries ----
+
+    [Fact]
+    public void Decide_FiveHourExactlyAtThreshold_Triggers() =>
+        Assert.Equal("work", Assert.IsType<Decision.SwitchTo>(
+            AutoSwitch.Decide(TwoLogin(), U(R("personal", 90, 10), R("work", 1, 1)), Now, Fresh)).Profile);
+
+    [Fact]
+    public void Decide_TargetExactlyAtMargin_Refused() =>
+        // threshold 90 - hysteresis 5 = 85: a target must be strictly under it
+        Assert.IsType<Decision.NoTarget>(AutoSwitch.Decide(TwoLogin(), U(R("personal", 95, 10), R("work", 85, 1)), Now, Fresh));
+
+    [Fact]
+    public void Decide_ReadingExactlyFifteenMinutesOld_IsFresh() =>
+        Assert.Equal("work", Assert.IsType<Decision.SwitchTo>(
+            AutoSwitch.Decide(TwoLogin(), U(R("personal", 95, 10, ageMin: 15), R("work", 1, 1, ageMin: 15)), Now, Fresh)).Profile);
+
+    // ---- RunPass: the one shared pass ----
+
+    private static Dictionary<string, UsageReading> OverOnPersonal() =>
+        U(R("personal", 95, 10), R("work", 1, 1), R("spare", 1, 1));
+
+    [Fact]
+    public void RunPass_Switches_ThroughSetDefault_NoHold_SavesState()
+    {
+        var (pm, h) = MakePm(); using var _h = h;
+        pm.SetDefault("personal");
+        var r = AutoSwitchRunner.RunPass(pm, OverOnPersonal(), Now);
+        Assert.Equal("work", Assert.IsType<Decision.SwitchTo>(r.Decision).Profile);
+        Assert.Equal("personal", r.From);
+        Assert.NotNull(r.Report);
+        Assert.Null(r.ReadError);
+        Assert.Equal("work", pm.Config.DefaultProfile);
+        var s = pm.AutoSwitchState.Load();
+        Assert.Equal("personal", s.SwitchedFrom);
+        Assert.Equal(Now, s.LastSwitch);
+        Assert.Null(s.ManualHold);
+    }
+
+    [Fact]
+    public void RunPass_DefaultChangedBeforeApply_NotOverridden()
+    {
+        var (pm, h) = MakePm(); using var _h = h;
+        pm.SetDefault("personal");
+        // Between the decision and the switch, the user picks spare by hand, even though it is over the threshold too
+        // (so the hold stays: it only clears once the held profile is back under).
+        var usage = U(R("personal", 95, 10), R("work", 1, 1), R("spare", 95, 10));
+        var r = AutoSwitchRunner.RunPass(pm, usage, Now, beforeApply: () => pm.SetDefaultByUser("spare"));
+        Assert.IsType<Decision.NoAction>(r.Decision);
+        Assert.Equal("spare", r.From); // Next ran with the actual default
+        Assert.Null(r.Report);
+        Assert.Equal("spare", pm.Config.DefaultProfile);
+        var s = pm.AutoSwitchState.Load();
+        Assert.Equal("spare", s.ManualHold); // the hold the user's choice noted survives the save
+        Assert.Null(s.LastSwitch);
+        Assert.Null(s.SwitchedFrom);
+    }
+
+    [Fact]
+    public void RunPass_ReadsConfigFresh()
+    {
+        var (pm, h) = MakePm(); using var _h = h;
+        pm.SetDefault("personal");
+        var cfg = pm.Config;
+        cfg.AutoSwitch!.Enabled = false;
+        ConfigStore.Save(h.Paths, cfg);
+        var r = AutoSwitchRunner.RunPass(pm, OverOnPersonal(), Now);
+        Assert.IsType<Decision.NoAction>(r.Decision);
+        Assert.Equal("personal", pm.Config.DefaultProfile);
+    }
+
+    [Fact]
+    public void RunPass_UnreadableConfig_ReportsReadError_DoesNothing()
+    {
+        var (pm, h) = MakePm(); using var _h = h;
+        pm.SetDefault("personal");
+        File.WriteAllText(h.Paths.ConfigFile, "{not json");
+        var r = AutoSwitchRunner.RunPass(pm, OverOnPersonal(), Now);
+        Assert.NotNull(r.ReadError);
+        Assert.IsType<Decision.NoAction>(r.Decision);
+        Assert.False(File.Exists(Path.Combine(h.Paths.Root, "autoswitch.json")));
+    }
+
+    [Fact]
+    public void Settings_UnknownFields_SurviveSave()
+    {
+        using var h = new TempHome();
+        Directory.CreateDirectory(h.Paths.Root);
+        File.WriteAllText(h.Paths.ConfigFile,
+            "{\"profiles\":{},\"autoSwitch\":{\"enabled\":true,\"threshold\":80,\"order\":[],\"quietHours\":{\"from\":22}}}");
+        var cfg = ConfigStore.Load(h.Paths)!;
+        cfg.AutoSwitch!.Threshold = 75;
+        ConfigStore.Save(h.Paths, cfg);
+        var text = File.ReadAllText(h.Paths.ConfigFile);
+        Assert.Contains("quietHours", text);
+        Assert.Equal(75, ConfigStore.Load(h.Paths)!.AutoSwitch!.Threshold);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(text, "\"threshold\""));
+    }
 }

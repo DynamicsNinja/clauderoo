@@ -422,16 +422,16 @@ public class TransferTests
         Assert.True(r.AutoSwitchImported);
         Assert.True(r.ChangedAnything);
         var s = pm.Config.AutoSwitch!;
-        Assert.True(s.Enabled);
+        Assert.False(s.Enabled); // an import never turns auto-switch on
         Assert.Equal(80, s.Threshold);
         Assert.Equal(["personal"], s.Order);
 
         // The target has settings now: a second import leaves them alone, even with force.
-        var again = pm.Import("{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":false,\"threshold\":50}}", true);
+        var again = pm.Import("{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":true,\"threshold\":50}}", true);
         Assert.False(again.AutoSwitchImported);
         Assert.False(again.ChangedAnything);
         Assert.Equal(80, pm.Config.AutoSwitch!.Threshold);
-        Assert.True(pm.Config.AutoSwitch!.Enabled);
+        Assert.False(pm.Config.AutoSwitch!.Enabled);
 
         // Typed property only: config.json has one autoSwitch key and nothing in Extra.
         var raw = File.ReadAllText(home.Paths.ConfigFile);
@@ -462,9 +462,30 @@ public class TransferTests
         File.WriteAllText(file, "{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":true,\"threshold\":80}}");
         var r = Run(pm, "import", file);
         Assert.Equal(0, r.code);
-        Assert.Contains("Auto-switch settings imported", r.o);
+        Assert.Contains("Auto-switch settings imported (off — turn on with 'cr auto on' or the tray)", r.o);
         Assert.DoesNotContain("Nothing to import.", r.o);
+        Assert.False(pm.Config.AutoSwitch!.Enabled);
         Assert.Contains("Nothing to import.", Run(pm, "import", file).o);
+    }
+
+    [Fact]
+    public void Export_AutoSwitch_UnknownFieldsKeptInConfigButNotExported()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        // A newer version wrote a field this one doesn't know.
+        var raw = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(home.Paths.ConfigFile))!.AsObject();
+        raw["autoSwitch"] = JsonNode.Parse("{\"enabled\":true,\"threshold\":80,\"order\":[],\"quietHours\":{\"from\":22}}");
+        File.WriteAllText(home.Paths.ConfigFile, raw.ToJsonString());
+
+        // A save (cr auto --threshold) keeps it.
+        Assert.Equal(0, Run(pm, "auto", "--threshold", "70").code);
+        var saved = JsonNode.Parse(File.ReadAllText(home.Paths.ConfigFile))!["autoSwitch"]!;
+        Assert.Equal(70, saved["threshold"]!.GetValue<int>());
+        Assert.Equal(22, saved["quietHours"]!["from"]!.GetValue<int>());
+
+        // Export writes only enabled, threshold and order.
+        var auto = JsonNode.Parse(pm.Export(null, false))!["autoSwitch"]!.AsObject();
+        Assert.Equal(["enabled", "threshold", "order"], auto.Select(kv => kv.Key));
     }
 
     [Fact]

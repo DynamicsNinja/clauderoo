@@ -46,7 +46,7 @@ public class CliAutoTests
             """);
     }
 
-    private static (int code, string o, string e) Run(ProfileManager pm, Handler h, params string[] args)
+    private static (int code, string o, string e) Run(ProfileManager pm, HttpMessageHandler h, params string[] args)
     {
         var o = new StringWriter();
         var e = new StringWriter();
@@ -95,7 +95,7 @@ public class CliAutoTests
     [InlineData("0")]
     [InlineData("101")]
     [InlineData("abc")]
-    public void Auto_Threshold_Validates1to100(string bad)
+    public void Auto_Threshold_Validates6to100(string bad)
     {
         var (pm, home) = Make();
         using var _h = home;
@@ -160,9 +160,51 @@ public class CliAutoTests
     {
         var (pm, home) = Make();
         using var _h = home;
-        var r = Run(pm, new Handler(99, 10), "auto", "--once");
+        var h = new Handler(99, 10);
+        var r = Run(pm, h, "auto", "--once");
         Assert.Equal(2, r.code);
+        Assert.Equal("Auto-switch is off.", r.o.Trim());
+        Assert.Equal(0, h.Calls); // nothing fetched
         Assert.Equal("personal", pm.Config.DefaultProfile);
+        Assert.False(File.Exists(Path.Combine(pm.Paths.Root, "autoswitch.json")));
+
+        var j = Run(pm, h, "auto", "--once", "--json");
+        Assert.Equal(2, j.code);
+        Assert.Equal(0, h.Calls);
+        using var doc = JsonDocument.Parse(j.o);
+        Assert.Equal("none", doc.RootElement.GetProperty("action").GetString());
+        Assert.Equal("Auto-switch is off.", doc.RootElement.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public void AutoOnce_UserSetsDefaultDuringFetch_NotOverridden()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        Run(pm, Idle, "auto", "on");
+        // personal is over the threshold, and while usage is being fetched the user makes work the default by hand,
+        // although work is over it too (so the hold stays: it only clears once the held profile is back under). Deciding
+        // on the config read before the fetch would act for personal and drop the hold.
+        var h = new EditingHandler(95, 95, () => pm.SetDefaultByUser("work"));
+        var r = Run(pm, h, "auto", "--once");
+        Assert.Equal(2, r.code);
+        Assert.Equal("work", pm.Config.DefaultProfile);
+        var state = pm.AutoSwitchState.Load();
+        Assert.Equal("work", state.ManualHold);
+        Assert.Null(state.LastSwitch);
+    }
+
+    [Fact]
+    public void Auto_Order_TokenProfile_Refused()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        pm.Add("ci");
+        pm.SetProvider("ci", Providers.Token, token: "sk-ant-oat01-FAKE-ci-0123456789");
+        var r = Run(pm, Idle, "auto", "--order", "work,ci");
+        Assert.Equal(1, r.code);
+        Assert.Contains("Claude-token profiles are never auto-switch targets.", r.e);
+        Assert.Null(pm.Config.AutoSwitch);
     }
 
     [Fact]

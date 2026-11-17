@@ -7,13 +7,16 @@ namespace Clauderoo.Core;
 /// What an import did. Skipped, NeedSecret, KeptProvider and EnvNames entries are ready-to-print text, "name: detail".
 /// Notices holds the sync notices and problems raised along the way; Mapped holds "dir → profile" for each folder mapping added;
 /// EnvNames lists the environment variable names (never values) each imported profile now has; AutoSwitchImported says the
-/// export's auto-switch settings were taken over (only ever when this machine had none).
+/// export's auto-switch settings were taken over (only ever when this machine had none, and always turned off).
 /// </summary>
 public record ImportResult(IReadOnlyList<string> Created, IReadOnlyList<string> Updated,
     IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret, IReadOnlyList<string>? KeptProvider = null,
     IReadOnlyList<string>? Notices = null, IReadOnlyList<string>? Mapped = null, IReadOnlyList<string>? EnvNames = null,
     bool AutoSwitchImported = false)
 {
+    /// <summary>The summary line for <see cref="AutoSwitchImported"/>, shared by the CLI and the tray.</summary>
+    public const string AutoSwitchImportedText = "Auto-switch settings imported (off — turn on with 'cr auto on' or the tray)";
+
     /// <summary>True when the import created or updated a profile, added a folder mapping or set up auto-switch.</summary>
     public bool ChangedAnything => Created.Count + Updated.Count + (Mapped?.Count ?? 0) > 0 || AutoSwitchImported;
 }
@@ -374,14 +377,14 @@ public partial class ProfileManager
     }
 
     /// <summary>
-    /// The export's autoSwitch block as typed settings: enabled, threshold (6 to 100, as `cr auto` allows) and the order,
+    /// The export's autoSwitch block as typed settings, always off: threshold (6 to 100, as `cr auto` allows) and the order,
     /// keeping only names that exist after the import. Null (with a Skipped line) when the threshold isn't valid.
     /// </summary>
     private static AutoSwitchSettings? ReadAutoSwitch(JsonElement auto, ClauderooConfig cfg, List<string> skipped, List<string> notices)
     {
-        var s = new AutoSwitchSettings();
-        if (auto.TryGetProperty("enabled", out var en) && en.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            s.Enabled = en.GetBoolean();
+        // Never turned on by an import, whatever the file's "enabled" says: switching the default is the user's call on
+        // this machine (cr auto on, or the tray).
+        var s = new AutoSwitchSettings { Enabled = false };
         if (auto.TryGetProperty("threshold", out var th) && th.ValueKind != JsonValueKind.Null)
         {
             if (th.ValueKind != JsonValueKind.Number || !th.TryGetInt32(out var t) || t is < 6 or > 100)

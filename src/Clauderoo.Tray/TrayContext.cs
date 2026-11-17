@@ -672,51 +672,14 @@ sealed class TrayContext : ApplicationContext
 
     /// <summary>
     /// Worker thread, inside the write gate, so no other tray write (manual Set default, settings, syncs) interleaves:
-    /// loads the config and the auto-switch state, decides, applies a switch (SetDefault syncs, which can take a
-    /// moment), then saves the next state. Null when the config or state can't be read right now: that is shown
-    /// elsewhere, and the next readings try again.
+    /// the shared <see cref="AutoSwitchRunner.RunPass(ProfileManager, IReadOnlyDictionary{string, UsageReading}, DateTimeOffset)"/>.
+    /// A failed switch throws (reported, nothing saved). Null when the config or state can't be read right now: that
+    /// is shown elsewhere, and the next readings try again.
     /// </summary>
     private AutoSwitchOutcome? AutoSwitchPass(IReadOnlyDictionary<string, UsageReading> readings)
     {
-        ClauderooConfig cfg;
-        AutoSwitchState state;
-        try
-        {
-            cfg = _pm.Config;
-            state = _pm.AutoSwitchState.Load();
-        }
-        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return null; }
-
-        var now = DateTimeOffset.UtcNow;
-        var from = cfg.DefaultProfile;
-        var decision = AutoSwitch.Decide(cfg, readings, now, state);
-        SyncReport? report = null;
-        if (decision is Decision.SwitchTo to)
-        {
-            // Re-check right before switching: `cr default` in another process may have changed the default (and
-            // noted a manual hold) since it was read. Then the decision is dropped and Next sees the actual default.
-            try
-            {
-                var current = _pm.Config.DefaultProfile;
-                if (current != from)
-                {
-                    decision = new Decision.NoAction();
-                    from = current;
-                    state = _pm.AutoSwitchState.Load();
-                }
-            }
-            catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return null; }
-            if (decision is Decision.SwitchTo apply)
-                report = _pm.SetDefault(apply.Profile); // throws: reported, nothing saved. Not a manual choice: no hold.
-        }
-
-        var next = AutoSwitch.Next(state, decision, from, readings, now, cfg.AutoSwitch);
-        if (next != state)
-        {
-            try { _pm.AutoSwitchState.Save(next); }
-            catch (IOException) { /* best effort: the switch itself is done */ }
-        }
-        return new AutoSwitchOutcome(decision, from, report);
+        var r = AutoSwitchRunner.RunPass(_pm, readings, DateTimeOffset.UtcNow);
+        return r.ReadError != null ? null : new AutoSwitchOutcome(r.Decision, r.From, r.Report);
     }
 
     private void ShowAutoSwitch(AutoSwitchOutcome o)

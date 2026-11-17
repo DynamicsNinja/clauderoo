@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Clauderoo.Core;
 
@@ -11,6 +12,10 @@ public class AutoSwitchSettings
     private List<string> _order = [];
     /// <summary>A hand-edited <c>"order": null</c> reads as empty.</summary>
     public List<string> Order { get => _order; set => _order = value ?? []; }
+
+    /// <summary>Fields this version doesn't know, kept so a save doesn't drop them. Export never writes them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>
@@ -138,6 +143,79 @@ public static class AutoSwitch
         if (!IsFresh(r, now)) return false;
         var windows = Main(r).ToList();
         return windows.Count > 0 && windows.All(w => w.Percent < margin);
+    }
+}
+
+/// <summary>
+/// What one pass did. <see cref="From"/> is the default the decision was made for (the one a switch moved away from);
+/// <see cref="Report"/> is the switch's sync report. <see cref="ReadError"/> is set when the config or the auto-switch
+/// state couldn't be read: then nothing was decided, applied or saved.
+/// </summary>
+public sealed record PassResult(Decision Decision, string? From, SyncReport? Report, AutoSwitchSettings? Settings,
+    Exception? ReadError = null);
+
+/// <summary>The one auto-switch pass, shared by the tray and <c>cr auto --once</c>.</summary>
+public static class AutoSwitchRunner
+{
+    /// <summary>
+    /// Reads the config fresh, loads the state, decides, re-checks that the default is still the one decided for right
+    /// before applying, applies a switch with <see cref="ProfileManager.SetDefault"/> (never a manual hold), runs
+    /// <see cref="AutoSwitch.Next"/> with the actual current default and saves the state (best effort). A failed
+    /// switch throws and saves nothing. Callers in one process serialize passes with their other config writers.
+    /// </summary>
+    public static PassResult RunPass(ProfileManager pm, IReadOnlyDictionary<string, UsageReading> usage, DateTimeOffset now) =>
+        RunPass(pm, usage, now, beforeApply: null);
+
+    /// <param name="beforeApply">Test hook: runs between the decision and the re-check.</param>
+    internal static PassResult RunPass(ProfileManager pm, IReadOnlyDictionary<string, UsageReading> usage, DateTimeOffset now,
+        Action? beforeApply)
+    {
+        ClauderooConfig cfg;
+        AutoSwitchState state;
+        try
+        {
+            cfg = pm.Config;
+            state = pm.AutoSwitchState.Load();
+        }
+        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
+        {
+            return new PassResult(new Decision.NoAction(), null, null, null, e);
+        }
+
+        var from = cfg.DefaultProfile;
+        var decision = AutoSwitch.Decide(cfg, usage, now, state);
+        SyncReport? report = null;
+        if (decision is Decision.SwitchTo to)
+        {
+            beforeApply?.Invoke();
+            // Re-check right before switching: the user (this process or another, e.g. `cr default`) may have changed
+            // the default, and noted a manual hold, since it was read. Then the decision is dropped and Next sees the
+            // actual default and the state as it is now.
+            try
+            {
+                var current = pm.Config.DefaultProfile;
+                if (current != from)
+                {
+                    decision = new Decision.NoAction();
+                    from = current;
+                    state = pm.AutoSwitchState.Load();
+                }
+            }
+            catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
+            {
+                return new PassResult(new Decision.NoAction(), from, null, cfg.AutoSwitch, e);
+            }
+            if (decision is Decision.SwitchTo apply)
+                report = pm.SetDefault(apply.Profile); // throws: nothing saved. Not a manual choice: no hold.
+        }
+
+        var next = AutoSwitch.Next(state, decision, from, usage, now, cfg.AutoSwitch);
+        if (next != state)
+        {
+            try { pm.AutoSwitchState.Save(next); }
+            catch (IOException) { /* best effort: the switch itself is done */ }
+        }
+        return new PassResult(decision, from, report, cfg.AutoSwitch);
     }
 }
 
