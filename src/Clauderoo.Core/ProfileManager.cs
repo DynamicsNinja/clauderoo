@@ -114,6 +114,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         try { secrets.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
+        cfg.AutoSwitch?.Order.RemoveAll(n => n == name);
         ConfigStore.Save(paths, cfg);
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
     }

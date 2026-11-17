@@ -42,6 +42,7 @@ public class ClauderooConfig
     public string HomeDir { get; set; } = "";
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
+    public AutoSwitchSettings? AutoSwitch { get; set; }
 
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
