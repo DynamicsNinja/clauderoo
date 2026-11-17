@@ -344,6 +344,7 @@ internal static class TrayText
         Add("Created:", r.Created);
         Add("Updated:", r.Updated);
         Add("Folder mappings added:", r.Mapped);
+        if (r.AutoSwitchImported) lines.Add("Auto-switch settings imported (this machine had none).");
         Add("Environment variables (names only):", r.EnvNames);
         Add("Skipped:", r.Skipped, s => s.Replace("(use --force to update it)", "(answer Yes to update existing profiles)"));
         Add("Kept their sign-in:", r.KeptProvider);

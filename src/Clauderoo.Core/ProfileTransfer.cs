@@ -6,14 +6,16 @@ namespace Clauderoo.Core;
 /// <summary>
 /// What an import did. Skipped, NeedSecret, KeptProvider and EnvNames entries are ready-to-print text, "name: detail".
 /// Notices holds the sync notices and problems raised along the way; Mapped holds "dir → profile" for each folder mapping added;
-/// EnvNames lists the environment variable names (never values) each imported profile now has.
+/// EnvNames lists the environment variable names (never values) each imported profile now has; AutoSwitchImported says the
+/// export's auto-switch settings were taken over (only ever when this machine had none).
 /// </summary>
 public record ImportResult(IReadOnlyList<string> Created, IReadOnlyList<string> Updated,
     IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret, IReadOnlyList<string>? KeptProvider = null,
-    IReadOnlyList<string>? Notices = null, IReadOnlyList<string>? Mapped = null, IReadOnlyList<string>? EnvNames = null)
+    IReadOnlyList<string>? Notices = null, IReadOnlyList<string>? Mapped = null, IReadOnlyList<string>? EnvNames = null,
+    bool AutoSwitchImported = false)
 {
-    /// <summary>True when the import created or updated a profile or added a folder mapping.</summary>
-    public bool ChangedAnything => Created.Count + Updated.Count + (Mapped?.Count ?? 0) > 0;
+    /// <summary>True when the import created or updated a profile, added a folder mapping or set up auto-switch.</summary>
+    public bool ChangedAnything => Created.Count + Updated.Count + (Mapped?.Count ?? 0) > 0 || AutoSwitchImported;
 }
 
 public partial class ProfileManager
@@ -70,9 +72,16 @@ public partial class ProfileManager
         foreach (var kv in cfg.Folders.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase).Where(kv => exported.Contains(kv.Value)))
             folders.Add(new JsonObject { ["dir"] = kv.Key, ["profile"] = kv.Value });
 
-        JsonNode? autoSwitch = null;
-        if (cfg.Extra != null && cfg.Extra.TryGetValue(AutoSwitchKey, out var a) && a.ValueKind != JsonValueKind.Null)
-            autoSwitch = JsonNode.Parse(a.GetRawText());
+        // The settings only (enabled, threshold, order). The engine's state (autoswitch.json: last switch, switched-from,
+        // manual hold, notified flags) belongs to this machine and is never exported.
+        JsonNode? autoSwitch = cfg.AutoSwitch is { } a
+            ? new JsonObject
+            {
+                ["enabled"] = a.Enabled,
+                ["threshold"] = a.Threshold,
+                ["order"] = new JsonArray(a.Order.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray()),
+            }
+            : null;
 
         var root = new JsonObject
         {
@@ -200,18 +209,20 @@ public partial class ProfileManager
                 }
             }
 
-            // Passed through untouched until the auto-switch feature gives it a typed home; never overwrites.
-            if (root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
-                && (cfg.Extra == null || !cfg.Extra.ContainsKey(AutoSwitchKey)))
+            // Auto-switch settings are taken over only when this machine has none: an import never changes them.
+            var autoImported = false;
+            if (cfg.AutoSwitch == null && root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind == JsonValueKind.Object)
             {
-                cfg.Extra ??= new Dictionary<string, JsonElement>();
-                cfg.Extra[AutoSwitchKey] = auto.Clone();
-                dirty = true;
+                if (ReadAutoSwitch(auto, cfg, skipped, log.Notices) is { } settings)
+                {
+                    cfg.AutoSwitch = settings;
+                    autoImported = dirty = true;
+                }
             }
 
             if (dirty) ConfigStore.Save(paths, cfg);
             return new ImportResult(log.Created, log.Updated, skipped, log.NeedSecret, log.Kept.Distinct().ToList(),
-                log.Notices, log.Mapped, log.EnvNames);
+                log.Notices, log.Mapped, log.EnvNames, autoImported);
         }
     }
 
@@ -360,6 +371,35 @@ public partial class ProfileManager
         }
 
         (exists ? log.Updated : log.Created).Add(name);
+    }
+
+    /// <summary>
+    /// The export's autoSwitch block as typed settings: enabled, threshold (6 to 100, as `cr auto` allows) and the order,
+    /// keeping only names that exist after the import. Null (with a Skipped line) when the threshold isn't valid.
+    /// </summary>
+    private static AutoSwitchSettings? ReadAutoSwitch(JsonElement auto, ClauderooConfig cfg, List<string> skipped, List<string> notices)
+    {
+        var s = new AutoSwitchSettings();
+        if (auto.TryGetProperty("enabled", out var en) && en.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            s.Enabled = en.GetBoolean();
+        if (auto.TryGetProperty("threshold", out var th) && th.ValueKind != JsonValueKind.Null)
+        {
+            if (th.ValueKind != JsonValueKind.Number || !th.TryGetInt32(out var t) || t is < 6 or > 100)
+            {
+                skipped.Add($"auto-switch: threshold {th} isn't a whole number from 6 to 100");
+                return null;
+            }
+            s.Threshold = t;
+        }
+        if (auto.TryGetProperty("order", out var order) && order.ValueKind == JsonValueKind.Array)
+        {
+            var names = order.EnumerateArray().Where(n => n.ValueKind == JsonValueKind.String).Select(n => n.GetString()!).ToList();
+            var unknown = names.Where(n => !cfg.Profiles.ContainsKey(n)).Distinct().ToList();
+            s.Order = names.Where(cfg.Profiles.ContainsKey).Distinct().ToList();
+            if (unknown.Count > 0)
+                notices.Add($"auto-switch: left out of the order, no such profile here: {string.Join(", ", unknown)}");
+        }
+        return s;
     }
 
     private static bool IsUsableStartDir(string dir)

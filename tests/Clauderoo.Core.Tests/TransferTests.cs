@@ -186,12 +186,12 @@ public class TransferTests
         File.WriteAllText(home.Paths.ProfileDir("bad"), "x");
         var folder = Path.Combine(home.Paths.Root, "f");
         var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"bad\",\"provider\":\"login\"},{\"name\":\"good\",\"provider\":\"login\"}]," +
-                   "\"folders\":[{\"dir\":" + JsonSerializer.Serialize(folder) + ",\"profile\":\"good\"}],\"autoSwitch\":{\"t\":1}}";
+                   "\"folders\":[{\"dir\":" + JsonSerializer.Serialize(folder) + ",\"profile\":\"good\"}],\"autoSwitch\":{\"threshold\":80}}";
         var r = pm.Import(json, false);
         Assert.Equal(["good"], r.Created);
         Assert.Contains(r.Skipped, s => s.StartsWith("bad:"));
         Assert.Equal("good", pm.Maps().Single().Profile);
-        Assert.True(pm.Config.Extra!.ContainsKey("autoSwitch"));
+        Assert.Equal(80, pm.Config.AutoSwitch!.Threshold);
     }
 
     [Fact]
@@ -387,16 +387,84 @@ public class TransferTests
     }
 
     [Fact]
-    public void Import_AutoSwitch_PassthroughOnlyWhenTargetHasNone()
+    public void Export_IncludesAutoSwitchSettings_NotState()
     {
         var (pm, home, _, _) = Make(); using var _h = home;
-        var json = "{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"threshold\":80}}";
-        pm.Import(json, false);
-        Assert.Equal(80, pm.Config.Extra!["autoSwitch"].GetProperty("threshold").GetInt32());
-        pm.Import("{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"threshold\":50}}", false);
-        Assert.Equal(80, pm.Config.Extra!["autoSwitch"].GetProperty("threshold").GetInt32());
+        pm.Add("work");
+        var cfg = pm.Config;
+        cfg.AutoSwitch = new AutoSwitchSettings { Enabled = true, Threshold = 85, Order = ["work", "personal"] };
+        ConfigStore.Save(home.Paths, cfg);
+        // Engine state on this machine: never part of an export.
+        pm.AutoSwitchState.Save(new AutoSwitchState(DateTimeOffset.UtcNow, "personal", true, true, "work", "work"));
+
+        var text = pm.Export(null, false);
+        var auto = JsonNode.Parse(text)!["autoSwitch"]!.AsObject();
+        Assert.Equal(["enabled", "threshold", "order"], auto.Select(kv => kv.Key));
+        Assert.True(auto["enabled"]!.GetValue<bool>());
+        Assert.Equal(85, auto["threshold"]!.GetValue<int>());
+        Assert.Equal(["work", "personal"], auto["order"]!.AsArray().Select(n => n!.GetValue<string>()));
+        foreach (var state in new[] { "lastSwitch", "switchedFrom", "manualHold", "flagsFor", "Notified", "SwitchedFrom", "ManualHold" })
+            Assert.DoesNotContain(state, text);
+
+        // No settings here: exported as null.
+        cfg.AutoSwitch = null;
+        ConfigStore.Save(home.Paths, cfg);
+        Assert.Null(JsonNode.Parse(pm.Export(null, false))!["autoSwitch"]);
+    }
+
+    [Fact]
+    public void Import_AutoSwitch_OnlyWhenTargetHasNone()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        var json = "{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":true,\"threshold\":80,\"order\":[\"personal\"]}}";
+        var r = pm.Import(json, false);
+        // An autoSwitch-only import is a change, not "Nothing to import".
+        Assert.True(r.AutoSwitchImported);
+        Assert.True(r.ChangedAnything);
+        var s = pm.Config.AutoSwitch!;
+        Assert.True(s.Enabled);
+        Assert.Equal(80, s.Threshold);
+        Assert.Equal(["personal"], s.Order);
+
+        // The target has settings now: a second import leaves them alone, even with force.
+        var again = pm.Import("{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":false,\"threshold\":50}}", true);
+        Assert.False(again.AutoSwitchImported);
+        Assert.False(again.ChangedAnything);
+        Assert.Equal(80, pm.Config.AutoSwitch!.Threshold);
+        Assert.True(pm.Config.AutoSwitch!.Enabled);
+
+        // Typed property only: config.json has one autoSwitch key and nothing in Extra.
+        var raw = File.ReadAllText(home.Paths.ConfigFile);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(raw, "\"autoSwitch\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+        Assert.True(pm.Config.Extra == null || !pm.Config.Extra.Keys.Any(k => k.Equals("autoSwitch", StringComparison.OrdinalIgnoreCase)));
+
         // And it is exported back.
         Assert.Equal(80, JsonNode.Parse(pm.Export(null, true))!["autoSwitch"]!["threshold"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void Import_AutoSwitch_DropsUnknownOrderNames()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        // "work" arrives in the same import; "gone" doesn't exist here.
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"work\",\"provider\":\"login\"}]," +
+                   "\"autoSwitch\":{\"enabled\":true,\"threshold\":90,\"order\":[\"work\",\"gone\",\"personal\"]}}";
+        var r = pm.Import(json, false);
+        Assert.Equal(["work", "personal"], pm.Config.AutoSwitch!.Order);
+        Assert.Contains(r.Notices!, n => n.Contains("gone"));
+    }
+
+    [Fact]
+    public void Cli_Import_AutoSwitchOnly_IsNotNothingToImport()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        var file = Path.Combine(home.Paths.Root, "auto-only.json");
+        File.WriteAllText(file, "{\"schemaVersion\":1,\"profiles\":[],\"autoSwitch\":{\"enabled\":true,\"threshold\":80}}");
+        var r = Run(pm, "import", file);
+        Assert.Equal(0, r.code);
+        Assert.Contains("Auto-switch settings imported", r.o);
+        Assert.DoesNotContain("Nothing to import.", r.o);
+        Assert.Contains("Nothing to import.", Run(pm, "import", file).o);
     }
 
     [Fact]

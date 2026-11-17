@@ -272,6 +272,7 @@ public static class Commands
                     foreach (var i in items) output.WriteLine("  " + i);
                 }
                 Section("Folder mappings added:", r.Mapped);
+                if (r.AutoSwitchImported) output.WriteLine("Auto-switch settings imported (this machine had none).");
                 Section("Environment variables (names only):", r.EnvNames);
                 Section("Skipped:", r.Skipped);
                 Section("Kept their sign-in:", r.KeptProvider);
