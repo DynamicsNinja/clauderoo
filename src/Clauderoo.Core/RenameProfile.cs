@@ -52,6 +52,8 @@ public partial class ProfileManager
             foreach (var kv in cfg.Profiles) profiles[kv.Key == oldName ? newName : kv.Key] = kv.Value;
             cfg.Profiles = profiles;
             if (cfg.DefaultProfile == oldName) cfg.DefaultProfile = newName;
+            foreach (var k in cfg.Folders.Keys.ToList())
+                if (cfg.Folders[k] == oldName) cfg.Folders[k] = newName;
             ConfigStore.Save(paths, cfg);
 
             if (!entry.Home && !string.IsNullOrEmpty(oldEnv) && Norm(oldEnv) == Norm(oldDir))

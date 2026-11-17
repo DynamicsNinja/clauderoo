@@ -43,6 +43,9 @@ public class ClauderooConfig
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
 
+    /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
+    public Dictionary<string, string> Folders { get; set; } = new();
+
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }

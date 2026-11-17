@@ -10,8 +10,12 @@ public static class Commands
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
   add <name>                          create a new profile
   list                                list profiles
-  start <name> [dir] [-- args]        run Claude for a profile in this terminal (run = same)
-  start <name> [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
+  start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
+                                      no name: use the folder's mapping, else the default
+  start [name] [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
+  map <profile> [dir]                 use <profile> for dir (default: here) and everything below it
+  unmap [dir]                         remove a folder mapping
+  maps                                list folder mappings
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -74,7 +78,7 @@ public static class Commands
 
         var cmd = args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -119,12 +123,60 @@ public static class Commands
             {
                 // Runs Claude in this terminal; --tab opens a new Windows Terminal tab instead.
                 var tab = pos.Remove("--tab");
-                if (pos.Count is < 1 or > 2) throw new ClauderooException($"Usage: clauderoo {cmd} <name> [dir] [--tab] [-- args]");
-                var dir = pos.Count > 1 ? Path.GetFullPath(pos[1]) : Environment.CurrentDirectory;
+                var startUsage = $"Usage: clauderoo {cmd} [name] [dir] [--tab] [-- args]";
+                if (pos.Count > 2) throw new ClauderooException(startUsage);
+                var cfg = pm.Config;
+                string profile;
+                string folderArg;
+                if (pos.Count > 0 && cfg.Profiles.ContainsKey(pos[0]))
+                {
+                    profile = pos[0];
+                    folderArg = pos.Count > 1 ? pos[1] : Environment.CurrentDirectory;
+                }
+                else
+                {
+                    // A first argument that isn't a profile is a folder; an unknown name with a dir is a typo.
+                    if (pos.Count == 2 || (pos.Count == 1 && !Directory.Exists(pos[0])))
+                        throw new ClauderooException(
+                            $"Unknown profile '{pos[0]}'. Known: {string.Join(", ", cfg.Profiles.Keys)}.");
+                    folderArg = pos.Count == 1 ? pos[0] : Environment.CurrentDirectory;
+                    var hit = FolderMap.Resolve(cfg, folderArg);
+                    if (hit is { } h)
+                    {
+                        profile = h.Profile;
+                        output.WriteLine($"Using {profile} (mapped from {h.MappedDir})");
+                    }
+                    else if (cfg.DefaultProfile is { } def) profile = def;
+                    else throw new ClauderooException(
+                        "No profile given and no folder mapping or default applies. " + startUsage);
+                }
+                var dir = Path.GetFullPath(folderArg);
                 if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
                 if (!tab)
-                    return runInPlace(Launcher.InPlace(pm.Config, pm.Paths, pos[0], dir, claudeArgs, claudePath));
-                startNewWindow(Launcher.NewWindow(pm.Config, pm.Paths, pos[0], dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable()));
+                    return runInPlace(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath));
+                startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable()));
+                return 0;
+            }
+            case "map":
+            {
+                if (pos.Count is < 1 or > 2) throw new ClauderooException("Usage: clauderoo map <profile> [dir]");
+                var dir = FolderMap.Normalize(pos.Count > 1 ? pos[1] : Environment.CurrentDirectory);
+                pm.Map(pos[0], dir);
+                output.WriteLine($"Mapped {dir} to {pos[0]}.");
+                return 0;
+            }
+            case "unmap":
+            {
+                if (pos.Count > 1) throw new ClauderooException("Usage: clauderoo unmap [dir]");
+                var dir = FolderMap.Normalize(pos.Count > 0 ? pos[0] : Environment.CurrentDirectory);
+                output.WriteLine(pm.Unmap(dir) ? $"Unmapped {dir}." : $"{dir} was not mapped.");
+                return 0;
+            }
+            case "maps":
+            {
+                var maps = pm.Maps();
+                if (maps.Count == 0) output.WriteLine("No folder mappings. Add one with 'clauderoo map <profile> [dir]'.");
+                foreach (var m in maps) output.WriteLine($"{m.Dir}  ->  {m.Profile}");
                 return 0;
             }
             case "default":
