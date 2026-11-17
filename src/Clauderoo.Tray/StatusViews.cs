@@ -200,6 +200,7 @@ internal sealed class CheckListView : Control, IWrapping
         AccessibleName = "Setup check results";
         Controls.Add(_bar);
         _bar.ValueChanged += (_, _) => Invalidate();
+        _bar.Scroll += (_, _) => _userScrolled = true; // Scroll fires only for the user dragging/clicking the bar
         var menu = new ContextMenuStrip();
         menu.Items.Add("Cop&y results", null, (_, _) => CopyAll());
         ContextMenuStrip = menu;
@@ -208,6 +209,12 @@ internal sealed class CheckListView : Control, IWrapping
     public int Count => _items.Count;
 
     private bool _live;
+    // Set once the user scrolls (wheel, scrollbar, arrow keys) during a live check: from then on the list stays where
+    // they put it instead of following the rows still running. Cleared when the next check starts.
+    private bool _userScrolled;
+
+    /// <summary>Current scroll offset in pixels (0 = top). For tests.</summary>
+    internal int ScrollOffset => Scroll;
 
     /// <param name="live">
     /// A check still running: rows stay in check order (each fills in where it is) and passed checks aren't folded.
@@ -220,6 +227,7 @@ internal sealed class CheckListView : Control, IWrapping
         else if (live != _live || !list.SequenceEqual(_items))
         {
             if (_live && !live) _bar.Value = 0; // the finished list starts at the top (problems first)
+            if (live && !_live) _userScrolled = false; // a new check starts: follow its progress again
             _live = live;
             // Stable sort: keeps the check order within a status.
             _items = live ? list : list.OrderBy(i => Rank(i.Status)).ToList();
@@ -333,7 +341,7 @@ internal sealed class CheckListView : Control, IWrapping
         _bar.SmallChange = Math.Max(1, line);
         if (_bar.Value > Math.Max(0, y - view)) _bar.Value = Math.Max(0, y - view);
         if (!_bar.Visible) _bar.Value = 0;
-        else if (_live) KeepWaitingRowsInView(view);
+        else if (_live && !_userScrolled) KeepWaitingRowsInView(view);
         if (_focus >= _rows.Count) _focus = _rows.Count - 1;
         Invalidate();
     }
@@ -442,9 +450,16 @@ internal sealed class CheckListView : Control, IWrapping
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
+        UserScrollBy(-e.Delta / 120 * 3 * _bar.SmallChange);
+    }
+
+    /// <summary>Scrolls by <paramref name="pixels"/> on the user's behalf (wheel); stops the live follow.</summary>
+    internal void UserScrollBy(int pixels)
+    {
         if (!_bar.Visible) return;
+        _userScrolled = true;
         var max = Math.Max(0, _bar.Maximum - _bar.LargeChange + 1);
-        _bar.Value = Math.Clamp(_bar.Value - e.Delta / 120 * 3 * _bar.SmallChange, 0, max);
+        _bar.Value = Math.Clamp(_bar.Value + pixels, 0, max);
     }
 
     protected override bool IsInputKey(Keys keyData) =>
@@ -459,11 +474,13 @@ internal sealed class CheckListView : Control, IWrapping
                 e.Handled = true;
                 break;
             case Keys.Up when _rows.Count > 0:
+                _userScrolled = true;
                 _focus = Math.Max(0, _focus - 1);
                 ScrollToFocus();
                 e.Handled = true;
                 break;
             case Keys.Down when _rows.Count > 0:
+                _userScrolled = true;
                 _focus = Math.Min(_rows.Count - 1, _focus + 1);
                 ScrollToFocus();
                 e.Handled = true;
