@@ -59,13 +59,28 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/tray-menu.png" width="640" alt="Tray menu showing profiles, the default star and a running session"><br>
-  <em>Tray menu: one entry per profile, with its provider, signed-in account, default marker and running sessions.</em>
+  <img src="docs/images/profiles-window.png" width="640" alt="Profiles window with the home profile selected, showing its usage bars, plan and mapped folders"><br>
+  <em>Profile manager: every profile at a glance, with the home profile's usage, plan and the folders that start it.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/profiles-window.png" width="640" alt="Profiles window with a Vertex profile and setup check results"><br>
-  <em>Profile manager: provider settings, setup check results with fix hints, and per-profile environment variables.</em>
+  <img src="docs/images/profiles-vertex.png" width="640" alt="Profiles window with a Google Vertex AI profile selected, showing project, region and model fields"><br>
+  <em>A Vertex profile: project, region and models, a setup check, its folders and its own environment variables.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/tray-menu.png" width="640" alt="Tray menu with the default star, usage on the home profile and its submenu open showing a running session"><br>
+  <em>Tray menu: one entry per profile, with its provider, account, usage, default marker and running sessions.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/conversations.png" width="640" alt="Continue a conversation window listing past conversations from several profiles"><br>
+  <em>Continue a conversation: pick a past conversation from any profile and carry on with it under another.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/auto-switch.png" width="400" alt="Auto-switch settings with the threshold and the order of profiles to switch to"><br>
+  <em>Auto-switch: move the default to another profile when it nears a usage limit.</em>
 </p>
 
 ## Requirements
