@@ -12,6 +12,7 @@
 <p align="center">
   <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4">
   <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Tests: xUnit" src="https://img.shields.io/badge/tests-xUnit-5C2D91">
   <img alt="Providers" src="https://img.shields.io/badge/providers-Claude%20login%20%7C%20Vertex%20AI%20%7C%20API%20key-CC6744">
 </p>
@@ -327,4 +328,4 @@ Issues and pull requests are welcome. Before you open a PR:
 
 ## License
 
-No license has been chosen yet. Until one is added, all rights are reserved by the author.
+[MIT](LICENSE) © 2026 Ivan Ficko
