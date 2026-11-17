@@ -45,6 +45,11 @@ public static class Commands
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
                 hookCancel ?? HookConsoleCancel);
         }
+        catch (SessionsRunningException e)
+        {
+            err.WriteLine($"{e.Message} (use --force to do it anyway)");
+            return 1;
+        }
         catch (ClauderooException e)
         {
             err.WriteLine(e.Message);

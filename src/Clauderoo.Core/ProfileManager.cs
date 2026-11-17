@@ -109,6 +109,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                     $"Couldn't move {name}'s folder — close {name}'s Claude sessions and try again.");
             }
             keyDir = moved;
+            ConfigStore.WriteEntry(Path.Combine(moved, EntryFileName), entry);
         }
         try { secrets.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }

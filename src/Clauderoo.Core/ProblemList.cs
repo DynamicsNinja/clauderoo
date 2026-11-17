@@ -57,10 +57,10 @@ public static class ProblemTranslator
     }
 
     /// <summary>Profile and shared item named by a ShareAgain/RecreateLink problem's original text.</summary>
-    internal static string? ItemOf(Problem p)
+    internal static string? ItemOf(Problem p, string expectedProfile)
     {
         var m = Prefix.Match(p.Detail);
-        if (!m.Success) return null;
+        if (!m.Success || m.Groups["p"].Value != expectedProfile) return null;
         var rest = m.Groups["rest"].Value;
         var x = RealFolder.Match(rest);
         if (!x.Success) x = WrongLink.Match(rest);

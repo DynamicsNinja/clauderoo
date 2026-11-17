@@ -62,6 +62,8 @@ public partial class ProfileManager
 
             AfterRenameCommit?.Invoke();
 
+            try { Sessions.Rename(oldName, newName); } catch (IOException) { /* tracking is best effort */ }
+
             return entry.Home ? new SyncReport() : NewSyncer(cfg).Sync(newName);
         }
         catch

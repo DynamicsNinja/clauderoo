@@ -73,6 +73,19 @@ public static class ConfigStore
         }
     }
 
+    /// <summary>Best-effort: writes one profile's settings (no secrets live in a ProfileEntry).</summary>
+    internal static void WriteEntry(string file, ProfileEntry e)
+    {
+        try { AtomicFile.WriteAllText(file, JsonSerializer.Serialize(e, Options)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    internal static ProfileEntry? ReadEntry(string file)
+    {
+        try { return File.Exists(file) ? JsonSerializer.Deserialize<ProfileEntry>(File.ReadAllText(file), Options) : null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
     public static void Save(ClauderooPaths p, ClauderooConfig c)
     {
         Directory.CreateDirectory(p.Root);

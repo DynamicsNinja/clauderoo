@@ -77,7 +77,7 @@ public class CliTests
         Assert.Equal(0, r.code);
         var spec = Assert.Single(r.launched);
         Assert.Equal("wt.exe", spec.FileName);
-        Assert.Contains("claude --resume abc", spec.Args[^1]);
+        Assert.Contains("run work -- --resume abc", spec.Args[^1]);
     }
 
     [Fact]

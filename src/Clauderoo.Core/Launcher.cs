@@ -7,24 +7,35 @@ public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string Wor
 public static class Launcher
 {
     public static LaunchSpec NewWindow(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable)
+        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable, string? clauderooExe = null)
     {
+        // The new terminal runs `clauderoo run <profile>` rather than claude itself, so that process records the
+        // claude session it starts (the terminal host's own pid says nothing about claude).
+        clauderooExe ??= HelperExePath.Resolve();
         var configDir = ConfigDirFor(cfg, paths, profile);
         foreach (var a in claudeArgs)
             // Without wt, the command line is re-parsed by `cmd /c start`, which mangles the quotes
             // .NET adds around the inner command, so args needing quotes can't be passed reliably.
             if (a.IndexOfAny(BadArgChars) >= 0 || (!wtAvailable && QuoteIfNeeded(a) != a))
                 throw new ClauderooException("Argument contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
-        foreach (var p in new[] { configDir, dir })
+        foreach (var p in new[] { configDir, dir, clauderooExe })
             if (p is not null && p.IndexOfAny(BadPathChars) >= 0)
                 throw new ClauderooException($"Path '{p}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
-        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& claude"
+        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& \"{clauderooExe}\" run {profile}"
+            + (claudeArgs.Count > 0 ? " --" : "")
             + string.Concat(claudeArgs.Select(a => " " + QuoteIfNeeded(a)));
         var title = $"Claude · {profile}";
+        // Without wt, `cmd /c start` re-parses the line and does not understand the \" escapes .NET would put around a
+        // single combined command, so the exe, `run`, the profile and the args are passed as separate arguments
+        // (the exe path gets plain quotes, which `cmd /k` keeps for a path with spaces). CLAUDE_CONFIG_DIR travels
+        // in the environment (LaunchSpec.ConfigDirEnv) and `run` sets it again itself.
+        if (!wtAvailable && clauderooExe.IndexOfAny(['(', ')']) >= 0)
+            throw new ClauderooException($"Path '{clauderooExe}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
         string[] args = wtAvailable
             ? ["-w", "0", "new-tab", "--title", title, "-d", dir, "cmd", "/k", cmdLine]
-            : ["/c", "start", title, "/D", dir, "cmd", "/k", cmdLine];
-        return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir, profile);
+            : ["/c", "start", title, "/D", dir, "cmd", "/k", clauderooExe, "run", profile,
+                .. (claudeArgs.Count > 0 ? new[] { "--" }.Concat(claudeArgs) : [])];
+        return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir);
     }
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,

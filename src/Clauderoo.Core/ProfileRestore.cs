@@ -25,8 +25,7 @@ public partial class ProfileManager
     {
         if (force) return;
         var n = Sessions.Running(name).Count;
-        if (n > 0)
-            throw new ClauderooException($"{name} has {n} running session(s) started by clauderoo. Close them first.");
+        if (n > 0) throw new SessionsRunningException(name, n);
     }
 
     /// <summary>Applies the fix a <see cref="Problem"/> offers and returns the profile's new sync report.</summary>
@@ -35,12 +34,18 @@ public partial class ProfileManager
         switch (p.Fix)
         {
             case ProblemFix.ShareAgain:
-                return Share(p.Profile, ItemFor(p));
+            {
+                var item = ItemFor(p);
+                if (!SharedItems.IsKnown(item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
+                return Share(p.Profile, item);
+            }
             case ProblemFix.RecreateLink:
             {
                 var cfg = Config;
                 Entry(cfg, p.Profile);
-                var link = Path.Combine(paths.ProfileDir(p.Profile), ItemFor(p));
+                var item = ItemFor(p);
+                if (!SharedItems.IsDir(item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
+                var link = Path.Combine(paths.ProfileDir(p.Profile), item);
                 // Non-recursive: removes only the junction, never what it points to.
                 if (Junction.GetTarget(link) != null) Directory.Delete(link);
                 return NewSyncer(cfg).Sync(p.Profile);
@@ -53,7 +58,7 @@ public partial class ProfileManager
     }
 
     private static string ItemFor(Problem p) =>
-        ProblemTranslator.ItemOf(p) ?? throw new ClauderooException("Couldn't tell which folder this problem is about.");
+        ProblemTranslator.ItemOf(p, p.Profile) ?? throw new ClauderooException("Couldn't tell which folder this problem is about.");
 
     /// <summary>
     /// Moves the newest removed copy of <paramref name="name"/> back and re-adds it. Never overwrites: refuses when a
@@ -83,15 +88,31 @@ public partial class ProfileManager
             throw new ClauderooException($"Couldn't move {name}'s folder back: {e.Message}");
         }
 
+        // Remove saved the profile's settings (never the API key) next to its folder.
+        var entryFile = Path.Combine(dir, EntryFileName);
+        var entry = ConfigStore.ReadEntry(entryFile) ?? new ProfileEntry();
+        entry.Home = false;
         // Remove unlinked the shared-folder junctions; a real folder left behind was the profile's own copy.
-        var entry = new ProfileEntry();
         foreach (var d in SharedItems.Dirs)
         {
             var sub = Path.Combine(dir, d);
-            if (Directory.Exists(sub) && Junction.GetTarget(sub) == null) entry.Overrides.Add(d);
+            if (Directory.Exists(sub) && Junction.GetTarget(sub) == null && !entry.Overrides.Contains(d))
+                entry.Overrides.Add(d);
         }
         cfg.Profiles[name] = entry;
-        ConfigStore.Save(paths, cfg);
-        return NewSyncer(cfg).Sync(name);
+        try { ConfigStore.Save(paths, cfg); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            try { Directory.Move(dir, source); } catch (Exception) { /* leave it; the message says where it is */ }
+            throw new ClauderooException($"Couldn't restore {name}: {e.Message}");
+        }
+        try { File.Delete(entryFile); } catch (Exception) { }
+
+        var report = NewSyncer(cfg).Sync(name);
+        if (Providers.Of(entry) == Providers.ApiKey)
+            report.Notices.Add($"{name} is back. Its API key was deleted when it was removed — enter it again in Manage profiles.");
+        return report;
     }
+
+    internal const string EntryFileName = ".clauderoo-entry.json";
 }

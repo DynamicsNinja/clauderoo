@@ -73,11 +73,73 @@ public class TrayCoreTests
     {
         using var h = new TempHome();
         var t = new SessionTracker(h.Paths);
-        using var self = Process.GetCurrentProcess();
-        t.Record("work", self);
-        Assert.Single(t.Running("work"));
+        var psi = new ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true };
+        psi.ArgumentList.Add("/c"); psi.ArgumentList.Add("pause");
+        using var p = Process.Start(psi)!;
+        try
+        {
+            t.Record("work", p);
+            Assert.Single(t.Running("work"));
+        }
+        finally { p.Kill(); p.WaitForExit(); }
+        Assert.Empty(t.Running("work"));
     }
 
+    [Fact]
+    public void Sessions_UnreadableFile_DoesNotWipeEntries()
+    {
+        using var h = new TempHome();
+        var t = new SessionTracker(h.Paths, pid => (true, T0));
+        t.Record("work", 1, T0);
+        var file = Path.Combine(h.Paths.Root, "sessions.json");
+        using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Throws<IOException>(() => t.Record("work", 2, T0));
+            Assert.Empty(t.Running()); // can't read: reports nothing, changes nothing
+        }
+        Assert.Single(t.Running()); // entry 1 survived
+    }
+
+    [Fact]
+    public void Sessions_ProbeThrows_UnknownNotRunningButKept()
+    {
+        using var h = new TempHome();
+        var fail = false;
+        var t = new SessionTracker(h.Paths, pid => fail ? throw new UnauthorizedAccessException() : (true, T0));
+        t.Record("work", 1, T0);
+        fail = true;
+        Assert.Empty(t.Running());
+        fail = false;
+        Assert.Single(t.Running());
+    }
+
+    [Fact]
+    public async Task Sessions_TwoTrackersInterleaved_NoEntriesLost()
+    {
+        using var h = new TempHome();
+        Func<int, (bool, DateTime?)> probe = pid => (true, T0);
+        var a = new SessionTracker(h.Paths, probe);
+        var b = new SessionTracker(h.Paths, probe);
+        var tasks = new[]
+        {
+            Task.Run(() => { for (var i = 0; i < 40; i++) { a.Record("a", 1000 + i, T0); a.Running(); } }),
+            Task.Run(() => { for (var i = 0; i < 40; i++) { b.Record("b", 2000 + i, T0); b.Running("b"); } }),
+        };
+        await Task.WhenAll(tasks);
+        Assert.Equal(40, a.Running("a").Count);
+        Assert.Equal(40, b.Running("b").Count);
+    }
+
+    [Fact]
+    public void Sessions_Rename_ReKeys()
+    {
+        using var h = new TempHome();
+        var t = new SessionTracker(h.Paths, pid => (true, T0));
+        t.Record("work", 1, T0);
+        t.Rename("work", "job");
+        Assert.Empty(t.Running("work"));
+        Assert.Single(t.Running("job"));
+    }
     // ---- Rename / Remove guard ----
 
     [Fact]
@@ -87,12 +149,14 @@ public class TrayCoreTests
         pm.Sessions = new SessionTracker(h.Paths, pid => (true, T0));
         pm.Sessions.Record("work", 7, T0);
         pm.Sessions.Record("work", 8, T0);
-        var ex = Assert.Throws<ClauderooException>(() => pm.Rename("work", "job"));
+        var ex = Assert.Throws<SessionsRunningException>(() => pm.Rename("work", "job"));
         Assert.Equal("work has 2 running session(s) started by clauderoo. Close them first.", ex.Message);
         Assert.True(pm.Config.Profiles.ContainsKey("work"));
 
         pm.Rename("work", "job", force: true);
         Assert.True(pm.Config.Profiles.ContainsKey("job"));
+        Assert.Equal(2, pm.Sessions.Running("job").Count);
+        Assert.Empty(pm.Sessions.Running("work"));
     }
 
     [Fact]
@@ -101,7 +165,7 @@ public class TrayCoreTests
         var (pm, h) = Make(); using var _h = h;
         pm.Sessions = new SessionTracker(h.Paths, pid => (true, T0));
         pm.Sessions.Record("work", 7, T0);
-        var ex = Assert.Throws<ClauderooException>(() => pm.Remove("work"));
+        var ex = Assert.Throws<SessionsRunningException>(() => pm.Remove("work"));
         Assert.Equal("work has 1 running session(s) started by clauderoo. Close them first.", ex.Message);
         Assert.True(Directory.Exists(h.Paths.ProfileDir("work")));
 
@@ -328,9 +392,9 @@ public class TrayCoreTests
         Directory.CreateDirectory(Path.Combine(h.Paths.DefaultHomeDir, "plugins"));
         pm.Sync("work");
         pm.Own("work", "plugins"); // now a real copy
-        var entry = pm.Config.Profiles["work"];
-        entry.Overrides.Remove("plugins"); // config says shared, disk says real folder
-        var cfg = pm.Config; cfg.Profiles["work"].Overrides.Remove("plugins"); ConfigStore.Save(h.Paths, cfg);
+        var cfg = pm.Config; // config says shared, disk says real folder
+        cfg.Profiles["work"].Overrides.Remove("plugins");
+        ConfigStore.Save(h.Paths, cfg);
 
         var problem = Assert.Single(pm.SyncAll().ProblemItems);
         Assert.Equal(ProblemFix.ShareAgain, problem.Fix);
@@ -380,6 +444,64 @@ public class TrayCoreTests
         Assert.Throws<ClauderooException>(() => pm.Fix(new Problem("work", "t", "d", null)));
     }
 
+    [Fact]
+    public void Fix_ValidatesItemAndProfile()
+    {
+        var (pm, h) = Make(); using var _h = h;
+        // item not a shared folder
+        Assert.Throws<ClauderooException>(() => pm.Fix(new Problem("work", "t", "work: bogus is linked to a, not to b", ProblemFix.RecreateLink)));
+        // a shared file is not a folder
+        Assert.Throws<ClauderooException>(() => pm.Fix(new Problem("work", "t", "work: settings.json is linked to a, not to b", ProblemFix.RecreateLink)));
+        Assert.Throws<ClauderooException>(() => pm.Fix(new Problem("work", "t", "work: bogus is a real folder, not shared", ProblemFix.ShareAgain)));
+        // Detail names another profile
+        Assert.Throws<ClauderooException>(() => pm.Fix(new Problem("work", "t", "other: plugins is a real folder, not shared", ProblemFix.ShareAgain)));
+    }
+
+    [Fact]
+    public void Restore_RecreatesSharedFolderJunction()
+    {
+        var (pm, h) = Make(); using var _h = h;
+        Directory.CreateDirectory(Path.Combine(h.Paths.DefaultHomeDir, "plugins"));
+        pm.Sync("work");
+        pm.Remove("work");
+        pm.Restore("work");
+        Assert.NotNull(Junction.GetTarget(Path.Combine(h.Paths.ProfileDir("work"), "plugins")));
+    }
+
+    [Fact]
+    public void Restore_KeepsVertexAndEnv()
+    {
+        var (pm, h) = Make(); using var _h = h;
+        pm.SetProvider("work", Providers.Vertex, new VertexSettings { Project = "p1", Region = "r1", SonnetModel = "s" });
+        pm.SetEnv("work", [new("FOO", "bar")], []);
+        pm.Remove("work");
+        var report = pm.Restore("work");
+        var e = pm.Config.Profiles["work"];
+        Assert.Equal(Providers.Vertex, e.Provider);
+        Assert.Equal("p1", e.Vertex!.Project);
+        Assert.Equal("bar", e.Env["FOO"]);
+        Assert.DoesNotContain(report.Notices, n => n.Contains("API key"));
+        Assert.False(File.Exists(Path.Combine(h.Paths.ProfileDir("work"), ".clauderoo-entry.json")));
+    }
+
+    [Fact]
+    public void Restore_ApiKeyProfile_BackAsApiKeyWithNotice_NoKeyOnDisk()
+    {
+        var h = new TempHome(); using var _h = h;
+        var pm = new ProfileManager(h.Paths, new FakeEnv(), () => Now, new DpapiSecretStore(), new FakeGcloud())
+        { HelperExe = @"C:\x\clauderoo.exe" };
+        pm.Init(); pm.Add("work");
+        pm.SetProvider("work", Providers.ApiKey, null, "sk-secret-123");
+        pm.Remove("work");
+        var saved = Directory.GetFiles(h.Paths.RemovedDir, ".clauderoo-entry.json", SearchOption.AllDirectories).Single();
+        Assert.DoesNotContain("sk-secret-123", File.ReadAllText(saved));
+
+        var report = pm.Restore("work");
+
+        Assert.Equal(Providers.ApiKey, pm.Config.Profiles["work"].Provider);
+        Assert.False(pm.HasApiKey("work"));
+        Assert.Contains("work is back. Its API key was deleted when it was removed — enter it again in Manage profiles.", report.Notices);
+    }
     // ---- CLI ----
 
     [Fact]
@@ -403,6 +525,7 @@ public class TrayCoreTests
         var o = new StringWriter(); var e = new StringWriter();
         Assert.Equal(1, Clauderoo.Cli.Commands.Run(["remove", "work"], o, e, pm, _ => 0));
         Assert.Contains("running session(s)", e.ToString());
+        Assert.Contains("(use --force to do it anyway)", e.ToString());
         Assert.Equal(0, Clauderoo.Cli.Commands.Run(["remove", "work", "--force"], o, e, pm, _ => 0));
     }
 
@@ -410,8 +533,8 @@ public class TrayCoreTests
     public void Launcher_Specs_CarryProfile()
     {
         var (pm, h) = Make(); using var _h = h;
-        var spec = Launcher.NewWindow(pm.Config, h.Paths, "work", h.Dir, [], false);
-        Assert.Equal("work", spec.Profile);
+        var spec = Launcher.NewWindow(pm.Config, h.Paths, "work", h.Dir, [], false, @"C:\x\clauderoo.exe");
+        Assert.Null(spec.Profile); // the in-terminal `run` records the session, not the terminal host
         Assert.Equal("work", Launcher.InPlace(pm.Config, h.Paths, "work", h.Dir, [], "claude.exe").Profile);
     }
 }
