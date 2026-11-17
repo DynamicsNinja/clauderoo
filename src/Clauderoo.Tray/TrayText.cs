@@ -1,7 +1,11 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Clauderoo.Core;
 
 namespace Clauderoo.Tray;
+
+/// <summary>How full a usage window is: the bar's colour.</summary>
+internal enum UsageLevel { Ok, Warn, High }
 
 /// <summary>Why the settings couldn't be loaded.</summary>
 internal enum ConfigIssue
@@ -187,6 +191,86 @@ internal static class TrayText
     /// <summary>One balloon for a sync's notices.</summary>
     public static string Notices(IReadOnlyList<string> notices) =>
         notices.Count == 1 ? Cut(notices[0], 250) : Cut($"{notices.Count} updates: " + string.Join(" · ", notices), 250);
+
+    // ---------- usage ----------
+
+    /// <summary>A reading older than this shows "As of hh:mm".</summary>
+    public static readonly TimeSpan UsageStaleAfter = TimeSpan.FromMinutes(15);
+
+    static string Pct(double p) => Math.Round(p, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    static UsageWindow? WindowOf(UsageReading r, string name) => r.Windows.FirstOrDefault(w => w.Name == name);
+
+    /// <summary>The profile line's tail: " · 5h 42% · 7d 63%" (only the windows that are known), or "".</summary>
+    public static string UsageSuffix(UsageReading? r)
+    {
+        if (r == null) return "";
+        var s = "";
+        foreach (var name in new[] { "5h", "7d" })
+            if (WindowOf(r, name) is { } w) s += $" · {name} {Pct(w.Percent)}";
+        return s;
+    }
+
+    /// <summary>"5-hour", "7-day", or a model's name.</summary>
+    public static string UsageWindowName(string name) => name switch
+    {
+        "5h" => "5-hour",
+        "7d" => "7-day",
+        _ => name,
+    };
+
+    /// <summary>"15:40" today, "20 Nov 15:40" on another day (local time).</summary>
+    public static string UsageTime(DateTimeOffset at, DateTimeOffset now)
+    {
+        var local = at.ToLocalTime();
+        return local.Date == now.ToLocalTime().Date
+            ? local.ToString("HH:mm", CultureInfo.InvariantCulture)
+            : local.ToString("d MMM HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>"42%, resets 15:40", or "42%" when the reset time isn't known.</summary>
+    public static string UsageValue(UsageWindow w, DateTimeOffset now) =>
+        Pct(w.Percent) + (w.ResetsAt is { } at ? ", resets " + UsageTime(at, now) : "");
+
+    /// <summary>
+    /// The profile submenu's rows: one per window ("5-hour: 42%, resets 15:40"), "As of 09:30" for a stale reading,
+    /// then a plain line when the last fetch didn't work.
+    /// </summary>
+    public static IReadOnlyList<string> UsageRows(UsageReading? r, UsageResult? last, DateTimeOffset now)
+    {
+        var rows = new List<string>();
+        if (r != null)
+        {
+            foreach (var w in r.Windows) rows.Add($"{UsageWindowName(w.Name)}: {UsageValue(w, now)}");
+            if (now - r.FetchedAt > UsageStaleAfter) rows.Add("As of " + UsageTime(r.FetchedAt, now));
+        }
+        if (UsageStatus(last) is { } why) rows.Add(why);
+        return rows;
+    }
+
+    /// <summary>Plain words for a fetch that didn't give a reading; null for Ok, not signed in or not fetched yet.</summary>
+    public static string? UsageStatus(UsageResult? last) => last switch
+    {
+        UsageResult.Expired => "Sign-in expired. Start a session of this profile to refresh it.",
+        UsageResult.RateLimited => "Usage is rate limited; clauderoo will try again later.",
+        UsageResult.Failed => "Couldn't check usage just now; clauderoo will try again.",
+        UsageResult.Unavailable => "Usage isn't available right now.",
+        UsageResult.NotTracked nt => UsageNotTracked(nt.Provider),
+        _ => null,
+    };
+
+    public static string UsageNotTracked(string provider) => new UsageResult.NotTracked(provider).Message;
+
+    /// <summary>
+    /// Why a profile has no usage: "Usage isn't tracked for Claude token." for a Vertex, API-key or token profile
+    /// (which is never polled), null for a Claude login (home included). The tray menu and the window both use it.
+    /// </summary>
+    public static string? UsageNotTrackedFor(ProfileInfo p) =>
+        TrayMenuState.TracksUsage(p) ? null : UsageNotTracked(p.Provider);
+
+    /// <summary>Green below 70 %, amber from 70 %, red from 90 %.</summary>
+    public static UsageLevel UsageLevelOf(double percent) =>
+        percent >= 90 ? UsageLevel.High : percent >= 70 ? UsageLevel.Warn : UsageLevel.Ok;
 
     /// <summary>The menu item that upgrades clauderoo ("Update to v1.2.0").</summary>
     public static string UpdateItem(string version) => $"&Update to v{version}";

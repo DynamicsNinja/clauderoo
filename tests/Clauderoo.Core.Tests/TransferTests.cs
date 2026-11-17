@@ -346,6 +346,19 @@ public class TransferTests
     }
 
     [Fact]
+    public void Export_NeverIncludesUsageCache()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("u");
+        new UsageCache(home.Paths).Put(new UsageReading("u", Now, "max-plan-zz",
+            [new UsageWindow("five_hour", 42.5, null)]));
+        var json = pm.Export(null, true);
+        Assert.DoesNotContain("max-plan-zz", json);
+        Assert.DoesNotContain("five_hour", json);
+        Assert.DoesNotContain("usage", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Import_NewerSchema_Refused()
     {
         var (pm, home, _, _) = Make(); using var _h = home;

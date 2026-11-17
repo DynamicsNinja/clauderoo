@@ -50,7 +50,8 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
 - **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, export and import them, and run the setup check.
-- **Safe by design.** Removed profiles are moved, never deleted. clauderoo never reads `.credentials.json` or prints tokens.
+- **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
+- **Safe by design.** Removed profiles are moved, never deleted. To fetch usage it reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only; the token is never written, copied, logged or shown.
 
 ## Screenshots
 
@@ -128,7 +129,7 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which` and `check` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
+`list`, `status`, `maps`, `which`, `check` and `usage` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
@@ -136,7 +137,8 @@ All commands work with either `clauderoo` or `cr`.
 | --- | --- |
 | `init [--name <n>] [--home <path>]` | Set up clauderoo around your existing `~/.claude` |
 | `add <name>` | Create a profile (names may use `a-z`, `0-9` and `-`) |
-| `list [--json]` | List profiles and the account each one is logged in with |
+| `list [--json]` | List profiles and the account each one is logged in with, plus the last known 5h/7d usage of Claude-login profiles |
+| `usage [name] [--json]` | Show 5-hour and 7-day usage, reset times, plan and per-model limits for every profile, or just `name`. Fetches live and falls back to the last reading ("as of hh:mm") when offline or rate-limited. Vertex, API-key and Claude-token profiles show "Usage isn't tracked for …". `--json` prints `{profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}` |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
 | `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
@@ -279,6 +281,22 @@ The checks run in parallel and the list updates as each one finishes. Each line 
   <img src="docs/images/check-setup-progress.png" width="560" alt="Check setup running with live progress">
 </p>
 
+### Usage limits
+
+For Claude-login profiles (home included), clauderoo shows how much of the subscription's 5-hour and 7-day windows is used, plus any per-model limits:
+
+- **CLI:** `cr usage [name]` prints a table; `cr usage --json` prints the same as JSON. `cr list` adds a `5h/7d` column from the last reading.
+- **Tray:** each profile line ends with `· 5h 42% · 7d 63%`, and its submenu lists each window with its reset time, such as "5-hour: 42%, resets 15:40". **Refresh usage** checks again right away.
+- **Profile manager:** a **Usage** group shows a bar per window (green below 70%, amber from 70%, red from 90%), the reset time, the plan, when it was read ("as of") and a **Refresh** button.
+
+Vertex, API-key and Claude-token profiles have no subscription limits to show. The CLI, the tray submenu and the profile manager say so, for example "Usage isn't tracked for Claude token.", and `--json` gives them the status `notTracked`. clauderoo never reads their sign-in file and never calls the usage service for them.
+
+The tray checks every 5 minutes, or every 2 minutes for a profile with a session running. When the service asks it to slow down it waits at least 10 minutes, and after 3 failures in a row it waits longer each time, up to 30 minutes. Readings are kept in `%USERPROFILE%\.clauderoo\usage.json` (times, plan and percentages only, never a token).
+
+clauderoo never refreshes a sign-in. When a profile's sign-in has expired, usage says so; start a session of that profile and Claude refreshes it.
+
+The usage endpoint isn't documented by Anthropic. If it changes, usage shows as unavailable and everything else keeps working.
+
 ### Profiles that own their settings.json
 
 If a profile owns its `settings.json`, set the provider first. Then run `cr share <profile> settings.json` to move the profile onto the shared copy plus the provider overlay.
@@ -315,8 +333,8 @@ If you edit a copied file inside a profile, the next sync replaces it with home'
 ### Safety guarantees
 
 - clauderoo never writes inside `~/.claude` or `~/.claude.json`.
-- It never opens, copies or logs `.credentials.json`.
-- Tokens and API keys are never printed or logged, and API keys are stored only in encrypted form.
+- From each Claude-login profile's `.credentials.json`, clauderoo reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only, to fetch usage. It never writes, copies, logs or shows the token, and never refreshes it. It never reads the sign-in file of a Vertex, API-key or Claude-token profile.
+- Tokens and API keys are never printed or logged, and API keys and Claude tokens are stored only in encrypted form (DPAPI).
 - Removed profiles are moved, never deleted, and junctions are unlinked before a move.
 
 ## Troubleshooting
