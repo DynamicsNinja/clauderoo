@@ -47,6 +47,8 @@ public class SetupFinalFixTests
     {
         public List<CheckItem> Items { get; } = [];
         public void Report(CheckItem value) => Items.Add(value);
+        // The results only: the planned (Pending) rows and the "testing" (Running) notices left out.
+        public List<CheckItem> Results => Items.Where(i => i.Status is not (CheckStatus.Pending or CheckStatus.Running)).ToList();
     }
 
     // ---------- 1. probe side effects ----------
@@ -210,8 +212,9 @@ public class SetupFinalFixTests
         c.Env.UserVars["ANTHROPIC_MODEL"] = "x";
         var p = new ListProgress();
         var r = await c.Pm.CheckSetupAsync("work", default, p);
-        Assert.Equal(r, p.Items);
-        Assert.Equal(9, p.Items.Count);
+        Assert.Equal(r, p.Results);
+        Assert.Equal(9, p.Results.Count);
+        Assert.Equal(9 + 9 + 3, p.Items.Count); // plus 9 planned rows and 3 "testing" notices
     }
 
     [Fact]
@@ -221,13 +224,13 @@ public class SetupFinalFixTests
         c.Gcloud.Path = null;
         var p = new ListProgress();
         var r = await c.Pm.CheckSetupAsync("work", default, p);
-        Assert.Equal(r, p.Items);
+        Assert.Equal(r, p.Results);
 
         using var c2 = Make();
         c2.Claude.Path = null;
         var p2 = new ListProgress();
         var r2 = await c2.Pm.CheckSetupAsync("work", default, p2);
-        Assert.Equal(r2, p2.Items);
+        Assert.Equal(r2, p2.Results);
     }
 
     [Fact]
@@ -238,7 +241,7 @@ public class SetupFinalFixTests
         var seenAtFirstProbe = -1;
         c.Claude.Responder = _ =>
         {
-            if (seenAtFirstProbe < 0) seenAtFirstProbe = p.Items.Count;
+            if (seenAtFirstProbe < 0) seenAtFirstProbe = p.Results.Count;
             return (0, "OK", "");
         };
         await c.Pm.CheckSetupAsync("work", default, p);

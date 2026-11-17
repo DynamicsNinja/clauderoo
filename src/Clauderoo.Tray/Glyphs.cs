@@ -31,6 +31,7 @@ internal enum Glyph
     Folder,        // E8B7  Open profiles folder
     Remove,        // E738  Skipped / Delete variable
     Save,          // E74E
+    More,          // E712  a check still running
 }
 
 /// <summary>
@@ -70,6 +71,7 @@ internal static class Glyphs
         Glyph.Folder => '',
         Glyph.Remove => '',
         Glyph.Save => '',
+        Glyph.More => '',
         _ => throw new ArgumentOutOfRangeException(nameof(glyph), glyph, null),
     };
 
@@ -100,6 +102,7 @@ internal static class Glyphs
         Glyph.Undo => "←",
         Glyph.Remove => "-",
         Glyph.Save => "↓",
+        Glyph.More => "…",
         _ => "?",
     };
 

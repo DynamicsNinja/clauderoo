@@ -407,11 +407,13 @@ public static class Commands
             yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {tail}".TrimEnd();
         }
     }
-    // Writes each checklist line as soon as it's reported (synchronously, unlike Progress<T>).
+    // Writes each checklist line as soon as it's reported (synchronously, unlike Progress<T>): a "⋯ testing" line per
+    // model when the probes start, then every result. The planned (Pending) rows are only for the window.
     private sealed class LineProgress(TextWriter output) : IProgress<CheckItem>
     {
         public void Report(CheckItem value)
         {
+            if (value.Status == CheckStatus.Pending) return;
             lock (output) output.WriteLine(CheckItemFormatter.Format(value));
         }
     }

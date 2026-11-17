@@ -207,12 +207,22 @@ internal sealed class CheckListView : Control, IWrapping
 
     public int Count => _items.Count;
 
-    public void SetItems(IEnumerable<CheckItem> items)
+    private bool _live;
+
+    /// <param name="live">
+    /// A check still running: rows stay in check order (each fills in where it is) and passed checks aren't folded.
+    /// Otherwise problems come first and passed checks fold into one row.
+    /// </param>
+    public void SetItems(IEnumerable<CheckItem> items, bool live = false)
     {
         var list = items.ToList();
-        if (!list.SequenceEqual(_items))
+        if (live && _live) _items = list; // a row filled in: keep focus and open details
+        else if (live != _live || !list.SequenceEqual(_items))
         {
-            _items = list.OrderBy(i => Rank(i.Status)).ToList(); // stable: keeps the check order within a status
+            if (_live && !live) _bar.Value = 0; // the finished list starts at the top (problems first)
+            _live = live;
+            // Stable sort: keeps the check order within a status.
+            _items = live ? list : list.OrderBy(i => Rank(i.Status)).ToList();
             _openDetails.Clear();
             _okExpanded = false;
             _focus = -1;
@@ -233,6 +243,7 @@ internal sealed class CheckListView : Control, IWrapping
         CheckStatus.Ok => (Glyph.Ok, StatusColors.Ok),
         CheckStatus.Warn => (Glyph.Warning, StatusColors.Warn),
         CheckStatus.Fail => (Glyph.Error, StatusColors.Fail),
+        CheckStatus.Pending or CheckStatus.Running => (Glyph.More, StatusColors.Muted),
         _ => (Glyph.Remove, StatusColors.Muted),
     };
 
@@ -260,6 +271,12 @@ internal sealed class CheckListView : Control, IWrapping
     private void Relayout()
     {
         _rows.Clear();
+        if (_live)
+        {
+            foreach (var i in _items) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+            LayoutRows();
+            return;
+        }
         var fails = _items.Where(i => i.Status is CheckStatus.Fail or CheckStatus.Warn).ToList();
         var oks = _items.Where(i => i.Status == CheckStatus.Ok).ToList();
         var rest = _items.Where(i => i.Status is not (CheckStatus.Fail or CheckStatus.Warn or CheckStatus.Ok)).ToList();
@@ -271,7 +288,12 @@ internal sealed class CheckListView : Control, IWrapping
         }
         else foreach (var i in oks) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
         foreach (var i in rest) _rows.Add(new Row { Item = i, DetailOpen = _openDetails.Contains(i) });
+        LayoutRows();
+    }
 
+    // Measures the rows built by Relayout, then sizes the control.
+    private void LayoutRows()
+    {
         var w = TextWidth;
         var y = 0;
         var line = TextRenderer.MeasureText("Ag", Font, Size.Empty, TextFormatFlags.NoPadding).Height;
@@ -311,8 +333,21 @@ internal sealed class CheckListView : Control, IWrapping
         _bar.SmallChange = Math.Max(1, line);
         if (_bar.Value > Math.Max(0, y - view)) _bar.Value = Math.Max(0, y - view);
         if (!_bar.Visible) _bar.Value = 0;
+        else if (_live) KeepWaitingRowsInView(view);
         if (_focus >= _rows.Count) _focus = _rows.Count - 1;
         Invalidate();
+    }
+
+    // While a check runs, scrolls (as little as needed) so the rows still checking are on screen, finished rows above
+    // them giving way first.
+    private void KeepWaitingRowsInView(int view)
+    {
+        var waiting = _rows.Where(r => r.Item?.Status is CheckStatus.Pending or CheckStatus.Running).ToList();
+        if (waiting.Count == 0) return;
+        var maxValue = Math.Max(0, _bar.Maximum - _bar.LargeChange + 1);
+        var want = Math.Clamp(waiting[^1].Bounds.Bottom - view, 0, waiting[0].Bounds.Top);
+        if (_bar.Value < want) _bar.Value = Math.Min(want, maxValue);
+        else if (_bar.Value > waiting[0].Bounds.Top) _bar.Value = Math.Min(waiting[0].Bounds.Top, maxValue);
     }
 
     private int Scroll => _bar.Visible ? _bar.Value : 0;

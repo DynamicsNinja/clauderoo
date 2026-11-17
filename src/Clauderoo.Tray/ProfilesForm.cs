@@ -147,6 +147,7 @@ sealed class ProfilesForm : Form
     private int _checkSeq;         // bumped when a check is cancelled: its result is dropped
     private CancellationTokenSource? _checkCts; // the running setup check, if any
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
+    private CheckProgressModel? _checkProgress; // its live checklist (rows fill in as each check finishes)
     private int _baseMinHeight;    // minimum window height for the content measured at startup
 
     /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
@@ -959,6 +960,7 @@ sealed class ProfilesForm : Form
         _checkSeq++;
         _checkCts?.CancelAsync(); // callbacks run off the UI thread
         _checkCts = null;
+        _checkProgress?.Cancel();
     }
 
     // ---------- checks ----------
@@ -1018,6 +1020,14 @@ sealed class ProfilesForm : Form
         var seq = _checkSeq;
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
+        var live = _checkProgress = new CheckProgressModel();
+        // Each row fills in as its check finishes; posted through the same queue as the final result, so in order.
+        var progress = new UiProgress(this, item =>
+        {
+            if (seq != _checkSeq) return; // cancelled
+            live.Apply(item);
+            if (_current == name && _checkingFor == name) ShowCheckRecord();
+        });
         _checkingFor = name;
         ShowCheckRecord();
         UpdateActionStates(); // Rename/Remove would move the folder `claude -p` runs in
@@ -1025,7 +1035,7 @@ sealed class ProfilesForm : Form
         {
             IReadOnlyList<CheckItem>? items = null;
             string? error = null;
-            try { items = await _pm.CheckSetupAsync(name, ct).ConfigureAwait(false); }
+            try { items = await _pm.CheckSetupAsync(name, ct, progress).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception e) { error = e.Message; }
             try
@@ -1036,6 +1046,7 @@ sealed class ProfilesForm : Form
                     if (_checkCts == cts) _checkCts = null;
                     cts.Dispose();
                     if (seq != _checkSeq) return; // cancelled: drop the result
+                    if (_checkProgress == live) _checkProgress = null;
                     if (items != null) LastChecks[name] = Summarise(items);
                     else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, Providers.Vertex, CheckStatus.Fail, error, null);
                     CheckFinished(name);
@@ -1043,6 +1054,16 @@ sealed class ProfilesForm : Form
             }
             catch (InvalidOperationException) { cts.Dispose(); /* window closed meanwhile */ }
         });
+    }
+
+    // Runs each report on the UI thread through the window's own BeginInvoke queue (FIFO with the final result).
+    private sealed class UiProgress(Control owner, Action<CheckItem> apply) : IProgress<CheckItem>
+    {
+        public void Report(CheckItem value)
+        {
+            try { owner.BeginInvoke(() => apply(value)); }
+            catch (InvalidOperationException) { /* window closed meanwhile */ }
+        }
     }
 
     // A check ended (its result, if any, is filed under the profile it was started for).
@@ -1076,9 +1097,17 @@ sealed class ProfilesForm : Form
         }
         if (_checkingFor == _current)
         {
-            _checkStatus.Show(Glyph.Info, StatusColors.Muted,
-                SelectedProvider == Providers.Vertex ? "Checking… (tests a tiny prompt per model)" : "Checking…");
-            ShowCheckList(null);
+            if (SelectedProvider == Providers.Vertex && _checkProgress is { Total: > 0 } live)
+            {
+                _checkStatus.Show(Glyph.Info, StatusColors.Muted, live.StatusText);
+                ShowCheckList(live.Rows, live: true);
+            }
+            else
+            {
+                _checkStatus.Show(Glyph.Info, StatusColors.Muted,
+                    SelectedProvider == Providers.Vertex ? "Checking… (tests a tiny prompt per model)" : "Checking…");
+                ShowCheckList(null);
+            }
             UpdateActionStates();
             return;
         }
@@ -1095,10 +1124,10 @@ sealed class ProfilesForm : Form
         UpdateActionStates();
     }
 
-    private void ShowCheckList(IReadOnlyList<CheckItem>? items)
+    private void ShowCheckList(IReadOnlyList<CheckItem>? items, bool live = false)
     {
         var show = items is { Count: > 0 } && _current != null && !_currentIsHome;
-        if (show) _checkList.SetItems(items!);
+        if (show) _checkList.SetItems(items!, live);
         if (_checkList.Visible == show) return;
         _checkList.Visible = show;
         EnsureFits();
@@ -1125,6 +1154,7 @@ sealed class ProfilesForm : Form
         _checkSeq++;
         _checkCts?.CancelAsync(); // callbacks run off the UI thread
         _checkCts = null;
+        _checkProgress?.Cancel(); // rows still waiting read "Cancelled", never stuck on "Checking…"
         _checkingFor = null;
         UpdateActionStates();
         if (running == null) return;
