@@ -26,6 +26,8 @@ public static class Commands
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
+  auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
+                                      switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
   tray                                start the tray app
   manage                              open the profile manager window
@@ -40,13 +42,13 @@ public static class Commands
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
         Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null,
-        UsageClient? usage = null)
+        UsageClient? usage = null, Func<DateTimeOffset>? clock = null)
     {
         var json = WantsJson(args);
         try
         {
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
-                hookCancel ?? HookConsoleCancel, usage);
+                hookCancel ?? HookConsoleCancel, usage, clock ?? (() => DateTimeOffset.UtcNow));
         }
         catch (SessionsRunningException e)
         {
@@ -70,7 +72,7 @@ public static class Commands
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret,
-        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? usage)
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? usage, Func<DateTimeOffset> clock)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -80,7 +82,7 @@ public static class Commands
 
         var cmd = args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "usage"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "usage", "auto"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -209,6 +211,8 @@ public static class Commands
             }
             case "usage":
                 return UsageCmd(pos, output, err, pm, hookCancel, usage);
+            case "auto":
+                return AutoCmd(pos, output, err, pm, hookCancel, usage, clock);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -530,6 +534,126 @@ public static class Commands
         return local.Date == DateTime.Now.Date
             ? local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
             : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private const string AutoUsage = "clauderoo auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]";
+
+    // Exit codes for --once: 0 switched, 2 nothing to do, 3 no target (1 is an error, as everywhere).
+    private static int AutoCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm,
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected, Func<DateTimeOffset> clock)
+    {
+        var json = pos.Remove("--json");
+        var once = pos.Remove("--once");
+        bool? enable = null;
+        int? threshold = null;
+        List<string>? order = null;
+        for (var i = 0; i < pos.Count; i++)
+        {
+            switch (pos[i])
+            {
+                case "on": enable = true; break;
+                case "off": enable = false; break;
+                case "--threshold":
+                    if (i + 1 >= pos.Count) throw new ClauderooException($"Usage: {AutoUsage}");
+                    if (!int.TryParse(pos[++i], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)
+                        || n is < 6 or > 100)
+                        throw new ClauderooException("The threshold must be a whole number from 6 to 100 (switching needs a 5-point margin below it).");
+                    threshold = n;
+                    break;
+                case "--order":
+                    if (i + 1 >= pos.Count) throw new ClauderooException($"Usage: {AutoUsage}");
+                    order = pos[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                    foreach (var name in order) pm.Get(name); // throws for an unknown profile
+                    break;
+                default: throw new ClauderooException($"Usage: {AutoUsage}");
+            }
+        }
+
+        var cfg = pm.Config;
+        if (enable != null || threshold != null || order != null)
+        {
+            var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
+            if (enable != null) s.Enabled = enable.Value;
+            if (threshold != null) s.Threshold = threshold.Value;
+            if (order != null) s.Order = order;
+            ConfigStore.Save(pm.Paths, cfg);
+        }
+
+        if (once) return AutoOnce(output, err, pm, hookCancel, injected, clock, json);
+
+        if (json) throw new ClauderooException("--json only applies to 'auto --once'.");
+        var cur = cfg.AutoSwitch ?? new AutoSwitchSettings();
+        output.WriteLine($"Auto-switch is {(cur.Enabled ? "on" : "off")}.");
+        output.WriteLine($"Threshold: {cur.Threshold}%");
+        output.WriteLine($"Order: {(cur.Order.Count > 0 ? string.Join(", ", cur.Order) : "profile list order")}");
+        return 0;
+    }
+
+    private static int AutoOnce(TextWriter output, TextWriter err, ProfileManager pm,
+        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected, Func<DateTimeOffset> clock, bool json)
+    {
+        var client = injected ?? throw new InvalidOperationException("No usage client was given.");
+        var cache = new UsageCache(pm.Paths);
+        var cfg = pm.Config;
+        var usage = new Dictionary<string, UsageReading>();
+        using (var cts = new CancellationTokenSource())
+        using (hookCancel(cts))
+        {
+            foreach (var (name, entry) in cfg.Profiles)
+            {
+                if (Providers.Of(entry) != Providers.Login) continue;
+                UsageResult r;
+                try { r = client.FetchAsync(name, pm.ConfigDirOf(name), entry, cts.Token).GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    if (json) WriteJsonError(err, "Cancelled.");
+                    else err.WriteLine("Cancelled.");
+                    return 1;
+                }
+                // A failed fetch falls back to the cached reading; the engine ignores it once it is no longer fresh.
+                if (ToRow(name, r, cache, err).Reading is { } reading) usage[name] = reading;
+            }
+        }
+
+        var now = clock();
+        var states = pm.AutoSwitchState;
+        var state = states.Load();
+        var from = cfg.DefaultProfile;
+        var decision = AutoSwitch.Decide(cfg, usage, now, state);
+
+        string action, reason;
+        string? to = null;
+        int code;
+        switch (decision)
+        {
+            case Decision.SwitchTo sw:
+                Print(pm.SetDefault(sw.Profile), output, err);
+                (action, to, reason, code) = ("switched", sw.Profile, sw.Reason, 0);
+                break;
+            case Decision.NoTarget nt:
+                (action, reason, code) = ("noTarget", nt.Reason, 3);
+                break;
+            case Decision.Recovered rec:
+                (action, reason, code) = ("none", $"{rec.Profile} has room again.", 2);
+                break;
+            default:
+                (action, reason, code) = ("none", cfg.AutoSwitch is { Enabled: true } ? "Nothing to do." : "Auto-switch is off.", 2);
+                break;
+        }
+
+        // Next owns the flag transitions, so it runs after every decision (it also resets the no-target notice).
+        states.Save(AutoSwitch.Next(state, decision, from, usage, now, cfg.AutoSwitch));
+
+        if (json)
+            output.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, action, from, to, reason },
+                new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase, WriteIndented = true }));
+        else
+        {
+            output.WriteLine(reason);
+            if (to != null) output.WriteLine($"New terminals now use {to}.");
+            else if (action == "noTarget") output.WriteLine("No other profile has room.");
+        }
+        return code;
     }
 
     // --json before any "--" means every error must be JSON on stderr.
