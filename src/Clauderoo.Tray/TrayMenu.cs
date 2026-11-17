@@ -9,6 +9,9 @@ internal sealed record TrayMenuState(
     IReadOnlyDictionary<string, int> Running,
     bool AutoStartOn,
     int RecentCount = 0,
+    string? UpdateVersion = null,
+    bool UpdateChecksOn = true,
+    bool UpdateChecksAvailable = false,
     IReadOnlyDictionary<string, UsageReading>? Usage = null,
     IReadOnlyDictionary<string, UsageResult>? UsageResults = null,
     DateTimeOffset Now = default,
@@ -29,12 +32,15 @@ internal sealed class TrayMenuActions
 {
     public Action<string> Start { get; init; } = _ => { };
     public Action<string> StartInFolder { get; init; } = _ => { };
+    public Action<string> StartIsolated { get; init; } = _ => { };
     public Action<string> SetDefault { get; init; } = _ => { };
     public Action ShowProblems { get; init; } = () => { };
     public Action ShowProfiles { get; init; } = () => { };
     public Action NewProfile { get; init; } = () => { };
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
+    public Action UpdateNow { get; init; } = () => { };
+    public Action<bool> SetUpdateChecks { get; init; } = _ => { };
     public Action SetUp { get; init; } = () => { };
     public Action Retry { get; init; } = () => { };
     public Action CopyConfigDetails { get; init; } = () => { };
@@ -118,7 +124,20 @@ internal static class TrayMenu
                                  + "Change the threshold and order in Manage profiles.";
         autoSwitch.Click += (_, _) => a.SetAutoSwitch(!autoSwitch.Checked);
         advanced.DropDownItems.Add(autoSwitch);
+        if (s.UpdateChecksAvailable)
+        {
+            var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
+            checks.Click += (_, _) => a.SetUpdateChecks(!checks.Checked);
+            advanced.DropDownItems.Add(checks);
+        }
         items.Add(advanced);
+
+        if (s.UpdateVersion is { } newer)
+        {
+            var upd = Item(TrayText.UpdateItem(newer), Neutral(Glyph.Refresh, dpi), a.UpdateNow);
+            upd.Font = Bold(menu.Font);
+            items.Add(upd);
+        }
 
         items.Add(new ToolStripSeparator());
         items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));
@@ -177,7 +196,7 @@ internal static class TrayMenu
         var glyph = p.Provider switch
         {
             Providers.Vertex => Glyph.Cloud,
-            Providers.ApiKey => Glyph.Key,
+            Providers.ApiKey or Providers.Token => Glyph.Key,
             _ => Glyph.Person,
         };
         var item = new ToolStripMenuItem(Esc(label))
@@ -202,6 +221,9 @@ internal static class TrayMenu
         var start = Item("&Start session", Neutral(Glyph.Play, dpi), () => a.Start(name));
         if (p.IsDefault) start.Font = Bold(menu.Font);
         item.DropDownItems.Add(start);
+        var isolated = Item("Start &isolated session", Neutral(Glyph.Play, dpi), () => a.StartIsolated(name));
+        isolated.ToolTipText = "Uses a separate settings folder: no shared plugins, skills, hooks or MCP servers.";
+        item.DropDownItems.Add(isolated);
         item.DropDownItems.Add(Item("Start in &folder…", Neutral(Glyph.FolderOpen, dpi), () => a.StartInFolder(name)));
         var setDefault = Item(p.IsDefault ? "Already the default" : "Set as &default",
             p.IsDefault ? Glyphs.Get(Glyph.Star, GlyphSize, dpi, StatusColors.Accent) : Neutral(Glyph.StarOutline, dpi),
@@ -213,7 +235,8 @@ internal static class TrayMenu
             item.DropDownItems.Add(new ToolStripSeparator());
             item.DropDownItems.Add(new ToolStripMenuItem("● " + TrayText.Running(running)) { Enabled = false });
         }
-        IReadOnlyList<string> usageRows = signedOut ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
+        IReadOnlyList<string> usageRows = TrayText.UsageNotTrackedFor(p) is { } notTracked ? [notTracked]
+            : signedOut ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
         if (usageRows.Count > 0)
         {
             item.DropDownItems.Add(new ToolStripSeparator());

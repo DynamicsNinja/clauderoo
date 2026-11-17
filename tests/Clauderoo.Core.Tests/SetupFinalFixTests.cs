@@ -297,6 +297,20 @@ public class SetupFinalFixTests
     }
 
     [Fact]
+    public void Cli_Check_CtrlC_Json_EmitsJsonErrorExit1()
+    {
+        using var c = Make(ThreeModels());
+        CancellationTokenSource? hooked = null;
+        c.Claude.Responder = _ => { hooked!.Cancel(); return (0, "OK", ""); };
+        var r = Cli(c.Pm, cts => { hooked = cts; return new NoHook(); }, "check", "work", "--json");
+        Assert.Equal(1, r.code);
+        Assert.Equal("", r.o);
+        using var doc = System.Text.Json.JsonDocument.Parse(r.e);
+        Assert.Equal(1, doc.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal("Cancelled.", doc.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
     public void Cli_Check_PrintsLinesAsTheyArrive()
     {
         using var c = Make();

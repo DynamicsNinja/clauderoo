@@ -2,17 +2,26 @@ using System.Diagnostics;
 
 namespace Clauderoo.Core;
 
-public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null);
+public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null,
+    IReadOnlyDictionary<string, string>? ExtraEnv = null)
+{
+    /// <summary>ExtraEnv can carry a secret (CLAUDE_CODE_OAUTH_TOKEN), so only its names are ever printed.</summary>
+    public override string ToString() =>
+        $"LaunchSpec {{ FileName = {FileName}, Args = [{string.Join(", ", Args)}], WorkingDir = {WorkingDir}, " +
+        $"ConfigDirEnv = {ConfigDirEnv}, Profile = {Profile}, " +
+        $"ExtraEnv = [{string.Join(", ", (ExtraEnv?.Keys ?? []).Order(StringComparer.Ordinal))}] }}";
+}
 
 public static class Launcher
 {
     public static LaunchSpec NewWindow(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable, string? clauderooExe = null)
+        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable, string? clauderooExe = null, bool isolated = false)
     {
         // The new terminal runs `clauderoo run <profile>` rather than claude itself, so that process records the
         // claude session it starts (the terminal host's own pid says nothing about claude).
         clauderooExe ??= RequireHelper(HelperExePath.Resolve());
-        var configDir = ConfigDirFor(cfg, paths, profile);
+        var configDir = ConfigDirFor(cfg, paths, profile, isolated);
+        var isoFlag = isolated ? " --isolated" : "";
         foreach (var a in claudeArgs)
             // Without wt, the command line is re-parsed by `cmd /c start`, which mangles the quotes
             // .NET adds around the inner command, so args needing quotes can't be passed reliably.
@@ -21,7 +30,9 @@ public static class Launcher
         foreach (var p in new[] { configDir, dir, clauderooExe })
             if (p is not null && p.IndexOfAny(BadPathChars) >= 0)
                 throw new ClauderooException($"Path '{p}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
-        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& \"{clauderooExe}\" run {profile}"
+        // An existing Windows Terminal window may host the tab with its own environment, so the session markers a
+        // calling session carried are cleared in the tab's shell too (StartInfo strips them from wt/cmd itself).
+        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& set {WhichProfile.SessionVar}=&& set {IsolatedVar}=&& \"{clauderooExe}\" run {profile}{isoFlag}"
             + (claudeArgs.Count > 0 ? " --" : "")
             + string.Concat(claudeArgs.Select(a => " " + QuoteIfNeeded(a)));
         var title = $"Claude · {profile}";
@@ -34,6 +45,7 @@ public static class Launcher
         string[] args = wtAvailable
             ? ["-w", "0", "new-tab", "--title", title, "-d", dir, "cmd", "/k", cmdLine]
             : ["/c", "start", title, "/D", dir, "cmd", "/k", clauderooExe, "run", profile,
+                .. (isolated ? new[] { "--isolated" } : []),
                 .. (claudeArgs.Count > 0 ? new[] { "--" }.Concat(claudeArgs) : [])];
         return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir);
     }
@@ -43,13 +55,20 @@ public static class Launcher
         File.Exists(exe) ? exe : throw new ClauderooException("clauderoo isn't installed properly — reinstall it.");
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>
-        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile), profile);
+        string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null, bool isolated = false)
+    {
+        var env = new Dictionary<string, string> { [WhichProfile.SessionVar] = profile };
+        if (isolated) env[IsolatedVar] = "1";
+        return new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile, isolated), profile, env);
+    }
 
-    private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile)
+    public const string IsolatedVar = "CLAUDEROO_ISOLATED";
+
+    private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile, bool isolated = false)
     {
         if (!cfg.Profiles.TryGetValue(profile, out var entry))
             throw new ClauderooException($"Unknown profile '{profile}'.");
+        if (isolated) return paths.IsolatedDir(profile);
         return entry.Home ? null : paths.ProfileDir(profile);
     }
 
@@ -103,7 +122,10 @@ public static class Launcher
         return p;
     }
 
-    public static Process Start(LaunchSpec s)
+    public static Process Start(LaunchSpec s) =>
+        Process.Start(StartInfo(s)) ?? throw new ClauderooException($"Failed to start {s.FileName}.");
+
+    internal static ProcessStartInfo StartInfo(LaunchSpec s)
     {
         var psi = new ProcessStartInfo(s.FileName)
         {
@@ -113,6 +135,14 @@ public static class Launcher
         foreach (var a in s.Args) psi.ArgumentList.Add(a);
         if (s.ConfigDirEnv is null) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
         else psi.Environment["CLAUDE_CONFIG_DIR"] = s.ConfigDirEnv;
-        return Process.Start(psi) ?? throw new ClauderooException($"Failed to start {s.FileName}.");
+        // A token inherited from the calling shell (e.g. cr run inside a token profile's session) would sign the
+        // new session in as that account; only the token the spec injects for its own profile may pass. The same goes
+        // for the session markers: a stale CLAUDEROO_PROFILE/CLAUDEROO_ISOLATED would make `which` name the caller.
+        psi.Environment.Remove(ProfileManager.TokenEnvVar);
+        psi.Environment.Remove(WhichProfile.SessionVar);
+        psi.Environment.Remove(IsolatedVar);
+        if (s.ExtraEnv is not null)
+            foreach (var (k, v) in s.ExtraEnv) psi.Environment[k] = v;
+        return psi;
     }
 }

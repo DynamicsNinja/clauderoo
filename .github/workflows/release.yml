@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test
+        run: dotnet test clauderoo.slnx -c Release
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          foreach ($project in 'Clauderoo.Cli', 'Clauderoo.Tray') {
+            dotnet publish "src/$project" -c Release -r win-x64 -p:PublishSingleFile=true --self-contained false `
+              -p:Version=$version -p:ClauderooRepo=${{ github.repository }} -o publish
+            if ($LASTEXITCODE -ne 0) { throw "publish failed for $project" }
+          }
+          Copy-Item publish/clauderoo.exe publish/cr.exe
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $zip = "clauderoo-$version-win-x64.zip"
+          Compress-Archive -Path publish/clauderoo.exe, publish/cr.exe, publish/clauderoow.exe, LICENSE, README.md -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $zip" | Set-Content -Path "$zip.sha256" -Encoding ascii
+          "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sha256

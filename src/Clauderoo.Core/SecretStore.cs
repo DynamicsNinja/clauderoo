@@ -11,11 +11,12 @@ public interface ISecretStore
     bool Exists(string profileDir);
 }
 
-/// <summary>Stores a profile's API key as a DPAPI (CurrentUser) blob in the profile folder.</summary>
-public sealed class DpapiSecretStore : ISecretStore
+/// <summary>Stores one kind of profile secret (API key, Claude token) as a DPAPI (CurrentUser) blob in the profile folder.</summary>
+public sealed class DpapiSecretStore(string fileName = DpapiSecretStore.FileName, string kind = "API key") : ISecretStore
 {
     public const string FileName = ".clauderoo-apikey";
-    private const string UnreadableMessage = "The saved API key can't be read on this account. Enter it again.";
+    public const string TokenFileName = ".clauderoo-token";
+    private string UnreadableMessage => $"The saved {kind} can't be read on this account. Enter it again.";
     private const uint CRYPTPROTECT_UI_FORBIDDEN = 0x1;
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("clauderoo");
 
@@ -37,12 +38,12 @@ public sealed class DpapiSecretStore : ISecretStore
     [DllImport("kernel32.dll")]
     private static extern IntPtr LocalFree(IntPtr hMem);
 
-    private static string PathFor(string profileDir) => Path.Combine(profileDir, FileName);
+    private string PathFor(string profileDir) => Path.Combine(profileDir, fileName);
 
     public void Save(string profileDir, string secret)
     {
         var blob = Transform(Encoding.UTF8.GetBytes(secret), protect: true)
-            ?? throw new ClauderooException("Couldn't encrypt the API key on this account.");
+            ?? throw new ClauderooException($"Couldn't encrypt the {kind} on this account.");
         AtomicFile.WriteAllBytes(PathFor(profileDir), blob);
     }
 

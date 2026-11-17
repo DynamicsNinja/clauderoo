@@ -31,8 +31,19 @@ public static class Providers
     public const string Login = "login";
     public const string Vertex = "vertex";
     public const string ApiKey = "apikey";
+    /// <summary>A long-lived Claude token from `claude setup-token`, passed to Claude as CLAUDE_CODE_OAUTH_TOKEN.</summary>
+    public const string Token = "token";
 
     public static string Of(ProfileEntry e) => string.IsNullOrEmpty(e.Provider) ? Login : e.Provider;
+
+    /// <summary>The provider's name for people: "Claude login", "Google Vertex AI", "API key", "Claude token".</summary>
+    public static string DisplayName(string provider) => provider switch
+    {
+        Vertex => "Google Vertex AI",
+        ApiKey => "API key",
+        Token => "Claude token",
+        _ => "Claude login",
+    };
 }
 
 public class ClauderooConfig
@@ -43,6 +54,9 @@ public class ClauderooConfig
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
     public AutoSwitchSettings? AutoSwitch { get; set; }
+
+    /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
+    public Dictionary<string, string> Folders { get; set; } = new();
 
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]

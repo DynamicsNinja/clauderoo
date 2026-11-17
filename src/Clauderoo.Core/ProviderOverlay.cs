@@ -7,7 +7,8 @@ public record Overlay(IReadOnlyDictionary<string, string> Env, IReadOnlyDictiona
 
 public static partial class ProviderOverlay
 {
-    public static IReadOnlySet<string> ReservedEnv { get; } = new HashSet<string>(StringComparer.Ordinal)
+    // Windows environment names are case-insensitive, so "claude_code_oauth_token" would override the real one.
+    public static IReadOnlySet<string> ReservedEnv { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "CLAUDE_CODE_USE_VERTEX",
         "ANTHROPIC_VERTEX_PROJECT_ID",
@@ -17,6 +18,8 @@ public static partial class ProviderOverlay
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        // The token provider passes it in the process environment only; it must never sit in a settings.json.
+        "CLAUDE_CODE_OAUTH_TOKEN",
     };
 
     public static IReadOnlySet<string> ReservedTop { get; } = new HashSet<string>(StringComparer.Ordinal)
