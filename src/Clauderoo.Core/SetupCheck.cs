@@ -10,6 +10,19 @@ public enum CheckStatus { Ok, Warn, Fail, Skipped }
 
 public record CheckItem(CheckStatus Status, string Label, string? Hint);
 
+/// <summary>One checklist line, shared by `clauderoo check` and the Profiles window.</summary>
+public static class CheckItemFormatter
+{
+    public static string Format(CheckItem item) =>
+        item.Status switch
+        {
+            CheckStatus.Ok => "✓ ",
+            CheckStatus.Warn => "⚠ ",
+            CheckStatus.Fail => "✗ ",
+            _ => "– ",
+        } + item.Label + (string.IsNullOrEmpty(item.Hint) ? "" : "  → " + item.Hint);
+}
+
 public interface IMachineEnv
 {
     IReadOnlyDictionary<string, string> User();
@@ -57,6 +70,8 @@ public sealed class HttpIamTester : IIamTester
             };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
+            // 403: the account may not even test permissions on the project, so it lacks the role.
+            if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden) return (false, null);
             if (!resp.IsSuccessStatusCode)
                 return (null, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
             var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
@@ -98,8 +113,12 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         return "/d /s /c \"" + inner + "\"";
     }
 
-    public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
-        string configDir, TimeSpan timeout, CancellationToken ct)
+    /// <summary>
+    /// The probe runs in a fresh, empty temp folder (so claude picks up no project settings, CLAUDE.md or .mcp.json and
+    /// writes nothing into the caller's folder) with auto-update off. The folder is not created here.
+    /// </summary>
+    internal static ProcessStartInfo BuildStartInfo(string claudePath, IReadOnlyList<string> args, string configDir,
+        string? tempRoot = null)
     {
         var isCmd = claudePath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
             || claudePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
@@ -110,10 +129,36 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
             RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            WorkingDirectory = Path.Combine(tempRoot ?? Path.GetTempPath(), "clauderoo-probe-" + Guid.NewGuid().ToString("N")),
         };
         if (isCmd) psi.Arguments = BuildCmdLine(claudePath, args);
         else foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["CLAUDE_CONFIG_DIR"] = configDir;
+        psi.Environment["DISABLE_AUTOUPDATER"] = "1";
+        return psi;
+    }
+
+    public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+        string configDir, TimeSpan timeout, CancellationToken ct)
+    {
+        var psi = BuildStartInfo(claudePath, args, configDir);
+        var workDir = psi.WorkingDirectory;
+        try
+        {
+            Directory.CreateDirectory(workDir);
+            return await RunInAsync(psi, timeout, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Our own fresh folder (no junctions): it holds only what claude wrote. Best effort.
+            try { Directory.Delete(workDir, recursive: true); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private static async Task<(int exit, string stdout, string stderr)> RunInAsync(ProcessStartInfo psi, TimeSpan timeout,
+        CancellationToken ct)
+    {
         var timedOut = $"timed out after {(int)timeout.TotalSeconds} s";
 
         Process proc;
@@ -139,7 +184,15 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         }
         finally
         {
-            try { if (!proc.HasExited || !outTask.IsCompleted || !errTask.IsCompleted) proc.Kill(entireProcessTree: true); }
+            // Timeout or cancel (e.g. Ctrl+C in `cr check`): kill the whole tree (cmd.exe, node, ...).
+            try
+            {
+                if (!proc.HasExited || !outTask.IsCompleted || !errTask.IsCompleted)
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(5000); // so it releases the work folder before we delete it
+                }
+            }
             catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
         }
     }
@@ -147,7 +200,14 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
 
 public partial class ProfileManager
 {
-    private static readonly string[] LeftoverPrefixes = ["ANTHROPIC_", "CLAUDE_CODE_", "CLOUD_ML_", "VERTEX_REGION_"];
+    // Only names that change Claude Code's provider or auth (not e.g. CLAUDE_CODE_GIT_BASH_PATH).
+    private static readonly string[] LeftoverPrefixes = ["ANTHROPIC_", "CLAUDE_CODE_USE_", "CLOUD_ML_", "VERTEX_REGION_"];
+    private static readonly System.Text.RegularExpressions.Regex SkipAuthVar = new("^CLAUDE_CODE_SKIP_.*_AUTH$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    internal static bool IsLeftoverProviderVar(string name) =>
+        !name.Equals("CLAUDE_CONFIG_DIR", StringComparison.OrdinalIgnoreCase)
+        && (LeftoverPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)) || SkipAuthVar.IsMatch(name));
     private const string Gac = "GOOGLE_APPLICATION_CREDENTIALS";
 
     private IMachineEnv machineEnv = new WindowsMachineEnv();
@@ -163,7 +223,9 @@ public partial class ProfileManager
         claudeRunner = claude;
     }
 
-    public async Task<IReadOnlyList<CheckItem>> CheckSetupAsync(string name, CancellationToken ct = default)
+    /// <param name="progress">Gets each item as soon as it is decided, in list order (reported synchronously).</param>
+    public async Task<IReadOnlyList<CheckItem>> CheckSetupAsync(string name, CancellationToken ct = default,
+        IProgress<CheckItem>? progress = null)
     {
         var cfg = Config;
         var entry = NonHome(cfg, name);
@@ -171,7 +233,7 @@ public partial class ProfileManager
             throw new ClauderooException($"Profile '{name}' doesn't use Vertex AI.");
         var v = entry.Vertex;
         var dir = paths.ProfileDir(name);
-        var items = new List<CheckItem>();
+        var items = new ReportingList(progress);
 
         var models = new[] { v.SonnetModel, v.OpusModel, v.HaikuModel }
             .Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m!).ToList();
@@ -231,8 +293,7 @@ public partial class ProfileManager
         var leftovers = new List<string>();
         foreach (var (scope, vars) in new[] { ("User", machineEnv.User()), ("Machine", machineEnv.Machine()) })
             foreach (var k in vars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
-                if (!k.Equals("CLAUDE_CONFIG_DIR", StringComparison.OrdinalIgnoreCase)
-                    && LeftoverPrefixes.Any(p => k.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                if (IsLeftoverProviderVar(k))
                     leftovers.Add($"{k} ({scope})");
         items.Add(leftovers.Count == 0
             ? new(CheckStatus.Ok, LeftoverLabel, null)
@@ -257,7 +318,8 @@ public partial class ProfileManager
         for (var i = 0; i < runs.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var args = new List<string> { "-p", "Reply with exactly: OK" };
+            // No MCP servers from the profile and no saved session: the probe leaves nothing behind.
+            var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
             if (runs[i] != null) { args.Add("--model"); args.Add(runs[i]!); }
             var (mx, mo, me) = await claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
             if (mx == 0 && mo.Contains("OK"))
@@ -275,11 +337,15 @@ public partial class ProfileManager
 
     private CheckItem CheckGac()
     {
+        // User, then Machine, then a value only this process has (set in the terminal that started us).
         string? path = null, scope = null;
-        var p = machineEnv.Process(Gac);
-        if (!string.IsNullOrWhiteSpace(p)) { path = p; scope = "Process"; }
-        else if (TryGet(machineEnv.User(), Gac, out var u)) { path = u; scope = "User"; }
+        if (TryGet(machineEnv.User(), Gac, out var u)) { path = u; scope = "User"; }
         else if (TryGet(machineEnv.Machine(), Gac, out var m)) { path = m; scope = "Machine"; }
+        else
+        {
+            var p = machineEnv.Process(Gac);
+            if (!string.IsNullOrWhiteSpace(p)) { path = p; scope = "Process"; }
+        }
         if (path == null) return new(CheckStatus.Ok, "GOOGLE_APPLICATION_CREDENTIALS not set", null);
         return File.Exists(path)
             ? new(CheckStatus.Warn, $"GOOGLE_APPLICATION_CREDENTIALS is set ({scope}) and overrides your gcloud sign-in",
@@ -295,6 +361,16 @@ public partial class ProfileManager
             { value = kv.Value; return true; }
         value = "";
         return false;
+    }
+
+    // Collects the checklist and reports each item to the caller's progress as it is added.
+    private sealed class ReportingList(IProgress<CheckItem>? progress) : List<CheckItem>
+    {
+        public new void Add(CheckItem item)
+        {
+            base.Add(item);
+            progress?.Report(item);
+        }
     }
 
     private static string Scrub(string s, string? token) =>

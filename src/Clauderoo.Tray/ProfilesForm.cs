@@ -645,18 +645,9 @@ sealed class ProfilesForm : Form
             _checkStatus.Text = "⚠ " + (warns == 1 ? "Works, with 1 warning." : $"Works, with {warns} warnings.");
         }
         else SetCheckStatus(true, "Setup looks good.");
-        ShowCheckList(string.Join(Environment.NewLine, items.Select(FormatCheckItem)));
+        // Same line format as `clauderoo check`.
+        ShowCheckList(string.Join(Environment.NewLine, items.Select(CheckItemFormatter.Format)));
     }
-
-    // Same line format as `clauderoo check`.
-    private static string FormatCheckItem(CheckItem i) =>
-        i.Status switch
-        {
-            CheckStatus.Ok => "✓ ",
-            CheckStatus.Warn => "⚠ ",
-            CheckStatus.Fail => "✗ ",
-            _ => "– ",
-        } + i.Label + (i.Hint != null ? "  → " + i.Hint : "");
 
     private void ShowCheckList(string? text)
     {

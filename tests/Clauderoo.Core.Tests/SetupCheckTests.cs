@@ -212,7 +212,7 @@ public class SetupCheckTests
         using var c = Make(WithModels("claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"));
         await c.Pm.CheckSetupAsync("work");
         Assert.Equal(3, c.Claude.Calls.Count);
-        Assert.Contains(c.Claude.Calls, x => x.args.SequenceEqual(["-p", "Reply with exactly: OK", "--model", "claude-opus-4-8"]));
+        Assert.Contains(c.Claude.Calls, x => x.args.SequenceEqual(["-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence", "--model", "claude-opus-4-8"]));
         Assert.All(c.Claude.Calls, x => Assert.Equal(c.Home.Paths.ProfileDir("work"), x.configDir));
     }
 
@@ -288,10 +288,10 @@ public class SetupCheckHelpersTests
     }
 
     [Fact]
-    public async Task Iam_403_ReportsHttpError()
+    public async Task Iam_403_IsDenied()
     {
         var t = new HttpIamTester(new StubHandler(_ => Json("", System.Net.HttpStatusCode.Forbidden)));
-        Assert.Equal(((bool?)null, (string?)"HTTP 403 Forbidden"), await t.HasPermissionAsync("p", "tok", "x", default));
+        Assert.Equal(((bool?)false, (string?)null), await t.HasPermissionAsync("p", "tok", "x", default));
     }
 
     [Fact]

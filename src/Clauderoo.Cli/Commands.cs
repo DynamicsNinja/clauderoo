@@ -37,11 +37,12 @@ public static class Commands
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
-        Func<string?>? readSecret = null)
+        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null)
     {
         try
         {
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole);
+            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
+                hookCancel ?? HookConsoleCancel);
         }
         catch (ClauderooException e)
         {
@@ -56,7 +57,8 @@ public static class Commands
     }
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret,
+        Func<CancellationTokenSource, IDisposable> hookCancel)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -201,11 +203,21 @@ public static class Commands
                 }
                 // The model probes run inside CheckSetupAsync, so announce them first.
                 output.WriteLine("Testing models (this sends a tiny prompt per model)…");
-                var items = pm.CheckSetupAsync(name).GetAwaiter().GetResult();
-                foreach (var it in items)
+                // Ctrl+C stops the check (and kills a running `claude -p`) instead of the process.
+                using var cts = new CancellationTokenSource();
+                IReadOnlyList<CheckItem> items;
+                using (hookCancel(cts))
                 {
-                    var mark = it.Status switch { CheckStatus.Ok => "✓ ", CheckStatus.Warn => "⚠ ", CheckStatus.Fail => "✗ ", _ => "– " };
-                    output.WriteLine(mark + it.Label + (string.IsNullOrEmpty(it.Hint) ? "" : "  → " + it.Hint));
+                    try
+                    {
+                        // Lines appear as each check finishes, not at the end.
+                        items = pm.CheckSetupAsync(name, cts.Token, new LineProgress(output)).GetAwaiter().GetResult();
+                    }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                    {
+                        err.WriteLine("Cancelled.");
+                        return 1;
+                    }
                 }
                 return items.Any(i => i.Status == CheckStatus.Fail) ? 1 : 0;
             }
@@ -381,5 +393,29 @@ public static class Commands
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
             yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {tail}".TrimEnd();
         }
+    }
+    // Writes each checklist line as soon as it's reported (synchronously, unlike Progress<T>).
+    private sealed class LineProgress(TextWriter output) : IProgress<CheckItem>
+    {
+        public void Report(CheckItem value)
+        {
+            lock (output) output.WriteLine(CheckItemFormatter.Format(value));
+        }
+    }
+
+    private static IDisposable HookConsoleCancel(CancellationTokenSource cts)
+    {
+        ConsoleCancelEventHandler handler = (_, e) =>
+        {
+            e.Cancel = true;
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        };
+        Console.CancelKeyPress += handler;
+        return new Unhook(() => Console.CancelKeyPress -= handler);
+    }
+
+    private sealed class Unhook(Action undo) : IDisposable
+    {
+        public void Dispose() => undo();
     }
 }

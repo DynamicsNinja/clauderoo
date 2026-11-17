@@ -24,7 +24,8 @@ public class CliSetupCheckTests
     {
         var o = new StringWriter();
         var e = new StringWriter();
-        var code = Commands.Run(args, o, e, pm, _ => 0, _ => 0, wtAvailable: true, claudePath: "claude.cmd");
+        var code = Commands.Run(args, o, e, pm, _ => 0, _ => 0, wtAvailable: true, claudePath: "claude.cmd",
+            hookCancel: _ => new NoHook());
         return (code, o.ToString(), e.ToString());
     }
 
