@@ -220,6 +220,36 @@ public class SetupCheckTests
     }
 
     [Fact]
+    public async Task Models_RunInParallel_ResultsInConfigOrder()
+    {
+        using var c = Make(WithModels("claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"));
+        var gate = new GatedClaude(expected: 3);
+        var pm = new ProfileManager(c.Home.Paths, new FakeEnv(), () => Now, new FakeSecretStore(), c.Gcloud, c.Env, c.Iam, gate)
+        { HelperExe = @"C:\x\clauderoo.exe" };
+        // Every probe waits until all three have started: this only completes if they run at the same time.
+        var r = await pm.CheckSetupAsync("work").WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(3, gate.Started);
+        Assert.Equal(["claude-sonnet-4-6 answers", "claude-opus-4-8 answers", "claude-haiku-4-5 answers"],
+            r.TakeLast(3).Select(x => x.Label));
+        Assert.All(r.TakeLast(3), x => Assert.Equal(CheckStatus.Ok, x.Status));
+    }
+
+    private sealed class GatedClaude(int expected) : IClaudeRunner
+    {
+        private readonly TaskCompletionSource _allStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _started;
+        public int Started => Volatile.Read(ref _started);
+        public string? Find() => @"C:\fake\claude.cmd";
+        public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+            string configDir, TimeSpan timeout, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _started) == expected) _allStarted.TrySetResult();
+            await _allStarted.Task.WaitAsync(ct);
+            return (0, "OK\n", "");
+        }
+    }
+
+    [Fact]
     public async Task Models_NoneConfigured_SingleDefaultRun()
     {
         using var c = Make();

@@ -276,15 +276,15 @@ public class SetupFinalFixTests
         var hook = new NoHook();
         c.Claude.Responder = _ =>
         {
-            hooked!.Cancel(); // Ctrl+C pressed during the first model probe
+            hooked!.Cancel(); // Ctrl+C pressed while the model probes run
             return (0, "OK", "");
         };
         var r = Cli(c.Pm, cts => { hooked = cts; return hook; }, "check", "work");
         Assert.Equal(1, r.code);
         Assert.Contains("Cancelled.", r.e);
         Assert.Contains("\u2713 gcloud installed", r.o); // streamed before the cancel
-        Assert.Contains("\u2713 claude-sonnet-4-6 answers", r.o);
-        Assert.Single(c.Claude.Calls); // no further probes
+        Assert.DoesNotContain("answers", r.o); // no model results reported after the cancel
+        Assert.Equal(3, c.Claude.Calls.Count); // the probes start together (in parallel)
         Assert.True(hook.Disposed); // Ctrl+C handler removed again
     }
 

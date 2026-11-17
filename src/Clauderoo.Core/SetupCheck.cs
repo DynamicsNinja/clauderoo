@@ -322,13 +322,20 @@ public partial class ProfileManager
         }
 
         var runs = models.Count == 0 ? new List<string?> { null } : models.Select(m => (string?)m).ToList();
+        ct.ThrowIfCancellationRequested();
+        // Each probe is a full Claude Code start-up (~10 s), so all models are tested at the same time.
+        // No MCP servers from the profile and no saved session: the probes leave nothing behind.
+        var probes = runs.Select(m =>
+        {
+            var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
+            if (m != null) { args.Add("--model"); args.Add(m); }
+            return claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), ct);
+        }).ToList();
+        // Results are reported in the configured order (Sonnet, Opus, Haiku), each as soon as it and those before it finish.
         for (var i = 0; i < runs.Count; i++)
         {
-            ct.ThrowIfCancellationRequested();
-            // No MCP servers from the profile and no saved session: the probe leaves nothing behind.
-            var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
-            if (runs[i] != null) { args.Add("--model"); args.Add(runs[i]!); }
-            var (mx, mo, me) = await claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+            var (mx, mo, me) = await probes[i].ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested(); // Ctrl+C / window closed: report nothing more (the runner kills every probe)
             if (mx == 0 && mo.Contains("OK"))
                 items.Add(new(CheckStatus.Ok, modelLabels[i], null));
             else
