@@ -3,7 +3,14 @@ using System.Diagnostics;
 namespace Clauderoo.Core;
 
 public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null,
-    IReadOnlyDictionary<string, string>? ExtraEnv = null);
+    IReadOnlyDictionary<string, string>? ExtraEnv = null)
+{
+    /// <summary>ExtraEnv can carry a secret (CLAUDE_CODE_OAUTH_TOKEN), so only its names are ever printed.</summary>
+    public override string ToString() =>
+        $"LaunchSpec {{ FileName = {FileName}, Args = [{string.Join(", ", Args)}], WorkingDir = {WorkingDir}, " +
+        $"ConfigDirEnv = {ConfigDirEnv}, Profile = {Profile}, " +
+        $"ExtraEnv = [{string.Join(", ", (ExtraEnv?.Keys ?? []).Order(StringComparer.Ordinal))}] }}";
+}
 
 public static class Launcher
 {
@@ -113,7 +120,10 @@ public static class Launcher
         return p;
     }
 
-    public static Process Start(LaunchSpec s)
+    public static Process Start(LaunchSpec s) =>
+        Process.Start(StartInfo(s)) ?? throw new ClauderooException($"Failed to start {s.FileName}.");
+
+    internal static ProcessStartInfo StartInfo(LaunchSpec s)
     {
         var psi = new ProcessStartInfo(s.FileName)
         {
@@ -123,8 +133,11 @@ public static class Launcher
         foreach (var a in s.Args) psi.ArgumentList.Add(a);
         if (s.ConfigDirEnv is null) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
         else psi.Environment["CLAUDE_CONFIG_DIR"] = s.ConfigDirEnv;
+        // A token inherited from the calling shell (e.g. cr run inside a token profile's session) would sign the
+        // new session in as that account; only the token the spec injects for its own profile may pass.
+        psi.Environment.Remove(ProfileManager.TokenEnvVar);
         if (s.ExtraEnv is not null)
             foreach (var (k, v) in s.ExtraEnv) psi.Environment[k] = v;
-        return Process.Start(psi) ?? throw new ClauderooException($"Failed to start {s.FileName}.");
+        return psi;
     }
 }

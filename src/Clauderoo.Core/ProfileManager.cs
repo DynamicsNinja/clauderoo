@@ -8,11 +8,31 @@ public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Emai
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
 
-public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now,
-    ISecretStore secrets, IGcloud gcloud)
+public partial class ProfileManager
 {
+    private readonly ClauderooPaths paths;
+    private readonly IEnvStore env;
+    private readonly Func<DateTime> now;
+    private readonly ISecretStore secrets; // API keys
+    private readonly IGcloud gcloud;
+    private readonly ISecretStore tokens;  // Claude setup tokens (provider "token")
+
     public ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
         : this(paths, env, now, new DpapiSecretStore(), new Gcloud()) { }
+
+    public ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now, ISecretStore secrets, IGcloud gcloud)
+        : this(paths, env, now, secrets, gcloud, new DpapiSecretStore(DpapiSecretStore.TokenFileName, "token")) { }
+
+    internal ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now, ISecretStore secrets, IGcloud gcloud,
+        ISecretStore tokens)
+    {
+        this.paths = paths;
+        this.env = env;
+        this.now = now;
+        this.secrets = secrets;
+        this.gcloud = gcloud;
+        this.tokens = tokens;
+    }
 
     /// <summary>The exe that apiKeyHelper runs; handed to every Syncer.</summary>
     public string HelperExe { get; set; } = HelperExePath.Resolve();
@@ -147,6 +167,8 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             }
         }
         try { secrets.Delete(keyDir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
+        try { tokens.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
         foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
@@ -304,7 +326,12 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             ? string.IsNullOrEmpty(userValue)
             : !string.IsNullOrEmpty(userValue) && Norm(userValue) == Norm(expected);
 
-        return new StatusReport(cfg.DefaultProfile, userValue, matches, report.Problems);
+        var problems = report.Problems.ToList();
+        if (cfg.DefaultProfile != null && cfg.Profiles.TryGetValue(cfg.DefaultProfile, out var defEntry)
+            && !defEntry.Home && Providers.Of(defEntry) == Providers.Token)
+            problems.Add($"{cfg.DefaultProfile} signs in with a token; start it with 'cr start {cfg.DefaultProfile}' " +
+                         "(plain 'claude' isn't signed in).");
+        return new StatusReport(cfg.DefaultProfile, userValue, matches, problems);
     }
 
     private static string Norm(string p) =>

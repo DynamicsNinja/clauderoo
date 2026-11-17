@@ -17,6 +17,8 @@ public static partial class ProviderOverlay
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        // The token provider passes it in the process environment only; it must never sit in a settings.json.
+        "CLAUDE_CODE_OAUTH_TOKEN",
     };
 
     public static IReadOnlySet<string> ReservedTop { get; } = new HashSet<string>(StringComparer.Ordinal)

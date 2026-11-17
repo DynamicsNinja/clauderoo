@@ -28,6 +28,7 @@ public static class Commands
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
                                       use Claude on Google Vertex AI
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
+  provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
@@ -48,7 +49,8 @@ public static class Commands
     {
         try
         {
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
+            Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
+            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
                 hookCancel ?? HookConsoleCancel);
         }
         catch (SessionsRunningException e)
@@ -75,8 +77,8 @@ public static class Commands
         args.TakeWhile(a => a != "--").Skip(1).Contains("--json");
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret,
-        Func<CancellationTokenSource, IDisposable> hookCancel)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
+        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -179,11 +181,14 @@ public static class Commands
                 if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
                 if (!tab)
                 {
+                    // A token profile's token is decrypted here, just before launch, into the child's environment only.
+                    var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath, isolated), profile);
                     if (isolated && pm.PrepareIsolated(profile).FirstRun)
                         output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
-                    return runInPlace(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath, isolated));
+                    return runInPlace(spec);
                 }
-                // The new tab runs `run <profile> --isolated`, which prepares the folder itself.
+                // The new tab runs `run <profile> [--isolated]`, which prepares the folder and injects any token itself,
+                // so the token never appears on a command line.
                 startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
                 return 0;
             }
@@ -384,9 +389,9 @@ public static class Commands
         return 0;
     }
 
-    private static int ProviderCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm, Func<string?> readSecret)
+    private static int ProviderCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm, Func<string, string?> readSecret)
     {
-        const string usage = "clauderoo provider <name> login | vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>] | apikey";
+        const string usage = "clauderoo provider <name> login | vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>] | apikey | token";
         if (pos.Count < 2) throw new ClauderooException($"Usage: {usage}");
         var name = pos[0];
         var kind = pos[1];
@@ -421,12 +426,19 @@ public static class Commands
             case Providers.ApiKey:
             {
                 if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var key = readSecret();
+                var key = readSecret("API key: ");
                 report = pm.SetProvider(name, Providers.ApiKey, null, string.IsNullOrWhiteSpace(key) ? null : key.Trim());
                 break;
             }
+            case Providers.Token:
+            {
+                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
+                var token = readSecret("Token: ");
+                report = pm.SetProvider(name, Providers.Token, token: string.IsNullOrWhiteSpace(token) ? null : token.Trim());
+                break;
+            }
             default:
-                throw new ClauderooException($"Unknown provider '{kind}'. Known: login, vertex, apikey.");
+                throw new ClauderooException($"Unknown provider '{kind}'. Known: {ProfileManager.KnownProviders}.");
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
@@ -467,11 +479,11 @@ public static class Commands
         return 0;
     }
 
-    // Hidden prompt (no echo); a redirected stdin is read as one line.
-    private static string? ReadSecretFromConsole()
+    // Hidden prompt (no echo) labelled e.g. "API key: "; a redirected stdin is read as one line.
+    private static string? ReadSecretFromConsole(string label)
     {
         if (Console.IsInputRedirected) return Console.In.ReadLine();
-        Console.Error.Write("API key: ");
+        Console.Error.Write(label);
         var sb = new System.Text.StringBuilder();
         while (true)
         {
@@ -514,6 +526,7 @@ public static class Commands
         {
             Providers.Vertex => $"vertex ({i.ProviderDetail})",
             Providers.ApiKey => "apikey",
+            Providers.Token => "token",
             _ => i.Email ?? NoLogin,
         };
         var emailW = infos.Max(i => Who(i).Length);
