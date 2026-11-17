@@ -117,6 +117,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         cfg.AutoSwitch?.Order.RemoveAll(n => n == name);
         ConfigStore.Save(paths, cfg);
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
+        try { AutoSwitchState.Remove(name); } catch (IOException) { /* state is best effort */ }
     }
 
     // Shared by Remove and Rename: refuses while home's plugin records point inside the profile folder.

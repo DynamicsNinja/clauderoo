@@ -22,6 +22,11 @@ public partial class ProfileManager
         internal set => _usage = value;
     }
 
+    private AutoSwitchStore? _autoSwitchState;
+
+    /// <summary>The auto-switch state file, kept in step with renames and removals.</summary>
+    public AutoSwitchStore AutoSwitchState => _autoSwitchState ??= new AutoSwitchStore(paths);
+
     /// <summary>Syncs one profile with the home profile.</summary>
     public SyncReport Sync(string name)
     {

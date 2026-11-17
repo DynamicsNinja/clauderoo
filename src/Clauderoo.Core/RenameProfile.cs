@@ -66,6 +66,7 @@ public partial class ProfileManager
 
             try { Sessions.Rename(oldName, newName); } catch (IOException) { /* tracking is best effort */ }
             try { Usage.Rename(oldName, newName); } catch (IOException) { /* the cache is best effort */ }
+            try { AutoSwitchState.Rename(oldName, newName); } catch (IOException) { /* state is best effort */ }
 
             return entry.Home ? new SyncReport() : NewSyncer(cfg).Sync(newName);
         }

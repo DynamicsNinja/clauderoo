@@ -8,11 +8,16 @@ public class AutoSwitchSettings
 {
     public bool Enabled { get; set; }
     public int Threshold { get; set; } = 90;
-    public List<string> Order { get; set; } = [];
+    private List<string> _order = [];
+    /// <summary>A hand-edited <c>"order": null</c> reads as empty.</summary>
+    public List<string> Order { get => _order; set => _order = value ?? []; }
 }
 
-/// <summary>What the engine remembers between decisions, in %root%\autoswitch.json.</summary>
-public record AutoSwitchState(DateTimeOffset? LastSwitch, string? SwitchedFrom, bool NoTargetNotified, bool RecoveredNotified);
+/// <summary>
+/// What the engine remembers between decisions, in %root%\autoswitch.json. The two Notified flags only apply while the
+/// default profile is <see cref="FlagsFor"/>; for any other default they read as false (see <see cref="AutoSwitch.Next"/>).
+/// </summary>
+public record AutoSwitchState(DateTimeOffset? LastSwitch, string? SwitchedFrom, bool NoTargetNotified, bool RecoveredNotified, string? FlagsFor = null);
 
 public abstract record Decision
 {
@@ -66,15 +71,43 @@ public static class AutoSwitch
                     // Any other provider (token, unknown) is never a target.
                 }
             }
-            return state.NoTargetNotified ? new Decision.NoAction() : new Decision.NoTarget(reason);
+            return state.NoTargetNotified && state.FlagsFor == current ? new Decision.NoAction() : new Decision.NoTarget(reason);
         }
 
-        if (!state.RecoveredNotified && state.SwitchedFrom is { } from && from != current
+        if (!(state.RecoveredNotified && state.FlagsFor == current) && state.SwitchedFrom is { } from && from != current
             && cfg.Profiles.TryGetValue(from, out var fromEntry) && Providers.Of(fromEntry) == Providers.Login
             && usage.TryGetValue(from, out var fr) && HasRoom(fr, now, margin))
             return new Decision.Recovered(from);
 
         return new Decision.NoAction();
+    }
+
+    /// <summary>
+    /// The state after a decision was acted on. Owns every flag transition: SwitchTo records LastSwitch/SwitchedFrom and
+    /// clears both flags (now scoped to the new default); NoTarget and Recovered set their flag; a changed default clears
+    /// both flags; NoTargetNotified clears once the default has a fresh reading back under the threshold, so the next
+    /// crossing notifies again. Callers save the result with <see cref="AutoSwitchStore.Save"/>.
+    /// </summary>
+    public static AutoSwitchState Next(AutoSwitchState s, Decision d, string? currentDefault,
+        IReadOnlyDictionary<string, UsageReading> usage, DateTimeOffset now, AutoSwitchSettings? settings)
+    {
+        if (d is Decision.SwitchTo to)
+            return new AutoSwitchState(now, currentDefault, false, false, to.Profile);
+
+        // Flags belong to the default they were raised for.
+        if (s.FlagsFor != currentDefault)
+            s = s with { NoTargetNotified = false, RecoveredNotified = false, FlagsFor = currentDefault };
+
+        switch (d)
+        {
+            case Decision.NoTarget: return s with { NoTargetNotified = true };
+            case Decision.Recovered: return s with { RecoveredNotified = true };
+        }
+
+        if (s.NoTargetNotified && settings != null && currentDefault != null
+            && usage.TryGetValue(currentDefault, out var cur) && IsFresh(cur, now) && Over(cur, settings.Threshold) == null)
+            s = s with { NoTargetNotified = false };
+        return s;
     }
 
     private static bool IsFresh(UsageReading r, DateTimeOffset now) => now - r.FetchedAt <= Freshness;
@@ -114,16 +147,44 @@ public sealed class AutoSwitchStore(ClauderooPaths paths)
         return state;
     }
 
-    public void Save(AutoSwitchState state) =>
+    /// <summary>A renamed profile keeps being the one we switched from.</summary>
+    public void Rename(string oldName, string newName) =>
+        Update(s => s.SwitchedFrom != oldName && s.FlagsFor != oldName ? s : s with
+        {
+            SwitchedFrom = s.SwitchedFrom == oldName ? newName : s.SwitchedFrom,
+            FlagsFor = s.FlagsFor == oldName ? newName : s.FlagsFor,
+        });
+
+    /// <summary>A removed profile can no longer recover; its flags go with it.</summary>
+    public void Remove(string name) =>
+        Update(s => s.SwitchedFrom != name && s.FlagsFor != name ? s : s with
+        {
+            SwitchedFrom = s.SwitchedFrom == name ? null : s.SwitchedFrom,
+            NoTargetNotified = s.FlagsFor == name ? false : s.NoTargetNotified,
+            RecoveredNotified = s.FlagsFor == name ? false : s.RecoveredNotified,
+            FlagsFor = s.FlagsFor == name ? null : s.FlagsFor,
+        });
+
+    private void Update(Func<AutoSwitchState, AutoSwitchState> change) =>
         Locked(() =>
         {
-            try
-            {
-                Directory.CreateDirectory(paths.Root);
-                AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(state, Json));
-            }
-            catch (UnauthorizedAccessException e) { throw new IOException(e.Message, e); }
+            var s = LoadOrThrow();
+            var n = change(s);
+            if (n != s) SaveUnlocked(n);
         });
+
+    public void Save(AutoSwitchState state) =>
+        Locked(() => SaveUnlocked(state));
+
+    private void SaveUnlocked(AutoSwitchState state)
+    {
+        try
+        {
+            Directory.CreateDirectory(paths.Root);
+            AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(state, Json));
+        }
+        catch (UnauthorizedAccessException e) { throw new IOException(e.Message, e); }
+    }
 
     private static void Locked(Action action)
     {
