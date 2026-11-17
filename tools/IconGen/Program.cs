@@ -272,18 +272,19 @@ static class Program
         _ => (int)Math.Round(14.0 * s / 32),
     };
 
-    // Symbol masks for the small badges, hand-drawn on the pixel grid (the 9 px × has 2 px arms).
+    // Symbol masks for the small badges, hand-drawn on the pixel grid: fully opaque, × with 2 px arms where the grid allows.
     static readonly Dictionary<(Badge, int), string[]> BadgeMasks = new()
     {
-        [(Badge.Error, 7)] =
+        [(Badge.Error, 8)] =
         [
-            ".......",
-            ".:...:.",
-            "..#.#..",
-            "...#...",
-            "..#.#..",
-            ".:...:.",
-            ".......",
+            "........",
+            "........",
+            "..#..#..",
+            "...##...",
+            "...##...",
+            "..#..#..",
+            "........",
+            "........",
         ],
         [(Badge.Error, 9)] =
         [
@@ -300,11 +301,11 @@ static class Program
         [(Badge.Running, 7)] =
         [
             ".......",
-            "..#+...",
-            "..##o..",
-            "..####.",
-            "..##o..",
-            "..#+...",
+            ".......",
+            "...#...",
+            "...##..",
+            "...#...",
+            ".......",
             ".......",
         ],
         [(Badge.Running, 9)] =
@@ -347,7 +348,8 @@ static class Program
     // running = rounded square with ▶. In the monochrome set the ring and the symbol are knocked out (transparent).
     static void DrawBadge(Bitmap bmp, int s, Badge kind, bool mono)
     {
-        var b = BadgeSize(s);
+        // At 16 px the error circle gets one extra pixel so its × can have 2 px arms and still leave red around it.
+        var b = BadgeSize(s) + (kind == Badge.Error && s == 16 ? 1 : 0);
         var x = s - b;
         var y = s - b;
         var ring = Math.Max(1f, (float)Math.Round(b / 14.0));
@@ -436,8 +438,14 @@ static class Program
                 });
                 break;
             case Badge.Running:
+                // Hard corners at the smallest size so the square can't read as a circle.
+                if (b <= 7)
+                {
+                    p.AddRectangle(new RectangleF(x + inset, y + inset, b - 2 * inset, b - 2 * inset));
+                    break;
+                }
                 p.Dispose();
-                return RoundedRect(new RectangleF(x + inset, y + inset, b - 2 * inset, b - 2 * inset), Math.Max(1f, b * 0.22f));
+                return RoundedRect(new RectangleF(x + inset, y + inset, b - 2 * inset, b - 2 * inset), Math.Max(1f, b * 0.18f));
             default:
                 p.AddEllipse(x + inset, y + inset, b - 2 * inset, b - 2 * inset);
                 break;

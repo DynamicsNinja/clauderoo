@@ -120,6 +120,7 @@ internal static class Glyphs
             return bmp;
         }
     }
+
     /// <summary>
     /// A square bitmap of <paramref name="logicalSize"/> × <paramref name="dpi"/>/96 pixels (16 logical at 144 DPI → 24 px)
     /// with the glyph drawn in <paramref name="color"/> (default <see cref="SystemColors.ControlText"/>). A new bitmap that
