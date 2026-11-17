@@ -513,6 +513,12 @@ sealed class TrayContext : ApplicationContext
         if (after == null) return new FixOutcome(true, NotRechecked);
         try
         {
+            // As FullSync does: a fix can change the config (and its home paths), so reload it and the watchers.
+            if (LoadConfig() is { } cfg)
+            {
+                try { EnsureWatchers(cfg); }
+                catch (Exception e) when (e is IOException or ArgumentException) { /* the next sync tries again */ }
+            }
             ApplySync(after);
         }
         catch (Exception)

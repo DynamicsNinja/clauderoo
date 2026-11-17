@@ -100,9 +100,9 @@ public class AutoSwitchTests
     public void Decide_TokenProfileNeverTarget()
     {
         // Even when listed explicitly, a token profile is not a target.
-        var cfg = Cfg("personal", true, ["tok"], ("personal", null), ("tok", "token"));
+        var cfg = Cfg("personal", true, ["tok"], ("personal", null), ("tok", Providers.Token));
         Assert.IsType<Decision.NoTarget>(AutoSwitch.Decide(cfg, U(R("personal", 95, 10), R("tok", 1, 1)), Now, Fresh));
-        var unlisted = Cfg("personal", true, null, ("personal", null), ("tok", "token"));
+        var unlisted = Cfg("personal", true, null, ("personal", null), ("tok", Providers.Token));
         Assert.IsType<Decision.NoTarget>(AutoSwitch.Decide(unlisted, U(R("personal", 95, 10)), Now, Fresh));
     }
 

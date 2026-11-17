@@ -73,7 +73,9 @@ public static class AutoSwitch
                     case Providers.Vertex or Providers.ApiKey:
                         if (explicitOrder) return new Decision.SwitchTo(name, reason); // no limits to check
                         break;
-                    // Any other provider (token, unknown) is never a target.
+                    case Providers.Token: // its usage isn't tracked: never a target, even when listed
+                    default:              // an unknown provider: never a target
+                        break;
                 }
             }
             return state.NoTargetNotified && state.FlagsFor == current ? new Decision.NoAction() : new Decision.NoTarget(reason);

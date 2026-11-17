@@ -232,6 +232,57 @@ public class CliAutoTests
         Assert.Null(pm.AutoSwitchState.Load().ManualHold);
     }
 
+    // Like Handler, but the first fetch (between the pre-sync and the switch) edits settings again, so the switch's own
+    // sync has a notice to print too.
+    private sealed class EditingHandler(int homePercent, int workPercent, Action onFirstCall) : HttpMessageHandler
+    {
+        private readonly Handler _inner = new(homePercent, workPercent);
+        private bool _done;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            if (!_done) { _done = true; onFirstCall(); }
+            return new HttpMessageInvoker(_inner).SendAsync(r, ct);
+        }
+    }
+
+    [Fact]
+    public void AutoOnce_Json_SyncNotice_StdoutIsPureJson()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        Run(pm, Idle, "auto", "on");
+        // Home's settings.json changes and work's copy was edited by hand: a sync replaces the copy, keeps a
+        // .bak-<timestamp> and prints a notice. Under --json those notices must go to stderr, not into the payload:
+        // the pre-sync's, and the one from the switch (SetDefault syncs).
+        var homeSettings = Path.Combine(pm.Config.HomeDir, "settings.json");
+        var workSettings = Path.Combine(pm.ConfigDirOf("work"), "settings.json");
+        File.WriteAllText(homeSettings, """{ "theme": "dark" }""");
+        File.WriteAllText(workSettings, """{ "edited": "by hand" }""");
+        var h = new EditingHandler(95, 10, () =>
+        {
+            File.WriteAllText(homeSettings, """{ "theme": "light" }""");
+            File.WriteAllText(workSettings, """{ "edited": "again" }""");
+        });
+
+        var o = new StringWriter();
+        var e = new StringWriter();
+        using (var client = new UsageClient(h, () => Now, "1.0"))
+        {
+            var code = Commands.Run(["auto", "--once", "--json"], o, e, pm, _ => 0, _ => 0, wtAvailable: true,
+                claudePath: "claude.cmd", hookCancel: _ => new Noop(), usage: client, clock: () => Now);
+            Assert.Equal(0, code);
+        }
+
+        Assert.DoesNotContain(".bak-", o.ToString());
+        Assert.True(e.ToString().Split(".bak-").Length - 1 >= 2, $"expected both notices on stderr:\n{e}");
+        using var doc = JsonDocument.Parse(o.ToString()); // stdout is the payload and nothing else
+        var root = doc.RootElement;
+        Assert.Equal(["schemaVersion", "action", "from", "to", "reason"], root.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(1, root.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal("switched", root.GetProperty("action").GetString());
+        Assert.Equal("work", pm.Config.DefaultProfile);
+    }
+
     [Fact]
     public void AutoOnce_Json_NoTarget()
     {

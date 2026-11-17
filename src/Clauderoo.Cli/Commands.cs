@@ -36,7 +36,7 @@ public static class Commands
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
-  --json                              list, status, maps, which, check and usage: print JSON for scripts
+  --json                              list, status, maps, which, check, usage and auto --once: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -752,7 +752,7 @@ public static class Commands
                 try { r = client.FetchAsync(name, pm.ConfigDirOf(name), entry, cts.Token).GetAwaiter().GetResult(); }
                 catch (OperationCanceledException) when (cts.IsCancellationRequested)
                 {
-                    if (json) WriteJsonError(err, "Cancelled.");
+                    if (json) JsonOut.Error(err, "Cancelled.");
                     else err.WriteLine("Cancelled.");
                     return 1;
                 }
@@ -773,7 +773,8 @@ public static class Commands
         switch (decision)
         {
             case Decision.SwitchTo sw:
-                Print(pm.SetDefault(sw.Profile), output, err);
+                // With --json stdout carries only the payload, so the switch's sync notices go to stderr.
+                Print(pm.SetDefault(sw.Profile), json ? err : output, err);
                 (action, to, reason, code) = ("switched", sw.Profile, sw.Reason, 0);
                 break;
             case Decision.NoTarget nt:
@@ -790,9 +791,8 @@ public static class Commands
         // Next owns the flag transitions, so it runs after every decision (it also resets the no-target notice).
         states.Save(AutoSwitch.Next(state, decision, from, usage, now, cfg.AutoSwitch));
 
-        if (json)
-            output.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, action, from, to, reason },
-                new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase, WriteIndented = true }));
+        // {schemaVersion:1, action, from, to, reason}: JsonOut.Write adds schemaVersion first.
+        if (json) JsonOut.Write(output, new { action, from, to, reason });
         else
         {
             output.WriteLine(reason);
@@ -801,9 +801,6 @@ public static class Commands
         }
         return code;
     }
-
-    private static void WriteJsonError(TextWriter err, string message) =>
-        err.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, error = message }));
 
     // The usage --json payload: {profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}.
     // JsonOut.Write adds schemaVersion first and writes the times as UTC "…Z".

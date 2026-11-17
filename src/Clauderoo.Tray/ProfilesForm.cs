@@ -590,6 +590,9 @@ sealed class ProfilesForm : Form
 
     private sealed record ListItem(ProfileInfo Info)
     {
+        // Settable so the default marker can be refreshed without reloading the list (see RefreshDefaultMarker).
+        public ProfileInfo Info { get; set; } = Info;
+
         // The accessible name of the row (the visible row is owner-drawn).
         public override string ToString() =>
             Info.Name + (Info.IsDefault ? ", default" : "") + (Info.IsHome ? ", home" : "") + " — " + TrayText.Describe(Info);
@@ -1547,8 +1550,10 @@ sealed class ProfilesForm : Form
     {
         var name = _undoName;
         if (name == null || !ConfirmLeave()) return;
-        ClearResult();
+        // The Undo link stays until the restore is written: when the gate is busy (or the restore fails) the error is
+        // shown and Undo can be clicked again.
         var report = Write(() => _pm.Restore(name));
+        ClearResult();
         Reload(name);
         ShowResult(report, $"Restored {name}.");
     }
@@ -1658,17 +1663,42 @@ sealed class ProfilesForm : Form
         if (_current == null || _currentIsDefault || !ConfirmLeave()) return;
         ClearResult();
         var name = _current;
+        _setDefault.Enabled = false; // no second click while the first one waits its turn in the gate
         try
         {
             var report = await RunWriteAsync(() => _pm.SetDefaultByUser(name));
             if (IsDisposed) return;
+            // Unsaved edits (made during the await) are kept: then only the default marker is refreshed.
             if (!IsDirty) Reload(name);
+            else RefreshDefaultMarker();
             ShowResult(report, $"Default is now {name}. New terminals will use it.");
         }
         catch (Exception e)
         {
             if (!IsDisposed) ShowError(e.Message);
         }
+        finally
+        {
+            if (!IsDisposed) UpdateActionStates();
+        }
+    }
+
+    /// <summary>
+    /// Re-reads which profile is the default and updates just that: the star in the list and the buttons that depend
+    /// on it. The editor, and any unsaved edits in it, are left alone.
+    /// </summary>
+    private void RefreshDefaultMarker()
+    {
+        string? def;
+        try { def = _pm.Config.DefaultProfile; }
+        catch (Exception) { return; } // shown elsewhere; the marker catches up on the next reload
+        foreach (ListItem item in _list.Items)
+            if (item.Info.IsDefault != (item.Info.Name == def))
+                item.Info = item.Info with { IsDefault = item.Info.Name == def };
+        _currentIsDefault = _current != null && _current == def;
+        if (_currentInfo != null) _currentInfo = _currentInfo with { IsDefault = _currentIsDefault };
+        _list.Invalidate();
+        UpdateActionStates();
     }
 
     /// <summary>
@@ -1770,10 +1800,11 @@ sealed class ProfilesForm : Form
     private void ShowError(string message) =>
         MessageBox.Show(this, message, "clauderoo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-    /// <summary>Re-reads profiles from disk unless the user has unsaved edits.</summary>
+    /// <summary>Re-reads profiles from disk unless the user has unsaved edits; then only the default marker.</summary>
     public void RefreshList()
     {
         if (!IsDirty) Reload(null);
+        else RefreshDefaultMarker();
     }
 
     /// <summary>Shows the window, restoring and bringing it to the front.</summary>
