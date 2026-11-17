@@ -49,7 +49,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
-- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, and run the setup check.
+- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, export and import them, and run the setup check.
 - **Safe by design.** Removed profiles are moved, never deleted. clauderoo never reads `.credentials.json` or prints tokens.
 
 ## Screenshots
@@ -177,7 +177,16 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `export <file> [names…] [--no-env] [--force]` | Save profile settings (provider, Vertex project and models, environment, owned items, start folder) and folder mappings to a file. Without names, every profile except home is exported. An existing file is only replaced with `--force` |
 | `import <file> [--force]` | Create the profiles in an export and add their folder mappings. Existing profiles are skipped and listed; `--force` updates them instead |
 
-Exports never contain API keys, tokens, logins or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`. This is the quickest way to onboard a colleague on a Vertex profile: export it, they import it, sign in to gcloud and run `cr check <name>`.
+Exports never contain API keys, tokens, logins or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+
+The manager window has the same two actions under the profile list. **Export…** asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. **Import…** opens a file, asks "Update profiles that already exist?", and then lists what was created, updated and skipped, which profiles kept their sign-in, and which need a key or token.
+
+**Onboarding a colleague on Vertex.**
+
+1. Export the Vertex profile (`cr export vertex.json work`, or **Export…** in the window).
+2. Your colleague imports it (`cr import vertex.json`, or **Import…**).
+3. They sign in to gcloud (**Sign in to Google…** in the window, or `gcloud auth application-default login`).
+4. They run **Check setup** (`cr check <name>`) to confirm everything works.
 
 ### Sharing
 

@@ -195,6 +195,25 @@ internal static class TrayText
     public static string UpdateBalloon(string version) =>
         $"clauderoo v{version} is available. Open the tray menu and choose Update to v{version}.";
 
+    /// <summary>The message after an import in the window: what was created, updated, skipped and what still needs a secret.</summary>
+    public static string ImportSummary(ImportResult r)
+    {
+        var lines = new List<string>();
+        void Add(string heading, IReadOnlyList<string>? items, Func<string, string>? map = null)
+        {
+            if (items is not { Count: > 0 }) return;
+            lines.Add(heading);
+            lines.AddRange(items.Select(i => "  " + (map?.Invoke(i) ?? i)));
+        }
+
+        Add("Created:", r.Created);
+        Add("Updated:", r.Updated);
+        Add("Skipped:", r.Skipped, s => s.Replace("(use --force to update it)", "(answer Yes to update existing profiles)"));
+        Add("Kept its sign-in:", r.KeptProvider);
+        Add("Needs a key or token:", r.NeedSecret);
+        return lines.Count == 0 ? "Nothing was imported." : string.Join(Environment.NewLine, lines);
+    }
+
     /// <summary>The balloon for a set of problems that has new ones.</summary>
     public static string ProblemBalloon(IReadOnlyList<Problem> current) =>
         Cut((current.Count == 1 ? current[0].Title + "." : $"{Problems(current.Count)} need attention.")
