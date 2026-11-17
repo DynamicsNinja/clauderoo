@@ -36,7 +36,7 @@ public static class WhichProfile
         "session" => $"{r.Profile} (started by clauderoo{(r.Isolated ? ", isolated" : "")})",
         "configDir" => $"{r.Profile} (CLAUDE_CONFIG_DIR{(r.Isolated ? ", isolated" : "")})",
         "default" => $"{r.Profile} (default for new terminals)",
-        _ => $"{r.Profile} (no CLAUDE_CONFIG_DIR)",
+        _ => $"{r.Profile} (home profile, no CLAUDE_CONFIG_DIR)",
     };
 
     private static (string Profile, bool Isolated)? Match(ClauderooConfig cfg, ClauderooPaths paths, string? dir)

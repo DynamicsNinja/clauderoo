@@ -53,6 +53,7 @@ public class WhichTests
         Assert.Equal("home", r.Source);
         Assert.Equal("personal", r.Profile);
         Assert.False(r.Isolated);
+        Assert.Equal("personal (home profile, no CLAUDE_CONFIG_DIR)", WhichProfile.Describe(r));
     }
 
     [Fact]
