@@ -30,15 +30,19 @@ public abstract record UsageResult
 
 /// <summary>
 /// Fetches usage limits for Claude-login profiles from the OAuth usage endpoint. It reads the token through
-/// <see cref="CredentialPeek"/>, never refreshes it, and scrubs it from every message it returns.
+/// <see cref="CredentialPeek"/>, never refreshes it, and scrubs it from every message it returns. Meant to be long-lived:
+/// build one and reuse it, and dispose it when done (the handler is not disposed).
 /// </summary>
-public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset> now, string version)
+public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset> now, string version) : IDisposable
 {
     public const string Endpoint = "https://api.anthropic.com/api/oauth/usage";
     private static readonly TimeSpan DefaultRetryAfter = TimeSpan.FromMinutes(10);
     private const int MaxBodyInMessage = 300;
 
     private readonly HttpClient _http = new(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(20) };
+
+    /// <summary>Disposes the HttpClient only; the handler belongs to the caller.</summary>
+    public void Dispose() => _http.Dispose();
 
     public async Task<UsageResult> FetchAsync(string profile, string configDir, ProfileEntry entry, CancellationToken ct)
     {
@@ -71,14 +75,14 @@ public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset>
                 return new UsageResult.Failed(Clean(
                     $"The usage service answered HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}", token));
 
-            var windows = Parse(body);
+            var windows = Parse(body, token);
             return windows == null
                 ? new UsageResult.Unavailable()
                 : new UsageResult.Ok(new UsageReading(profile, now(), peek.Plan, windows));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return new UsageResult.Failed("The usage service didn't answer in time."); }
-        catch (Exception e) when (e is HttpRequestException or IOException or InvalidOperationException)
+        catch (Exception e)
         {
             return new UsageResult.Failed(Clean($"Couldn't reach the usage service: {e.GetType().Name}: {e.Message}", token));
         }
@@ -99,7 +103,7 @@ public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset>
     }
 
     /// <summary>The windows in the body, or null when it isn't the expected JSON object. Unknown fields are ignored.</summary>
-    internal static List<UsageWindow>? Parse(string body)
+    internal static List<UsageWindow>? Parse(string body, string? token = null)
     {
         try
         {
@@ -117,7 +121,7 @@ public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset>
                     if (l.ValueKind != JsonValueKind.Object) continue;
                     if (!l.TryGetProperty("scope", out var scope) || scope.ValueKind != JsonValueKind.Object) continue;
                     if (!scope.TryGetProperty("model", out var model) || model.ValueKind != JsonValueKind.Object) continue;
-                    var name = Str(model, "display_name");
+                    var name = Str(model, "display_name") is { } dn ? Secrets.Scrub(dn, token) : null;
                     if (string.IsNullOrWhiteSpace(name)) continue;
                     if (Num(l, "percent") is not { } pct) continue;
                     list.Add(new UsageWindow(name, pct, Time(l, "resets_at")));
@@ -141,7 +145,7 @@ public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private static DateTimeOffset? Time(JsonElement obj, string name) =>
-        Str(obj, name) is { } s && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t)
+        Str(obj, name) is { } s && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var t)
             ? t
             : null;
 }

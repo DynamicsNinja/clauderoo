@@ -265,6 +265,38 @@ public class UsageTests
     }
 
     [Fact]
+    public async Task Fetch_HandlerThrowsArbitraryException_TokenScrubbed()
+    {
+        using var h = new TempHome();
+        var dir = WriteCreds(h, Now.AddHours(2));
+        var handler = new Handler(_ => throw new Exception($"boom with {Token}"));
+        var f = Assert.IsType<UsageResult.Failed>(await Client(handler).FetchAsync("personal", dir, Login, default));
+        Assert.DoesNotContain(Token, f.Message);
+    }
+
+    [Fact]
+    public async Task Fetch_ResetsAtNoOffset_IsUtc()
+    {
+        using var h = new TempHome();
+        var dir = WriteCreds(h, Now.AddHours(2));
+        var body = "{ \"five_hour\": { \"utilization\": 1, \"resets_at\": \"2026-11-17T15:40:00\" } }";
+        var r = await Client(new Handler(_ => Resp(HttpStatusCode.OK, body))).FetchAsync("personal", dir, Login, default);
+        var w = Assert.Single(Assert.IsType<UsageResult.Ok>(r).Reading.Windows);
+        Assert.Equal(new DateTimeOffset(2026, 11, 17, 15, 40, 0, TimeSpan.Zero), w.ResetsAt);
+        Assert.Equal(TimeSpan.Zero, w.ResetsAt!.Value.Offset);
+    }
+
+    [Fact]
+    public async Task Fetch_ModelDisplayNameWithToken_Scrubbed()
+    {
+        using var h = new TempHome();
+        var dir = WriteCreds(h, Now.AddHours(2));
+        var body = "{ \"limits\": [ { \"scope\": { \"model\": { \"display_name\": \"X " + Token + "\" } }, \"percent\": 5 } ] }";
+        var r = await Client(new Handler(_ => Resp(HttpStatusCode.OK, body))).FetchAsync("personal", dir, Login, default);
+        Assert.DoesNotContain(Token, Assert.Single(Assert.IsType<UsageResult.Ok>(r).Reading.Windows).Name);
+    }
+
+    [Fact]
     public async Task Fetch_DoesNotWriteCredentialsFile()
     {
         using var h = new TempHome();
