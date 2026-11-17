@@ -294,12 +294,29 @@ public static partial class ConversationIndex
             for (var i = n - 1; i >= 0; i--)
                 if (buf[i] == (byte)'\n')
                 {
-                    f.SetLength(start + i + 1);
+                    var keep = start + i + 1;
+                    // A last line without its newline is still whole when it parses: only a torn one is cut off.
+                    if (keep < f.Length && !TailIsWholeJson(f, keep)) f.SetLength(keep);
                     return;
                 }
             end = start;
         }
         // No newline at all: not a line being appended to a jsonl, so the copy is kept whole.
+    }
+
+    private static bool TailIsWholeJson(FileStream f, long from)
+    {
+        var len = f.Length - from;
+        if (len <= 0 || len > HeadBytes * 64) return false;
+        var tail = new byte[len];
+        f.Position = from;
+        f.ReadExactly(tail, 0, tail.Length);
+        try
+        {
+            using var doc = JsonDocument.Parse(tail);
+            return doc.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch (JsonException) { return false; }
     }
 
     // Recursive copy that skips every reparse point (junctions, symlinks), so it never leaves the source folder.

@@ -284,6 +284,24 @@ public class ConversationTests
     }
 
     [Fact]
+    public void Copy_UnterminatedCompleteLastLine_Kept()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var dir = Path.Combine(home.Paths.DefaultHomeDir, "projects", Slug);
+        Directory.CreateDirectory(dir);
+        var src = Path.Combine(dir, Id1 + ".jsonl");
+        // Both lines are whole JSON; the last one just has no newline after it.
+        var whole = UserLine(Id1, home.Dir, "first") + "\n" + UserLine(Id1, home.Dir, "second");
+        File.WriteAllText(src, whole);
+        File.SetLastWriteTimeUtc(src, Now.AddHours(-1));
+        var c = ConversationIndex.List(pm).Single();
+
+        Assert.Equal(CopyOutcome.Copied, ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.Equal(whole, File.ReadAllText(Path.Combine(home.Paths.ProfileDir("work"), "projects", Slug, Id1 + ".jsonl")));
+    }
+
+    [Fact]
     public void Copy_BackupNamesTaken_UsesSuffix()
     {
         var (pm, home, _) = Make(); using var _h = home;
