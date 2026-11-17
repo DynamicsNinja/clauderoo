@@ -13,8 +13,13 @@ public sealed class FakeMachineEnv : IMachineEnv
 public sealed class FakeIam : IIamTester
 {
     public (bool? allowed, string? error) Result { get; set; } = (true, null);
+    /// <summary>The token of each call, in call order.</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<string> Tokens { get; } = new();
     public Task<(bool? allowed, string? error)> HasPermissionAsync(string project, string token, string permission, CancellationToken ct)
-        => Task.FromResult(Result);
+    {
+        Tokens.Enqueue(token);
+        return Task.FromResult(Result);
+    }
 }
 
 public sealed class FakeClaude : IClaudeRunner
@@ -101,8 +106,9 @@ public class SetupCheckTests
         Assert.Equal("ERROR: not logged in", r[1].Detail);
         Assert.Equal(CheckStatus.Skipped, r[3].Status);
         Assert.Equal(CheckStatus.Ok, r[5].Status);
+        // The probe starts before the token is known (checks run in parallel), but its result is skipped.
         Assert.Equal(CheckStatus.Skipped, r[6].Status);
-        Assert.Empty(c.Claude.Calls);
+        Assert.Equal("Default model answers", r[6].Label);
     }
 
     [Fact]

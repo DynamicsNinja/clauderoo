@@ -106,12 +106,14 @@ public class CheckProgressTests
         var p = new ListProgress();
         var check = c.Pm.CheckSetupAsync("work", default, p);
         await Until(() => claude.Started == 3);
+        // The non-model checks finish while the probes run (sign-in and IAM in parallel with them).
+        await Until(() => p.Items.Count(IsFinal) == 6);
 
         // All three probes are announced as running before any answer.
         var running = p.Items.Where(i => i.Status == CheckStatus.Running).ToList();
         Assert.Equal(["model:sonnet", "model:opus", "model:haiku"], running.Select(i => i.Key));
         Assert.Equal([Sonnet, Opus, Haiku], running.Select(i => i.Label));
-        Assert.Equal(6, p.Items.Count(IsFinal)); // the non-model checks are already done
+        Assert.Equal(6, p.Items.Count(IsFinal));
 
         // Answer in reverse order; each result is reported as soon as its model answers.
         foreach (var (model, key) in new[] { (Haiku, "model:haiku"), (Opus, "model:opus"), (Sonnet, "model:sonnet") })
@@ -155,7 +157,8 @@ public class CheckProgressTests
         var last = p.Items.GroupBy(i => i.Key).Select(g => g.Last()).ToList();
         Assert.Equal(9, last.Count);
         Assert.All(last, i => Assert.True(IsFinal(i), $"{i.Key} left {i.Status}"));
-        Assert.Equal(r, p.Items.Where(IsFinal));
+        // One final item per row; reported in finish order (parallel), returned in plan order.
+        Assert.Equal(r.OrderBy(i => i.Key), p.Items.Where(IsFinal).OrderBy(i => i.Key));
     }
 
     [Fact]
@@ -197,7 +200,9 @@ public class CheckProgressTests
         Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10)));
 
         var lines = Out().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries).ToList();
-        var tail = lines.SkipWhile(l => !l.StartsWith("\u22EF")).ToList();
+        // The sign-in and IAM lines may land among the model lines (they run in parallel): look at the model lines.
+        var tail = lines.SkipWhile(l => !l.StartsWith("\u22EF"))
+            .Where(l => new[] { Sonnet, Opus, Haiku }.Any(m => l.Contains(m))).ToList();
         Assert.Equal(new[]
         {
             $"\u22EF testing {Sonnet}\u2026", $"\u22EF testing {Opus}\u2026", $"\u22EF testing {Haiku}\u2026",

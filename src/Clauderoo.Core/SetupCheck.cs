@@ -247,12 +247,14 @@ public partial class ProfileManager
 
     /// <param name="progress">
     /// First gets every planned row as <see cref="CheckStatus.Pending"/> (each with a stable <see cref="CheckItem.Key"/>),
-    /// then each result as soon as it is decided, under the same key. The model probes are reported
-    /// <see cref="CheckStatus.Running"/> together when they start, and their results in the order the models answer.
-    /// Every planned row gets a final item (skipped rows too) unless the check is cancelled.
-    /// Reports are made from the checking code itself, never concurrently.
+    /// then each result as soon as it is decided, under the same key. Everything runs at once: the instant checks are
+    /// reported straight away, the model probes are reported <see cref="CheckStatus.Running"/> together when they start
+    /// (before the sign-in token is known), and the sign-in, IAM and model results follow in the order they finish
+    /// (a model result never before the sign-in result). Every planned row gets exactly one final item (skipped rows
+    /// too) unless the check is cancelled. Reports come from one loop, never concurrently.
     /// </param>
-    /// <returns>The final items in config order (Sonnet, Opus, Haiku for the models).</returns>
+    /// <returns>The final items in plan order (gcloud, sign-in, GAC, IAM, leftovers, Claude, then the models in config
+    /// order: Sonnet, Opus, Haiku).</returns>
     public async Task<IReadOnlyList<CheckItem>> CheckSetupAsync(string name, CancellationToken ct = default,
         IProgress<CheckItem>? progress = null)
     {
@@ -262,18 +264,18 @@ public partial class ProfileManager
             throw new ClauderooException($"Profile '{name}' doesn't use Vertex AI.");
         var v = entry.Vertex;
         var dir = paths.ProfileDir(name);
-        var items = new ReportingList(progress);
 
         // (key, model id or null for the default model, what the probe is called while it runs)
         var models = new[] { ("sonnet", v.SonnetModel), ("opus", v.OpusModel), ("haiku", v.HaikuModel) }
             .Where(m => !string.IsNullOrWhiteSpace(m.Item2))
-            .Select(m => (Key: "model:" + m.Item1, Id: (string?)m.Item2!, Subject: m.Item2!))
-            .ToList();
+            .Select(m => (Key: "model:" + m.Item1, Id: m.Item2, Subject: m.Item2!))
+            .ToList<(string Key, string? Id, string Subject)>();
         if (models.Count == 0) models.Add(("model:default", null, "The default model"));
         string ModelLabel((string Key, string? Id, string Subject) m) => m.Id == null ? "Default model answers" : $"{m.Id} answers";
         var iamLabel = $"Vertex AI permission on {v.Project}";
         const string GcloudLabel = "gcloud installed", SignInLabel = "Google sign-in for Claude",
             LeftoverLabel = "No leftover provider variables", ClaudeLabel = "Claude Code installed";
+        const int GcloudRow = 0, SignInRow = 1, GacRow = 2, IamRow = 3, LeftoverRow = 4, ClaudeRow = 5, FirstModelRow = 6;
 
         // The plan: every row the check will fill in, so a window can show them all straight away.
         foreach (var (key, label) in new[]
@@ -283,124 +285,175 @@ public partial class ProfileManager
                  }.Concat(models.Select(m => (m.Key, m.Subject))))
             progress?.Report(new CheckItem(CheckStatus.Pending, label, null) { Key = key });
 
+        // One slot per planned row, so the returned list keeps the plan order whatever order the results come in.
+        var rows = new CheckItem?[FirstModelRow + models.Count];
+        void Put(int row, CheckItem item)
+        {
+            rows[row] = item;
+            progress?.Report(item);
+        }
+        IReadOnlyList<CheckItem> Result() => rows.Select(r => r!).ToList();
         void SkipModels()
         {
-            foreach (var m in models) items.Add(new(CheckStatus.Skipped, ModelLabel(m), null) { Key = m.Key });
+            for (var i = 0; i < models.Count; i++)
+                Put(FirstModelRow + i, new(CheckStatus.Skipped, ModelLabel(models[i]), null) { Key = models[i].Key });
         }
 
         if (gcloud.Find() == null)
         {
-            items.Add(new(CheckStatus.Fail, GcloudLabel, "Install it: winget install Google.CloudSDK, then open a new terminal.") { Key = "gcloud" });
-            foreach (var (key, l) in new[] { ("signin", SignInLabel), ("gac", Gac), ("iam", iamLabel), ("leftovers", LeftoverLabel), ("claude", ClaudeLabel) })
-                items.Add(new(CheckStatus.Skipped, l, null) { Key = key });
+            Put(GcloudRow, new(CheckStatus.Fail, GcloudLabel, "Install it: winget install Google.CloudSDK, then open a new terminal.") { Key = "gcloud" });
+            foreach (var (row, key, l) in new[] { (SignInRow, "signin", SignInLabel), (GacRow, "gac", Gac), (IamRow, "iam", iamLabel),
+                         (LeftoverRow, "leftovers", LeftoverLabel), (ClaudeRow, "claude", ClaudeLabel) })
+                Put(row, new(CheckStatus.Skipped, l, null) { Key = key });
             SkipModels();
-            return items;
+            return Result();
         }
-        items.Add(new(CheckStatus.Ok, GcloudLabel, null) { Key = "gcloud" });
+        Put(GcloudRow, new(CheckStatus.Ok, GcloudLabel, null) { Key = "gcloud" });
 
         ct.ThrowIfCancellationRequested();
-        string? token = null;
-        (int exit, string stdout, string stderr) gr;
-        try
-        {
-            gr = await Task.Run(() => gcloud.Run("auth", "application-default", "print-access-token"), ct)
-                .WaitAsync(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
-        }
-        catch (TimeoutException) { gr = (-1, "", "gcloud timed out"); }
-        var (exit, stdout, stderr) = gr;
-        if (exit == 0 && !string.IsNullOrWhiteSpace(stdout))
-        {
-            token = stdout.Trim();
-            items.Add(new(CheckStatus.Ok, SignInLabel, null) { Key = "signin" });
-        }
-        else
-        {
-            var line = Scrub(LineOf(stderr, first: true), stdout.Trim());
-            items.Add(new(CheckStatus.Fail, SignInLabel,
-                "Run: gcloud auth application-default login (tick every box on the consent page).",
-                line.Length > 0 ? line : null) { Key = "signin" });
-        }
+        // The sign-in token (a few seconds of gcloud) starts first; everything else runs while it is fetched.
+        var signIn = SignInAsync();
 
-        items.Add(CheckGac() with { Key = "gac" });
-
-        if (token == null)
-            items.Add(new(CheckStatus.Skipped, iamLabel, null) { Key = "iam" });
-        else
-        {
-            var (allowed, error) = await iam.HasPermissionAsync(v.Project, token, "aiplatform.endpoints.predict", ct).ConfigureAwait(false);
-            if (allowed == true) items.Add(new(CheckStatus.Ok, iamLabel, null) { Key = "iam" });
-            else if (allowed == false)
-                items.Add(new(CheckStatus.Fail, iamLabel,
-                    $"Ask your GCP admin for Vertex AI User (roles/aiplatform.user) on {v.Project}.") { Key = "iam" });
-            else
-            {
-                var raw = Scrub(error ?? "", token);
-                items.Add(new(CheckStatus.Warn, "Couldn't check the Vertex AI permission", null,
-                    raw.Length > 0 ? raw : null) { Key = "iam" });
-            }
-        }
+        Put(GacRow, CheckGac() with { Key = "gac" });
 
         var leftovers = new List<string>();
         foreach (var (scope, vars) in new[] { ("User", machineEnv.User()), ("Machine", machineEnv.Machine()) })
             foreach (var k in vars.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
                 if (IsLeftoverProviderVar(k))
                     leftovers.Add($"{k} ({scope})");
-        items.Add((leftovers.Count == 0
+        Put(LeftoverRow, (leftovers.Count == 0
             ? new CheckItem(CheckStatus.Ok, LeftoverLabel, null)
             : new CheckItem(CheckStatus.Warn, $"Leftover variables: {string.Join(", ", leftovers)}",
                 "Remove them in Windows settings › Environment variables, then restart terminals.")) with { Key = "leftovers" });
 
+        // The probes get their own token, so a failed sign-in can stop them without cancelling the whole check.
+        using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var probes = new List<Task<(int exit, string stdout, string stderr)>>();
         var claude = claudeRunner.Find();
         if (claude == null)
         {
-            items.Add(new(CheckStatus.Fail, ClaudeLabel, "Install Claude Code, then open a new terminal.") { Key = "claude" });
+            Put(ClaudeRow, new(CheckStatus.Fail, ClaudeLabel, "Install Claude Code, then open a new terminal.") { Key = "claude" });
             SkipModels();
-            return items;
         }
-        items.Add(new(CheckStatus.Ok, ClaudeLabel, null) { Key = "claude" });
-        if (token == null)
+        else
         {
-            SkipModels();
-            return items;
-        }
-
-        ct.ThrowIfCancellationRequested();
-        foreach (var m in models)
-            progress?.Report(new CheckItem(CheckStatus.Running, m.Subject, null) { Key = m.Key });
-        // Each probe is a full Claude Code start-up (~10 s), so all models are tested at the same time.
-        // No MCP servers from the profile and no saved session: the probes leave nothing behind.
-        var probes = models.Select(m =>
-        {
-            var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
-            if (m.Id != null) { args.Add("--model"); args.Add(m.Id); }
-            return claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), ct);
-        }).ToList();
-
-        // Each result is reported as soon as its model answers; the returned list keeps the configured order.
-        var results = new CheckItem[models.Count];
-        var waiting = probes.ToList();
-        while (waiting.Count > 0)
-        {
-            var done = await Task.WhenAny(waiting).ConfigureAwait(false);
-            waiting.Remove(done);
-            ct.ThrowIfCancellationRequested(); // Ctrl+C / window closed: report nothing more (the runner kills every probe)
-            var i = probes.IndexOf(done);
-            var m = models[i];
-            var (mx, mo, me) = await done.ConfigureAwait(false);
-            if (mx == 0 && mo.Contains("OK"))
-                results[i] = new(CheckStatus.Ok, ModelLabel(m), null) { Key = m.Key };
-            else
+            Put(ClaudeRow, new(CheckStatus.Ok, ClaudeLabel, null) { Key = "claude" });
+            ct.ThrowIfCancellationRequested();
+            foreach (var m in models)
+                progress?.Report(new CheckItem(CheckStatus.Running, m.Subject, null) { Key = m.Key });
+            // Each probe is a full Claude Code start-up (~10 s), so all models are tested at the same time, without
+            // waiting for the token. No MCP servers from the profile and no saved session: the probes leave nothing behind.
+            foreach (var m in models)
             {
-                var last = Scrub(LineOf(mo + "\n" + me, first: false), token);
-                if (last.Length > 200) last = last[..200];
-                results[i] = new(CheckStatus.Fail, ModelFailLabel(m.Id ?? "The default model", v.Region, mx, last),
-                    $"Check the model is enabled in Model Garden and served in region {v.Region}.",
-                    last.Length > 0 ? last : null) { Key = m.Key };
+                var args = new List<string> { "-p", "Reply with exactly: OK", "--strict-mcp-config", "--no-session-persistence" };
+                if (m.Id != null) { args.Add("--model"); args.Add(m.Id); }
+                probes.Add(claudeRunner.RunAsync(claude, args, dir, TimeSpan.FromSeconds(60), probeCts.Token));
             }
-            progress?.Report(results[i]);
         }
-        items.AddRange(results); // already reported one by one, as each model answered
-        return items;
+
+        // The one reporting loop: each result is reported as soon as it is known, never two at a time.
+        string? token = null;
+        bool signInKnown = false, signInFailed = false;
+        Task<(bool? allowed, string? error)>? iamTask = null;
+        var held = new List<int>(); // probes that finished before the token was known (their output is scrubbed with it)
+        var waiting = new List<Task> { signIn };
+        waiting.AddRange(probes);
+        try
+        {
+            while (waiting.Count > 0)
+            {
+                var done = await Task.WhenAny(waiting).ConfigureAwait(false);
+                waiting.Remove(done);
+                ct.ThrowIfCancellationRequested(); // Ctrl+C / window closed: report nothing more (the runner kills every probe)
+
+                if (done == signIn)
+                {
+                    var (exit, stdout, stderr) = await signIn.ConfigureAwait(false);
+                    signInKnown = true;
+                    if (exit == 0 && !string.IsNullOrWhiteSpace(stdout))
+                    {
+                        token = stdout.Trim();
+                        Put(SignInRow, new(CheckStatus.Ok, SignInLabel, null) { Key = "signin" });
+                        iamTask = iam.HasPermissionAsync(v.Project, token, "aiplatform.endpoints.predict", ct);
+                        waiting.Add(iamTask);
+                        foreach (var i in held) Put(FirstModelRow + i, ModelResult(i));
+                        held.Clear();
+                    }
+                    else
+                    {
+                        var line = Scrub(LineOf(stderr, first: true), stdout.Trim());
+                        Put(SignInRow, new(CheckStatus.Fail, SignInLabel,
+                            "Run: gcloud auth application-default login (tick every box on the consent page).",
+                            line.Length > 0 ? line : null) { Key = "signin" });
+                        Put(IamRow, new(CheckStatus.Skipped, iamLabel, null) { Key = "iam" });
+                        signInFailed = true;
+                        if (probes.Count > 0)
+                        {
+                            // Without a sign-in no model can answer: stop the probes and skip every model row. A probe
+                            // that already finished (held) is skipped too, since its result means nothing without a
+                            // sign-in. The still-running ones stay in `waiting`, so we return only once they have stopped.
+                            probeCts.Cancel();
+                            held.Clear();
+                            SkipModels();
+                        }
+                    }
+                }
+                else if (done == iamTask)
+                    Put(IamRow, IamResult(await iamTask.ConfigureAwait(false), token!));
+                else
+                {
+                    var i = probes.IndexOf((Task<(int, string, string)>)done);
+                    if (signInFailed)
+                    {
+                        // Already reported skipped; the runner rethrows our cancellation, which is expected here.
+                        try { await done.ConfigureAwait(false); }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+                    }
+                    else if (!signInKnown) held.Add(i);
+                    else Put(FirstModelRow + i, ModelResult(i));
+                }
+            }
+        }
+        finally
+        {
+            // Leaving early (cancelled or an error): stop any probe still running before its token source goes away.
+            if (waiting.Count > 0) probeCts.Cancel();
+        }
+        return Result();
+
+        async Task<(int exit, string stdout, string stderr)> SignInAsync()
+        {
+            try
+            {
+                return await Task.Run(() => gcloud.Run("auth", "application-default", "print-access-token"), ct)
+                    .WaitAsync(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+            }
+            catch (TimeoutException) { return (-1, "", "gcloud timed out"); }
+        }
+
+        CheckItem IamResult((bool? allowed, string? error) r, string tok)
+        {
+            if (r.allowed == true) return new(CheckStatus.Ok, iamLabel, null) { Key = "iam" };
+            if (r.allowed == false)
+                return new(CheckStatus.Fail, iamLabel,
+                    $"Ask your GCP admin for Vertex AI User (roles/aiplatform.user) on {v.Project}.") { Key = "iam" };
+            var raw = Scrub(r.error ?? "", tok);
+            return new(CheckStatus.Warn, "Couldn't check the Vertex AI permission", null, raw.Length > 0 ? raw : null) { Key = "iam" };
+        }
+
+        // Only called once the token is known, so the output can be scrubbed of it.
+        CheckItem ModelResult(int i)
+        {
+            var m = models[i];
+            var (mx, mo, me) = probes[i].GetAwaiter().GetResult(); // already finished
+            if (mx == 0 && mo.Contains("OK"))
+                return new(CheckStatus.Ok, ModelLabel(m), null) { Key = m.Key };
+            var last = Scrub(LineOf(mo + "\n" + me, first: false), token);
+            if (last.Length > 200) last = last[..200];
+            return new(CheckStatus.Fail, ModelFailLabel(m.Id ?? "The default model", v.Region, mx, last),
+                $"Check the model is enabled in Model Garden and served in region {v.Region}.",
+                last.Length > 0 ? last : null) { Key = m.Key };
+        }
     }
 
     // A plain label for a failed model probe; the raw error goes to CheckItem.Detail.
@@ -440,16 +493,6 @@ public partial class ProfileManager
             { value = kv.Value; return true; }
         value = "";
         return false;
-    }
-
-    // Collects the checklist and reports each item to the caller's progress as it is added.
-    private sealed class ReportingList(IProgress<CheckItem>? progress) : List<CheckItem>
-    {
-        public new void Add(CheckItem item)
-        {
-            base.Add(item);
-            progress?.Report(item);
-        }
     }
 
     private static string Scrub(string s, string? token) =>

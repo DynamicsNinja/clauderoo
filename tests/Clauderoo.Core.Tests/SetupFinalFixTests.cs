@@ -212,7 +212,8 @@ public class SetupFinalFixTests
         c.Env.UserVars["ANTHROPIC_MODEL"] = "x";
         var p = new ListProgress();
         var r = await c.Pm.CheckSetupAsync("work", default, p);
-        Assert.Equal(r, p.Results);
+        // Results arrive in finish order (checks run in parallel); the same items, one per row.
+        Assert.Equal(r.OrderBy(i => i.Key), p.Results.OrderBy(i => i.Key));
         Assert.Equal(9, p.Results.Count);
         Assert.Equal(9 + 9 + 3, p.Items.Count); // plus 9 planned rows and 3 "testing" notices
     }
@@ -230,7 +231,8 @@ public class SetupFinalFixTests
         c2.Claude.Path = null;
         var p2 = new ListProgress();
         var r2 = await c2.Pm.CheckSetupAsync("work", default, p2);
-        Assert.Equal(r2, p2.Results);
+        // The sign-in and IAM results come after the instant checks now (they run in parallel): compare per row.
+        Assert.Equal(r2.OrderBy(i => i.Key), p2.Results.OrderBy(i => i.Key));
     }
 
     [Fact]
@@ -245,7 +247,10 @@ public class SetupFinalFixTests
             return (0, "OK", "");
         };
         await c.Pm.CheckSetupAsync("work", default, p);
-        Assert.Equal(6, seenAtFirstProbe); // the six checks before the models were already reported
+        // The instant checks (gcloud, GAC, leftovers, Claude) were already reported; the probes don't wait for the
+        // sign-in token, so sign-in and IAM come later.
+        Assert.Equal(4, seenAtFirstProbe);
+        Assert.Equal(["gcloud", "gac", "leftovers", "claude"], p.Results.Take(4).Select(i => i.Key));
     }
 
     // ---------- 8. shared formatter ----------

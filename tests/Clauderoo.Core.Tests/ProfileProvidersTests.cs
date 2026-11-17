@@ -7,11 +7,14 @@ public sealed class FakeGcloud : IGcloud
     public string? Path { get; set; } = @"C:\fake\gcloud.cmd";
     public (int exit, string stdout, string stderr) Result { get; set; } = (0, "ya29.SECRET-TOKEN\n", "");
     public List<string[]> Calls { get; } = [];
+    /// <summary>Runs (on the caller's thread) before <see cref="Result"/> is returned, e.g. to block the token call
+    /// until a test condition is met. The setup check calls gcloud off the checking thread.</summary>
+    public Func<(int exit, string stdout, string stderr)>? Responder { get; set; }
     public string? Find() => Path;
     public (int exit, string stdout, string stderr) Run(params string[] args)
     {
-        Calls.Add(args);
-        return Result;
+        lock (Calls) Calls.Add(args);
+        return Responder?.Invoke() ?? Result;
     }
 }
 
