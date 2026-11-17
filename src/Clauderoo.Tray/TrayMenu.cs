@@ -37,6 +37,7 @@ internal sealed class TrayMenuActions
     public Action ShowProblems { get; init; } = () => { };
     public Action ShowProfiles { get; init; } = () => { };
     public Action NewProfile { get; init; } = () => { };
+    public Action ContinueConversation { get; init; } = () => { };
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action UpdateNow { get; init; } = () => { };
@@ -110,6 +111,9 @@ internal static class TrayMenu
         items.Add(new ToolStripSeparator());
         items.Add(Item("&Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
         items.Add(Item("&New profile…", Neutral(Glyph.Add, dpi), a.NewProfile));
+        var resume = Item("Continue a &conversation…", Neutral(Glyph.Play, dpi), a.ContinueConversation);
+        resume.ToolTipText = "Pick a past conversation and carry on with it under another profile.";
+        items.Add(resume);
 
         var advanced = new ToolStripMenuItem("&Advanced");
         PrepareDropDown(advanced, dpi);

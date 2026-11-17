@@ -36,6 +36,7 @@ sealed class TrayContext : ApplicationContext
     private string? _watchedKey;
     private ProfilesForm? _profilesForm;
     private ProblemsForm? _problemsForm;
+    private ConversationsForm? _conversationsForm;
 
     // Current state: kept between syncs, shown by the icon, tooltip, menu and Problems window.
     private IReadOnlyList<Problem> _problems = [];
@@ -330,6 +331,7 @@ sealed class TrayContext : ApplicationContext
             ShowProblems = () => Guard(ShowProblems),
             ShowProfiles = () => Guard(ShowProfiles),
             NewProfile = () => _ = NewProfileAsync(),
+            ContinueConversation = () => Guard(ShowConversations),
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
@@ -436,6 +438,7 @@ sealed class TrayContext : ApplicationContext
     private void Exit()
     {
         _problemsForm?.Close();
+        _conversationsForm?.Close();
         if (_profilesForm is { IsDisposed: false } profiles)
         {
             profiles.Close();
@@ -473,6 +476,51 @@ sealed class TrayContext : ApplicationContext
         };
         _profilesForm = form;
         form.ShowAndActivate(reload: false);
+    }
+
+    // Single picker window, like Profiles: opened on first use, brought to the front afterwards.
+    private void ShowConversations()
+    {
+        if (_conversationsForm is { IsDisposed: false } open)
+        {
+            _ = open.ShowAndActivate();
+            return;
+        }
+        if (RequireConfig() == null) return;
+        var form = new ConversationsForm(
+            // Reads conversation files: on a worker thread, the result comes back to the UI thread.
+            () => Task.Run(() => ConversationIndex.List(_pm)),
+            () => _pm.List(),
+            ContinueConversation);
+        form.FormClosed += (_, _) => { if (_conversationsForm == form) _conversationsForm = null; };
+        _conversationsForm = form;
+        _ = form.ShowAndActivate();
+    }
+
+    // Copies the conversation into the chosen profile (worker thread), then opens a new tab running
+    // `clauderoo run <profile> -- --resume <id>` in the conversation's own folder; that tab injects a token profile's
+    // token itself. Errors come back as plain words for the picker's status line.
+    private async Task<CopyOutcome> ContinueConversation(Conversation c, ContinueTarget target)
+    {
+        try
+        {
+            if (RequireConfig() is not { } cfg) throw new ClauderooException("clauderoo's settings can't be read right now.");
+            // The folder check touches the disk (it may be a slow network share), so it runs with the copy.
+            var outcome = await Task.Run(() =>
+            {
+                if (ConversationPicker.Refusal(c, Directory.Exists) is { } refusal) throw new ClauderooException(refusal);
+                return ConversationIndex.CopyTo(_pm, c, target.Profile, target.Isolated);
+            }); // back on the UI thread
+            using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, target.Profile, c.Cwd!,
+                ["--resume", c.Id], Launcher.WtAvailable(), isolated: target.Isolated));
+            return outcome;
+        }
+        catch (Exception e)
+        {
+            var (text, unknown) = TrayText.PlainError(e);
+            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+            throw new ClauderooException(text);
+        }
     }
 
     private void ShowProblems()
@@ -898,6 +946,7 @@ sealed class TrayContext : ApplicationContext
             DisposeWatchers();
             _profilesForm?.Dispose();
             _problemsForm?.Dispose();
+            _conversationsForm?.Dispose();
             _manageSignal.Dispose();
             _poller.Dispose();      // stops the loop first, then the client it uses
             _usageClient.Dispose();

@@ -42,7 +42,7 @@ public partial class ProfileManager
 
     private const string EnvVar = "CLAUDE_CONFIG_DIR";
 
-    private string Stamp => now().ToString("yyyyMMdd-HHmmss");
+    internal string Stamp => now().ToString("yyyyMMdd-HHmmss");
 
     public ClauderooPaths Paths => paths;
     public IEnvStore Env => env;

@@ -18,6 +18,9 @@ public static class Commands
   unmap [dir]                         remove a folder mapping
   maps                                list folder mappings
   which                               show which profile this terminal is using
+  sessions [profile]                  list conversations across profiles, newest first
+  resume <id> --as <profile> [--isolated] [--tab] [-- args]
+                                      copy a conversation into <profile> and continue it there
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -39,7 +42,7 @@ public static class Commands
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
-  --json                              list, status, maps, which, check, usage and auto --once: print JSON for scripts
+  --json                              list, status, maps, which, check, usage, sessions and auto --once: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -84,7 +87,7 @@ public static class Commands
     }
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "auto"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -104,7 +107,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -246,6 +249,10 @@ public static class Commands
                 else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
+            case "sessions":
+                return SessionsCmd(pos, output, pm, json);
+            case "resume":
+                return ResumeCmd(pos, claudeArgs, output, pm, startNewWindow, runInPlace, wtAvailable, claudePath);
             case "export":
             {
                 var force = pos.Remove("--force");
@@ -510,6 +517,90 @@ public static class Commands
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
+        return 0;
+    }
+
+    // The first prompt is the user's own text: it goes to this terminal (or the JSON payload) and nowhere else.
+    private static int SessionsCmd(List<string> pos, TextWriter output, ProfileManager pm, bool json)
+    {
+        if (pos.Count > 1) throw new ClauderooException("Usage: clauderoo sessions [profile] [--json]");
+        var all = ConversationIndex.List(pm, pos.Count == 1 ? pos[0] : null);
+        if (json)
+        {
+            // FilePath and any message content beyond the first prompt are never included.
+            JsonOut.Write(output, new
+            {
+                Conversations = all.Select(c => new { c.Id, c.Profile, c.Isolated, Folder = c.Cwd, c.When, c.FirstPrompt }),
+            });
+            return 0;
+        }
+        if (all.Count == 0)
+        {
+            output.WriteLine("No conversations found.");
+            return 0;
+        }
+        string Who(Conversation c) => c.Isolated ? $"{c.Profile} (isolated)" : c.Profile;
+        var whoW = all.Max(c => Who(c).Length);
+        var folderW = Math.Min(60, all.Max(c => (c.Cwd ?? "?").Length));
+        foreach (var c in all)
+            output.WriteLine(string.Join("  ",
+                ConversationIndex.Short(c.Id).PadRight(8),
+                Who(c).PadRight(whoW),
+                c.When.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                (c.Cwd ?? "?").PadRight(folderW),
+                c.FirstPrompt ?? "").TrimEnd());
+        return 0;
+    }
+
+    private static int ResumeCmd(List<string> pos, List<string> claudeArgs, TextWriter output, ProfileManager pm,
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath)
+    {
+        const string usage = "Usage: clauderoo resume <id> --as <profile> [--isolated] [--tab] [-- args]";
+        var tab = pos.Remove("--tab");
+        var isolated = pos.Remove("--isolated");
+        var asAt = pos.IndexOf("--as");
+        if (asAt < 0 || asAt + 1 >= pos.Count) throw new ClauderooException(usage);
+        var profile = pos[asAt + 1];
+        pos.RemoveRange(asAt, 2);
+        if (pos.Count != 1) throw new ClauderooException(usage);
+
+        var cfg = pm.Config;
+        pm.Get(profile); // unknown profile -> error before anything else
+        var c = ConversationIndex.Find(ConversationIndex.List(pm), pos[0]);
+        if (string.IsNullOrEmpty(c.Cwd))
+            throw new ClauderooException(
+                $"Conversation {ConversationIndex.Short(c.Id)} doesn't record its folder; Claude can only resume a conversation from its own folder.");
+        if (!Directory.Exists(c.Cwd))
+            throw new ClauderooException(
+                $"The folder {c.Cwd} no longer exists; Claude can only resume a conversation from its own folder.");
+
+        List<string> args = ["--resume", c.Id, .. claudeArgs];
+        // Built before the copy, so a missing token or claude fails before anything is written.
+        var spec = tab ? null
+            : pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, c.Cwd, args, claudePath, isolated), profile);
+        var where = isolated ? $"{profile} (isolated)" : profile;
+        var shortId = ConversationIndex.Short(c.Id);
+        switch (ConversationIndex.CopyTo(pm, c, profile, isolated))
+        {
+            case CopyOutcome.Copied:
+                output.WriteLine($"Copied conversation {shortId} from {c.Profile} to {where}.");
+                break;
+            case CopyOutcome.BackedUpAndCopied:
+                output.WriteLine($"Copied conversation {shortId} from {c.Profile} to {where}; the older copy there was kept as {c.Id}.jsonl.bak-*.");
+                break;
+            default:
+                output.WriteLine($"{where} already has an up-to-date copy of conversation {shortId}.");
+                break;
+        }
+
+        if (spec != null)
+        {
+            if (isolated && pm.PrepareIsolated(profile).FirstRun)
+                output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
+            return runInPlace(spec);
+        }
+        // As with start --tab: the tab runs `run <profile>`, which injects any token itself.
+        startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, c.Cwd, args, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
         return 0;
     }
 
