@@ -8,6 +8,9 @@ public partial class ProfileManager
     /// <summary>Test hook: runs after the config is saved and the env var updated, before the re-sync.</summary>
     internal Action? AfterRenameCommit { get; set; }
 
+    /// <summary>Test hook: runs in Remove after the profile folder moved, before the isolated folder moves.</summary>
+    internal Action? BeforeIsolatedMove { get; set; }
+
     /// <summary>
     /// Renames a profile in place: folder, config key, default pointer, User CLAUDE_CONFIG_DIR and
     /// apiKeyHelper. All validation happens before any change; a failure after the folder move rolls back.
@@ -27,6 +30,12 @@ public partial class ProfileManager
         if (!entry.Home)
             RefuseIfPluginRecordsReference(cfg, oldName, oldDir, force, $"rename {oldName} {newName}");
 
+        var oldIso = paths.IsolatedDir(oldName);
+        var newIso = paths.IsolatedDir(newName);
+        // Refused even when the old profile has no isolated folder: a stray one would silently become the new profile's.
+        if (Directory.Exists(newIso))
+            throw new ClauderooException($"An isolated folder for '{newName}' already exists: {newIso}");
+
         var original = Config; // untouched copy for rollback
         var oldEnv = env.GetUser(EnvVar);
 
@@ -43,8 +52,19 @@ public partial class ProfileManager
             moved = true;
         }
 
+        var isoMoved = false;
         try
         {
+            if (Directory.Exists(oldIso))
+            {
+                try { Directory.Move(oldIso, newIso); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    throw new ClauderooException(
+                        $"Couldn't rename {oldName}'s isolated folder — close {oldName}'s Claude sessions and try again.");
+                }
+                isoMoved = true;
+            }
             BeforeRenameCommit?.Invoke();
 
             // Rebuild the map so the entry keeps its position.
@@ -52,6 +72,8 @@ public partial class ProfileManager
             foreach (var kv in cfg.Profiles) profiles[kv.Key == oldName ? newName : kv.Key] = kv.Value;
             cfg.Profiles = profiles;
             if (cfg.DefaultProfile == oldName) cfg.DefaultProfile = newName;
+            foreach (var k in cfg.Folders.Keys.ToList())
+                if (cfg.Folders[k] == oldName) cfg.Folders[k] = newName;
             ConfigStore.Save(paths, cfg);
 
             if (!entry.Home && !string.IsNullOrEmpty(oldEnv) && Norm(oldEnv) == Norm(oldDir))
@@ -70,6 +92,7 @@ public partial class ProfileManager
         catch
         {
             // Best-effort rollback; the original exception is what the caller needs to see.
+            try { if (isoMoved) Directory.Move(newIso, oldIso); } catch { }
             try { if (moved) Directory.Move(newDir, oldDir); } catch { }
             try { ConfigStore.Save(paths, original); } catch { }
             try { if (envChanged) env.SetUser(EnvVar, oldEnv); } catch { }

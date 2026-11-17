@@ -10,8 +10,14 @@ public static class Commands
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
   add <name>                          create a new profile
   list                                list profiles
-  start <name> [dir] [-- args]        run Claude for a profile in this terminal (run = same)
-  start <name> [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
+  start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
+                                      no name: use the folder's mapping, else the default
+  start [name] [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
+  start [name] [dir] --isolated       run with a separate config folder: no shared plugins, skills, hooks or MCP servers
+  map <profile> [dir]                 use <profile> for dir (default: here) and everything below it
+  unmap [dir]                         remove a folder mapping
+  maps                                list folder mappings
+  which                               show which profile this terminal is using
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -22,15 +28,20 @@ public static class Commands
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
                                       use Claude on Google Vertex AI
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
+  provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   status                              show the default profile and any problems
+  --json                              list, status, maps, which, check and usage: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
   install                             copy clauderoo to %LOCALAPPDATA%\clauderoo and add it to PATH
+  version | --version                 print the clauderoo version
+  upgrade [--check]                   install the latest GitHub release (--check only reports)
+  uninstall [--yes]                   remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
   help                                show this help";
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
@@ -39,38 +50,44 @@ public static class Commands
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
-        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null,
+        Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null,
         UsageClient? usage = null)
     {
-        var json = WantsJson(args);
         try
         {
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, readSecret ?? ReadSecretFromConsole,
-                hookCancel ?? HookConsoleCancel, usage);
+            Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
+            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
+                hookCancel ?? HookConsoleCancel, hooks, usage);
         }
         catch (SessionsRunningException e)
         {
-            if (json) { WriteJsonError(err, $"{e.Message} (use --force to do it anyway)"); return 1; }
-            err.WriteLine($"{e.Message} (use --force to do it anyway)");
+            var msg = $"{e.Message} (use --force to do it anyway)";
+            if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 1;
         }
         catch (ClauderooException e)
         {
-            if (json) { WriteJsonError(err, e.Message); return 1; }
-            err.WriteLine(e.Message);
+            if (WantsJson(args)) JsonOut.Error(err, e.Message); else err.WriteLine(e.Message);
             return 1;
         }
         catch (Exception e)
         {
-            if (json) { WriteJsonError(err, $"Unexpected error: {e.Message}"); return 2; }
-            err.WriteLine($"Unexpected error: {e.Message}");
+            var msg = $"Unexpected error: {e.Message}";
+            if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 2;
         }
     }
 
+    /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage"];
+
+    // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
+    private static bool WantsJson(string[] args) =>
+        args.Length > 0 && JsonCommands.Contains(args[0]) && args.TakeWhile(a => a != "--").Skip(1).Contains("--json");
+
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
-        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret,
-        Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? usage)
+        Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
+        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks, UsageClient? usage)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -78,21 +95,27 @@ public static class Commands
             return 0;
         }
 
-        var cmd = args[0];
+        var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "usage"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
+            "version", "upgrade", "uninstall", "usage"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
+        var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
+        var json = pos.RemoveAll(a => a == "--json") > 0;
+        if (json && !JsonCommands.Contains(cmd))
+            throw new ClauderooException($"'{cmd}' doesn't support --json.");
+
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
-        if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"))
+        if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
+            or "version" or "upgrade" or "uninstall"))
         {
-            try { Print(pm.SyncAll(), output, err, "warning: "); }
+            // With --json stdout carries only the payload, so sync notices go to stderr.
+            try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
             catch (Exception e) { err.WriteLine($"warning: sync failed: {e.Message}"); }
         }
-
-        var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
 
         switch (cmd)
         {
@@ -118,6 +141,20 @@ public static class Commands
                 return 0;
             }
             case "list":
+                if (json)
+                {
+                    JsonOut.Write(output, new
+                    {
+                        Profiles = pm.List().Select(i => new
+                        {
+                            i.Name, i.IsHome, i.IsDefault, i.Provider,
+                            Account = i.Email,
+                            Detail = i.ProviderDetail,
+                            i.Overrides,
+                        }),
+                    });
+                    return 0;
+                }
                 foreach (var line in FormatList(pm.List(), LoadUsageCache(pm))) output.WriteLine(line);
                 return 0;
             case "start":
@@ -125,12 +162,82 @@ public static class Commands
             {
                 // Runs Claude in this terminal; --tab opens a new Windows Terminal tab instead.
                 var tab = pos.Remove("--tab");
-                if (pos.Count is < 1 or > 2) throw new ClauderooException($"Usage: clauderoo {cmd} <name> [dir] [--tab] [-- args]");
-                var dir = pos.Count > 1 ? Path.GetFullPath(pos[1]) : Environment.CurrentDirectory;
+                var isolated = pos.Remove("--isolated");
+                var startUsage = $"Usage: clauderoo {cmd} [name] [dir] [--tab] [--isolated] [-- args]";
+                if (pos.Count > 2) throw new ClauderooException(startUsage);
+                var cfg = pm.Config;
+                string profile;
+                string folderArg;
+                if (pos.Count > 0 && cfg.Profiles.ContainsKey(pos[0]))
+                {
+                    profile = pos[0];
+                    folderArg = pos.Count > 1 ? pos[1] : Environment.CurrentDirectory;
+                }
+                else
+                {
+                    // A first argument that isn't a profile is a folder; an unknown name with a dir is a typo.
+                    if (pos.Count == 2 || (pos.Count == 1 && !Directory.Exists(pos[0])))
+                        throw new ClauderooException(
+                            $"Unknown profile '{pos[0]}'. Known: {string.Join(", ", cfg.Profiles.Keys)}.");
+                    folderArg = pos.Count == 1 ? pos[0] : Environment.CurrentDirectory;
+                    var hit = FolderMap.Resolve(cfg, folderArg);
+                    if (hit is { } h)
+                    {
+                        profile = h.Profile;
+                        output.WriteLine($"Using {profile} (mapped from {h.MappedDir})");
+                    }
+                    else if (cfg.DefaultProfile is { } def) profile = def;
+                    else throw new ClauderooException(
+                        "No profile given and no folder mapping or default applies. " + startUsage);
+                }
+                var dir = Path.GetFullPath(folderArg);
                 if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
                 if (!tab)
-                    return runInPlace(Launcher.InPlace(pm.Config, pm.Paths, pos[0], dir, claudeArgs, claudePath));
-                startNewWindow(Launcher.NewWindow(pm.Config, pm.Paths, pos[0], dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable()));
+                {
+                    // A token profile's token is decrypted here, just before launch, into the child's environment only.
+                    var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath, isolated), profile);
+                    if (isolated && pm.PrepareIsolated(profile).FirstRun)
+                        output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
+                    return runInPlace(spec);
+                }
+                // The new tab runs `run <profile> [--isolated]`, which prepares the folder and injects any token itself,
+                // so the token never appears on a command line.
+                startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
+                return 0;
+            }
+            case "map":
+            {
+                if (pos.Count is < 1 or > 2) throw new ClauderooException("Usage: clauderoo map <profile> [dir]");
+                var dir = FolderMap.Normalize(pos.Count > 1 ? pos[1] : Environment.CurrentDirectory);
+                pm.Map(pos[0], dir);
+                output.WriteLine($"Mapped {dir} to {pos[0]}.");
+                return 0;
+            }
+            case "unmap":
+            {
+                if (pos.Count > 1) throw new ClauderooException("Usage: clauderoo unmap [dir]");
+                var dir = FolderMap.Normalize(pos.Count > 0 ? pos[0] : Environment.CurrentDirectory);
+                output.WriteLine(pm.Unmap(dir) ? $"Unmapped {dir}." : $"{dir} was not mapped.");
+                return 0;
+            }
+            case "maps":
+            {
+                var maps = pm.Maps();
+                if (json)
+                {
+                    JsonOut.Write(output, new { Folders = maps.Select(m => new { m.Dir, m.Profile }) });
+                    return 0;
+                }
+                if (maps.Count == 0) output.WriteLine("No folder mappings. Add one with 'clauderoo map <profile> [dir]'.");
+                foreach (var m in maps) output.WriteLine($"{m.Dir}  ->  {m.Profile}");
+                return 0;
+            }
+            case "which":
+            {
+                if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo which");
+                var which = WhichProfile.Resolve(pm.Config, pm.Paths, Environment.GetEnvironmentVariable, pm.Env);
+                if (json) JsonOut.Write(output, new { which.Profile, which.Source, which.Isolated });
+                else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
             case "default":
@@ -187,6 +294,17 @@ public static class Commands
             case "status":
             {
                 var s = pm.Status();
+                if (json)
+                {
+                    JsonOut.Write(output, new
+                    {
+                        s.DefaultProfile,
+                        UserEnv = s.UserEnvValue,
+                        s.EnvMatchesDefault,
+                        s.Problems,
+                    });
+                    return 0;
+                }
                 output.WriteLine($"Default profile: {s.DefaultProfile ?? "(none)"}");
                 output.WriteLine($"CLAUDE_CONFIG_DIR (user): {(string.IsNullOrEmpty(s.UserEnvValue) ? "(not set)" : s.UserEnvValue)}");
                 output.WriteLine(s.EnvMatchesDefault
@@ -208,7 +326,7 @@ public static class Commands
                 return 0;
             }
             case "usage":
-                return UsageCmd(pos, output, err, pm, hookCancel, usage);
+                return UsageCmd(pos, json, output, err, pm, hookCancel, usage);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -219,11 +337,12 @@ public static class Commands
                 if (pm.Get(name).Provider != Providers.Vertex)
                 {
                     var r = pm.Check(name);
-                    output.WriteLine(r.Message);
+                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, Items = Array.Empty<object>() });
+                    else output.WriteLine(r.Message);
                     return r.Ok ? 0 : 1;
                 }
                 // The model probes run inside CheckSetupAsync, so announce them first.
-                output.WriteLine("Testing models (this sends a tiny prompt per model)…");
+                if (!json) output.WriteLine("Testing models (this sends a tiny prompt per model)…");
                 // Ctrl+C stops the check (and kills a running `claude -p`) instead of the process.
                 using var cts = new CancellationTokenSource();
                 IReadOnlyList<CheckItem> items;
@@ -232,15 +351,29 @@ public static class Commands
                     try
                     {
                         // Lines appear as each check finishes, not at the end.
-                        items = pm.CheckSetupAsync(name, cts.Token, new LineProgress(output)).GetAwaiter().GetResult();
+                        items = pm.CheckSetupAsync(name, cts.Token, json ? null : new LineProgress(output)).GetAwaiter().GetResult();
                     }
                     catch (OperationCanceledException) when (cts.IsCancellationRequested)
                     {
-                        err.WriteLine("Cancelled.");
+                        if (json) JsonOut.Error(err, "Cancelled."); else err.WriteLine("Cancelled.");
                         return 1;
                     }
                 }
-                return items.Any(i => i.Status == CheckStatus.Fail) ? 1 : 0;
+                var failed = items.Any(i => i.Status == CheckStatus.Fail);
+                if (json)
+                    JsonOut.Write(output, new
+                    {
+                        Ok = !failed,
+                        Verified = true,
+                        Message = failed
+                            ? $"{items.Count(i => i.Status == CheckStatus.Fail)} check(s) failed."
+                            : "All checks passed.",
+                        Items = items.Where(i => i.Status is not (CheckStatus.Pending or CheckStatus.Running)).Select(i => new
+                        {
+                            i.Key, i.Label, Status = i.Status.ToString().ToLowerInvariant(), i.Hint,
+                        }),
+                    });
+                return failed ? 1 : 0;
             }
             case "apikey":
             {
@@ -265,6 +398,12 @@ public static class Commands
                 output.WriteLine(mode == "on" ? "Tray app will start at login." : "Tray app will no longer start at login.");
                 return 0;
             }
+            case "version":
+                return ReleaseCommands.Version(output, hooks);
+            case "upgrade":
+                return ReleaseCommands.Upgrade(pos, output, err, hooks);
+            case "uninstall":
+                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks);
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);
@@ -275,9 +414,9 @@ public static class Commands
         return 0;
     }
 
-    private static int ProviderCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm, Func<string?> readSecret)
+    private static int ProviderCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm, Func<string, string?> readSecret)
     {
-        const string usage = "clauderoo provider <name> login | vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>] | apikey";
+        const string usage = "clauderoo provider <name> login | vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>] | apikey | token";
         if (pos.Count < 2) throw new ClauderooException($"Usage: {usage}");
         var name = pos[0];
         var kind = pos[1];
@@ -312,12 +451,19 @@ public static class Commands
             case Providers.ApiKey:
             {
                 if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var key = readSecret();
+                var key = readSecret("API key: ");
                 report = pm.SetProvider(name, Providers.ApiKey, null, string.IsNullOrWhiteSpace(key) ? null : key.Trim());
                 break;
             }
+            case Providers.Token:
+            {
+                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
+                var token = readSecret("Token: ");
+                report = pm.SetProvider(name, Providers.Token, token: string.IsNullOrWhiteSpace(token) ? null : token.Trim());
+                break;
+            }
             default:
-                throw new ClauderooException($"Unknown provider '{kind}'. Known: login, vertex, apikey.");
+                throw new ClauderooException($"Unknown provider '{kind}'. Known: {ProfileManager.KnownProviders}.");
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
@@ -358,11 +504,11 @@ public static class Commands
         return 0;
     }
 
-    // Hidden prompt (no echo); a redirected stdin is read as one line.
-    private static string? ReadSecretFromConsole()
+    // Hidden prompt (no echo) labelled e.g. "API key: "; a redirected stdin is read as one line.
+    private static string? ReadSecretFromConsole(string label)
     {
         if (Console.IsInputRedirected) return Console.In.ReadLine();
-        Console.Error.Write("API key: ");
+        Console.Error.Write(label);
         var sb = new System.Text.StringBuilder();
         while (true)
         {
@@ -405,6 +551,7 @@ public static class Commands
         {
             Providers.Vertex => $"vertex ({i.ProviderDetail})",
             Providers.ApiKey => "apikey",
+            Providers.Token => "token",
             _ => i.Email ?? NoLogin,
         };
         var emailW = infos.Max(i => Who(i).Length);
@@ -436,11 +583,10 @@ public static class Commands
 
     private sealed record UsageRow(string Name, string Status, UsageReading? Reading, string? Note);
 
-    private static int UsageCmd(List<string> pos, TextWriter output, TextWriter err, ProfileManager pm,
+    private static int UsageCmd(List<string> pos, bool json, TextWriter output, TextWriter err, ProfileManager pm,
         Func<CancellationTokenSource, IDisposable> hookCancel, UsageClient? injected)
     {
         const string usage = "clauderoo usage [name] [--json]";
-        var json = pos.Remove("--json");
         if (pos.Count > 1) throw new ClauderooException($"Usage: {usage}");
         var names = pos.Count == 1
             ? PickOne(pm, pos[0])
@@ -530,13 +676,6 @@ public static class Commands
         return local.Date == DateTime.Now.Date
             ? local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
             : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-    }
-
-    // --json before any "--" means every error must be JSON on stderr.
-    private static bool WantsJson(string[] args)
-    {
-        var end = Array.IndexOf(args, "--");
-        return args.Take(end < 0 ? args.Length : end).Contains("--json");
     }
 
     // The one place a JSON error is written, next to WriteUsageJson so both can move onto a shared helper.

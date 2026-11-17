@@ -8,11 +8,31 @@ public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Emai
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
 
-public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now,
-    ISecretStore secrets, IGcloud gcloud)
+public partial class ProfileManager
 {
+    private readonly ClauderooPaths paths;
+    private readonly IEnvStore env;
+    private readonly Func<DateTime> now;
+    private readonly ISecretStore secrets; // API keys
+    private readonly IGcloud gcloud;
+    private readonly ISecretStore tokens;  // Claude setup tokens (provider "token")
+
     public ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now)
         : this(paths, env, now, new DpapiSecretStore(), new Gcloud()) { }
+
+    public ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now, ISecretStore secrets, IGcloud gcloud)
+        : this(paths, env, now, secrets, gcloud, new DpapiSecretStore(DpapiSecretStore.TokenFileName, "token")) { }
+
+    internal ProfileManager(ClauderooPaths paths, IEnvStore env, Func<DateTime> now, ISecretStore secrets, IGcloud gcloud,
+        ISecretStore tokens)
+    {
+        this.paths = paths;
+        this.env = env;
+        this.now = now;
+        this.secrets = secrets;
+        this.gcloud = gcloud;
+        this.tokens = tokens;
+    }
 
     /// <summary>The exe that apiKeyHelper runs; handed to every Syncer.</summary>
     public string HelperExe { get; set; } = HelperExePath.Resolve();
@@ -25,6 +45,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
     private string Stamp => now().ToString("yyyyMMdd-HHmmss");
 
     public ClauderooPaths Paths => paths;
+    public IEnvStore Env => env;
 
     public SyncReport SyncAll() => NewSyncer(Config).SyncAll();
 
@@ -91,10 +112,12 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         RefuseIfPluginRecordsReference(cfg, name, dir, force, $"remove {name}");
 
         // The API key is deleted only once the folder has moved, so a failed move keeps the profile working.
+        var stamp = Stamp; // one stamp, so the profile and isolated folders pair up in RemovedDir
         var keyDir = dir;
+        string? movedProfile = null;
         if (Directory.Exists(dir))
         {
-            var moved = Path.Combine(paths.RemovedDir, $"{name}-{Stamp}");
+            var moved = Path.Combine(paths.RemovedDir, $"{name}-{stamp}");
             try
             {
                 // Unlink shared-folder junctions first so nothing that later deletes the moved
@@ -109,11 +132,47 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                     $"Couldn't move {name}'s folder — close {name}'s Claude sessions and try again.");
             }
             keyDir = moved;
+            movedProfile = moved;
+            // Saved before anything else can fail, so the settings survive even if a rollback below can't finish.
             ConfigStore.WriteEntry(Path.Combine(moved, EntryFileName), entry);
+        }
+        // The isolated folder goes aside with its profile (it holds a login, so it is never deleted).
+        var isoDir = paths.IsolatedDir(name);
+        if (Directory.Exists(isoDir))
+        {
+            try
+            {
+                BeforeIsolatedMove?.Invoke();
+                RemoveNestedLinks(isoDir);
+                Directory.CreateDirectory(paths.RemovedDir);
+                Directory.Move(isoDir, Path.Combine(paths.RemovedDir, $"{name}-{stamp}-isolated"));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                var msg = $"Couldn't move {name}'s isolated folder — close {name}'s Claude sessions and try again.";
+                // Put the profile folder back so the profile stays whole and the remove can be retried.
+                if (movedProfile != null)
+                {
+                    try
+                    {
+                        Directory.Move(movedProfile, dir);
+                        try { File.Delete(Path.Combine(dir, EntryFileName)); } catch (Exception) { }
+                    }
+                    catch (Exception)
+                    {
+                        msg += $" {name}'s folder is now at {movedProfile}; move it back to {dir} before retrying.";
+                    }
+                }
+                throw new ClauderooException(msg);
+            }
         }
         try { secrets.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
+        try { tokens.Delete(keyDir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
+        foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
+            cfg.Folders.Remove(k);
         ConfigStore.Save(paths, cfg);
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
     }
@@ -275,7 +334,12 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             ? string.IsNullOrEmpty(userValue)
             : !string.IsNullOrEmpty(userValue) && Norm(userValue) == Norm(expected);
 
-        return new StatusReport(cfg.DefaultProfile, userValue, matches, report.Problems);
+        var problems = report.Problems.ToList();
+        if (cfg.DefaultProfile != null && cfg.Profiles.TryGetValue(cfg.DefaultProfile, out var defEntry)
+            && !defEntry.Home && Providers.Of(defEntry) == Providers.Token)
+            problems.Add($"{cfg.DefaultProfile} signs in with a token; start it with 'cr start {cfg.DefaultProfile}' " +
+                         "(plain 'claude' isn't signed in).");
+        return new StatusReport(cfg.DefaultProfile, userValue, matches, problems);
     }
 
     private static string Norm(string p) =>

@@ -1,0 +1,13 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Release builds pass -p:Version=<tag without v> -p:ClauderooRepo=<owner/repo>. Local builds keep these defaults. -->
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
+    <ClauderooRepo Condition="'$(ClauderooRepo)' == ''"></ClauderooRepo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="ClauderooRepo" Value="$(ClauderooRepo)" />
+  </ItemGroup>
+
+</Project>

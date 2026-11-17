@@ -24,6 +24,7 @@ internal static class TrayText
     public const string ClaudeLogin = "Claude login";
     public const string Vertex = "Google Vertex AI";
     public const string ApiKey = "API key";
+    public const string Token = "Claude token";
     public const string NotSignedIn = "not signed in";
 
     /// <summary>NotifyIcon.Text limit.</summary>
@@ -36,23 +37,24 @@ internal static class TrayText
     {
         Providers.Vertex => Vertex,
         Providers.ApiKey => ApiKey,
+        Providers.Token => Token,
         _ => ClaudeLogin,
     };
 
     /// <summary>
-    /// The account part: email (or "not signed in") for a Claude login, the project for Vertex, nothing for an API key.
-    /// Cut to <see cref="AccountMax"/> characters.
+    /// The account part: email (or "not signed in") for a Claude login, the project for Vertex, nothing for an API key
+    /// or a Claude token. Cut to <see cref="AccountMax"/> characters.
     /// </summary>
     public static string? Account(ProfileInfo p) => p.Provider switch
     {
         Providers.Vertex => string.IsNullOrWhiteSpace(p.ProviderDetail) ? null : Cut(p.ProviderDetail, AccountMax),
-        Providers.ApiKey => null,
+        Providers.ApiKey or Providers.Token => null,
         _ => string.IsNullOrWhiteSpace(p.Email) ? NotSignedIn : Cut(p.Email, AccountMax),
     };
 
     /// <summary>True for a Claude login with no account: the menu shows "not signed in" muted.</summary>
     public static bool IsSignedOut(ProfileInfo p) =>
-        p.Provider is not (Providers.Vertex or Providers.ApiKey) && string.IsNullOrWhiteSpace(p.Email);
+        p.Provider is not (Providers.Vertex or Providers.ApiKey or Providers.Token) && string.IsNullOrWhiteSpace(p.Email);
 
     /// <summary>"Claude login · someone@example.com", "Google Vertex AI · my-proj", "API key".</summary>
     public static string Describe(ProfileInfo p) =>
@@ -262,6 +264,13 @@ internal static class TrayText
     /// <summary>Green below 70 %, amber from 70 %, red from 90 %.</summary>
     public static UsageLevel UsageLevelOf(double percent) =>
         percent >= 90 ? UsageLevel.High : percent >= 70 ? UsageLevel.Warn : UsageLevel.Ok;
+
+    /// <summary>The menu item that upgrades clauderoo ("Update to v1.2.0").</summary>
+    public static string UpdateItem(string version) => $"&Update to v{version}";
+
+    /// <summary>The once-per-release balloon about a newer version.</summary>
+    public static string UpdateBalloon(string version) =>
+        $"clauderoo v{version} is available. Open the tray menu and choose Update to v{version}.";
 
     /// <summary>The balloon for a set of problems that has new ones.</summary>
     public static string ProblemBalloon(IReadOnlyList<Problem> current) =>

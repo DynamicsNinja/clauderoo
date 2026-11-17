@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Clauderoo.Core.Tests" />
+    <!-- The CLI's launch path reads the Claude token (ProfileManager.WithToken); nothing else may. -->
+    <InternalsVisibleTo Include="clauderoo" />
   </ItemGroup>
 
 </Project>
