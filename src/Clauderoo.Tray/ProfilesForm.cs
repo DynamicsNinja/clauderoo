@@ -88,6 +88,7 @@ sealed class ProfilesForm : Form
     private bool _switching;       // suppresses re-entrant selection changes
     private int _checkSeq;         // ignores stale async check results
     private CancellationTokenSource? _checkCts; // the running setup check, if any
+    private Task? _checkTask;      // its background task (completes once its claude process is killed)
     private int _baseMinHeight;    // minimum window height for the content measured at startup
 
     public ProfilesForm(ProfileManager pm, Action<string> startSession)
@@ -352,7 +353,7 @@ sealed class ProfilesForm : Form
             _env.AllowUserToAddRows = editable;
             _env.DefaultCellStyle.BackColor = editable ? SystemColors.Window : SystemColors.Control;
             _remove.Enabled = editable;
-            _rename.Enabled = info != null; // the home profile can be relabelled too
+            UpdateRenameEnabled(); // the home profile can be relabelled too
             _start.Enabled = info != null;
             UpdateProviderPanels();
         }
@@ -604,10 +605,11 @@ sealed class ProfilesForm : Form
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
         _check.Enabled = false;
+        _rename.Enabled = false; // the check's `claude -p` runs in the profile folder: don't move it meanwhile
         ShowCheckList(null);
         _checkStatus.ForeColor = SystemColors.GrayText;
         _checkStatus.Text = "Checking… (tests a tiny prompt per model)";
-        Task.Run(async () =>
+        _checkTask = Task.Run(async () =>
         {
             IReadOnlyList<CheckItem>? items = null;
             string? error = null;
@@ -621,6 +623,7 @@ sealed class ProfilesForm : Form
                     // The CTS is only touched on the UI thread, so cancelling and disposing never race.
                     if (_checkCts == cts) _checkCts = null;
                     cts.Dispose();
+                    UpdateRenameEnabled();
                     if (seq != _checkSeq) return; // profile/provider changed or window closing: stale
                     _check.Enabled = true;
                     if (items != null) ShowSetupResult(items);
@@ -663,6 +666,20 @@ sealed class ProfilesForm : Form
         EnsureFits();
     }
 
+    /// <summary>
+    /// Cancels a running setup check and waits (at most ~3 s) for its task to end; on cancellation the claude
+    /// runner kills its process tree before the task completes, so the profile folder is released.
+    /// </summary>
+    private void StopCheckAndWait()
+    {
+        var running = _checkCts != null ? _checkTask : null;
+        CancelCheck();
+        if (running == null) return;
+        // The task never needs the UI thread to finish (ConfigureAwait(false); results are posted with BeginInvoke).
+        try { running.Wait(TimeSpan.FromSeconds(3)); }
+        catch (AggregateException) { /* the task catches its own exceptions; nothing to report */ }
+    }
+
     /// <summary>Cancels any running check, drops its pending result and clears the check output.</summary>
     private void CancelCheck()
     {
@@ -670,9 +687,13 @@ sealed class ProfilesForm : Form
         _checkCts?.CancelAsync(); // callbacks run off the UI thread
         _checkCts = null;
         _check.Enabled = true;
+        UpdateRenameEnabled();
         _checkStatus.Text = "";
         ShowCheckList(null);
     }
+
+    // Rename… needs a selected profile and no setup check running in its folder.
+    private void UpdateRenameEnabled() => _rename.Enabled = _current != null && _checkCts == null;
 
     private void SetCheckStatus(bool ok, string message)
     {
@@ -696,9 +717,12 @@ sealed class ProfilesForm : Form
     {
         if (_current == null || !ConfirmLeave()) return;
         var oldName = _current;
-        var newName = InputDialog.Ask("Rename profile", $"New name for '{oldName}' (a-z, 0-9, -):", this, oldName)
-            ?.Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(newName) || newName == oldName) return;
+        var input = InputDialog.Ask("Rename profile", $"New name for '{oldName}' (a-z, 0-9, -):", this, oldName)?.Trim();
+        // Unchanged, ignoring case (e.g. OK on a home label with capitals): nothing to do.
+        if (string.IsNullOrEmpty(input) || string.Equals(input, oldName, StringComparison.OrdinalIgnoreCase)) return;
+        var newName = input.ToLowerInvariant();
+        // A running setup check may have `claude -p` open in the old folder: stop it before the folder moves.
+        StopCheckAndWait();
         SyncReport report;
         try
         {
