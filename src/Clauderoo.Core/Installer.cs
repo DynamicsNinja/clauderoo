@@ -51,24 +51,39 @@ public static class Installer
     /// </summary>
     internal static void Replace(string src, string dest)
     {
+        string? aside = null;
+        var movedAside = false;
         try
         {
             if (File.Exists(dest))
             {
                 // A previous "*.old" can itself still be running: then use a unique name.
-                try { File.Move(dest, dest + ".old", overwrite: true); }
+                aside = dest + ".old";
+                try { File.Move(dest, aside, overwrite: true); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {
-                    File.Move(dest, $"{dest}.{Guid.NewGuid():N}.old");
+                    aside = $"{dest}.{Guid.NewGuid():N}.old";
+                    File.Move(dest, aside);
                 }
+                movedAside = true;
             }
             File.Copy(src, dest, overwrite: true);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
+            // The copy failed after the old file was moved aside: put it back so the install folder keeps working.
+            if (movedAside) RestoreAside(aside!, dest);
             throw new ClauderooException(
                 $"Couldn't replace {Path.GetFileName(dest)} — close clauderoo and any Claude sessions started from it, then try again.");
         }
+    }
+
+    private static void RestoreAside(string aside, string dest)
+    {
+        try { if (File.Exists(dest)) File.Delete(dest); } // a partial copy
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        try { File.Move(aside, dest); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     /// <summary>Best effort: removes "*.old" files left by earlier installs (ones still running stay).</summary>

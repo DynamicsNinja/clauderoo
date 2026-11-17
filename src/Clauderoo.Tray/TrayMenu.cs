@@ -74,7 +74,7 @@ internal static class TrayMenu
             header.Tag = new ColourGlyph();
             items.Add(header);
             // Without problems the Problems window is reached here, for what changed without a balloon.
-            if (s.RecentCount > 0) items.Add(Item("Recent &changes…", null, a.ShowProblems));
+            if (s.RecentCount > 0) items.Add(Item("Recent &messages…", null, a.ShowProblems));
         }
         items.Add(new ToolStripSeparator());
 

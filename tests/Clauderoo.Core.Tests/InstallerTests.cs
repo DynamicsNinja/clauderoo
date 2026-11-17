@@ -58,6 +58,26 @@ public class InstallerTests
     }
 
     [Fact]
+    public void Replace_CopyFails_RestoresOriginal()
+    {
+        var d = NewTempDir();
+        try
+        {
+            var src = Path.Combine(d, "new.exe");
+            var dest = Path.Combine(d, "clauderoo.exe");
+            File.WriteAllText(src, "new");
+            File.WriteAllBytes(dest, [1, 2, 3, 4]);
+            using (new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.None)) // the copy can't read it
+            {
+                Assert.Throws<ClauderooException>(() => Installer.Replace(src, dest));
+            }
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(dest));
+            Assert.Empty(Directory.GetFiles(d, "*.old"));
+        }
+        finally { Directory.Delete(d, true); }
+    }
+
+    [Fact]
     public void Replace_OldStillInUse_UsesUniqueName()
     {
         var d = NewTempDir();

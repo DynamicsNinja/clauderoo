@@ -41,7 +41,7 @@ sealed class TrayContext : ApplicationContext
     private (AppIconState State, bool HighContrast, Size Size)? _trayIconKey;
 
     private readonly List<string> _pendingNotices = [];
-    private readonly List<string> _recent = []; // for the Problems window's "Recent changes", handed over once
+    private readonly List<string> _recent = []; // for the Problems window's "Recent messages", handed over once
     private const int RecentMax = 20;
     private DateTime _lastBalloon = DateTime.MinValue;
     private bool _balloonOpensProblems;
@@ -154,7 +154,7 @@ sealed class TrayContext : ApplicationContext
         RefreshProfiles();
         SetProblems(report.ProblemItems);
         // The first sync's notices are what changed while the tray wasn't running: no balloon at startup, but kept
-        // for the Problems window's "Recent changes".
+        // for the Problems window's "Recent messages".
         if (first) AddRecent(report.Notices);
         else QueueNotices(report.Notices);
     }
@@ -559,7 +559,7 @@ sealed class TrayContext : ApplicationContext
         catch (Exception e)
         {
             // Core and the launcher speak to the command line: known errors get plain words, the rest a short
-            // balloon that opens the Problems window, where the original text is listed under Recent changes.
+            // balloon that opens the Problems window, where the original text is listed under Recent messages.
             var (text, unknown) = TrayText.PlainError(e);
             if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
             Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);

@@ -42,7 +42,7 @@ internal sealed class ProblemsForm : Form
         Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
         MinimumSize = new Size(0, 72), Margin = new Padding(0), Visible = false,
     };
-    readonly Label _recentHeading = new() { Text = "Recent changes", AutoSize = true, Margin = new Padding(0, 12, 0, 4), Visible = false };
+    readonly Label _recentHeading = new() { Text = "Recent messages", AutoSize = true, Margin = new Padding(0, 12, 0, 4), Visible = false };
     readonly Label _recentText = new() { AutoSize = true, Margin = new Padding(0), Visible = false, UseMnemonic = false };
     readonly LinkLabel _manage = new() { Text = "Open Manage profiles", AutoSize = true, Anchor = AnchorStyles.Left };
     readonly Button _close = new() { Text = "Close", AutoSize = true, Anchor = AnchorStyles.Right, DialogResult = DialogResult.Cancel };
@@ -180,7 +180,7 @@ internal sealed class ProblemsForm : Form
     const int RecentMax = 8;
 
     /// <summary>
-    /// Adds to the "Recent changes" list: what clauderoo did or noticed without a balloon (at startup, or an error the
+    /// Adds to the "Recent messages" list: what clauderoo did or noticed without a balloon (at startup, or an error the
     /// balloon only summarised). The tray hands each line over once; the list lasts while the window is open.
     /// </summary>
     public void AddRecent(IEnumerable<string> lines)

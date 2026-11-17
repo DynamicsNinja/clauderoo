@@ -179,7 +179,7 @@ internal static class TrayText
     static bool LooksLikeCli(string m) =>
         m.Contains("'clauderoo ") || m.Contains("'cr ") || m.Contains("--") || m.Contains("clauderoo.exe");
 
-    /// <summary>A line for the Problems window's "Recent changes" list about an error the balloon only summarised.</summary>
+    /// <summary>A line for the Problems window's "Recent messages" list about an error the balloon only summarised.</summary>
     public static string RecentError(string raw) => "Something went wrong: " + raw;
 
     /// <summary>One balloon for a sync's notices.</summary>
