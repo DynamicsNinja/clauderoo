@@ -177,14 +177,24 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `export <file> [names…] [--no-env] [--force]` | Save profile settings (provider, Vertex project and models, environment, owned items, start folder) and folder mappings to a file. Without names, every profile except home is exported. An existing file is only replaced with `--force` |
 | `import <file> [--force]` | Create the profiles in an export and add their folder mappings. Existing profiles are skipped and listed; `--force` updates them instead |
 
-Exports never contain API keys, tokens, logins or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+Import only files from people you trust: environment variables and folder mappings take effect in new sessions.
 
-The manager window has the same two actions under the profile list. **Export…** asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. **Import…** opens a file, asks "Update profiles that already exist?", and then lists what was created, updated and skipped, which profiles kept their sign-in, and which need a key or token.
+Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+
+Folder mappings in the file are added for new and existing profiles alike, even without `--force`; a folder already mapped to another profile is skipped. With `--force`, an import also:
+
+- updates the settings of profiles that already exist (provider, Vertex project and models, environment, start folder);
+- re-points folders that are already mapped to another profile;
+- keeps the provider of a profile that holds an API key or token, so the secret is never deleted.
+
+An import only ever adds owned items. It never gives a profile's own copies back to home, with or without `--force`. A start folder that doesn't exist on this machine is left out and reported. The summary lists what was created, updated and mapped, the names (never the values) of the environment variables that arrived, and anything skipped.
+
+The manager window has the same two actions under the profile list. **Export…** exports every profile except home: it asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. To share a single profile, use `cr export <file> <name>`. **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
 
 **Onboarding a colleague on Vertex.**
 
-1. Export the Vertex profile (`cr export vertex.json work`, or **Export…** in the window).
-2. Your colleague imports it (`cr import vertex.json`, or **Import…**).
+1. Export the Vertex profile with `cr export vertex.json work`. (**Export…** in the window exports every profile except home.)
+2. Your colleague imports it (`cr import vertex.json`, or **Import…** in the window).
 3. They sign in to gcloud (**Sign in to Google…** in the window, or `gcloud auth application-default login`).
 4. They run **Check setup** (`cr check <name>`) to confirm everything works.
 

@@ -219,6 +219,133 @@ public class TransferTests
     }
 
     [Fact]
+    public void Import_Force_DoesNotShareBackOwnedItems()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("o");
+        pm.Own("o", "skills");
+        var file = Path.Combine(home.Paths.ProfileDir("o"), "skills", "mine.md");
+        File.WriteAllText(file, "keep me");
+        var r = pm.Import("{\"schemaVersion\":1,\"profiles\":[{\"name\":\"o\",\"provider\":\"login\",\"overrides\":[]}]}", force: true);
+        Assert.Equal(["o"], r.Updated);
+        Assert.Contains("skills", pm.Get("o").Overrides);
+        Assert.Equal("keep me", File.ReadAllText(file));
+        Assert.Null(Junction.GetTarget(Path.Combine(home.Paths.ProfileDir("o"), "skills")));
+    }
+
+    [Fact]
+    public void Import_Force_AbsentStartDir_LeavesExistingUnchanged()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("s");
+        var cfg = pm.Config;
+        cfg.Profiles["s"].StartDir = home.Paths.Root;
+        ConfigStore.Save(home.Paths, cfg);
+        pm.Import("{\"schemaVersion\":1,\"profiles\":[{\"name\":\"s\",\"provider\":\"login\"}]}", force: true);
+        Assert.Equal(home.Paths.Root, pm.Get("s").StartDir);
+    }
+
+    [Theory]
+    [InlineData("relative\\folder")]
+    [InlineData("C:\\definitely\\not\\here-7f3a")]
+    public void Import_UnusableStartDir_DroppedWithNotice(string dir)
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"n\",\"provider\":\"login\",\"startDir\":" + JsonSerializer.Serialize(dir) + "}]}";
+        var r = pm.Import(json, false);
+        Assert.Equal(["n"], r.Created);
+        Assert.Null(pm.Get("n").StartDir);
+        Assert.Contains(r.Notices!, s => s.StartsWith("n:") && s.Contains(dir));
+    }
+
+    [Fact]
+    public void Import_ExistingStartDir_Applied()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"n\",\"provider\":\"login\",\"startDir\":" + JsonSerializer.Serialize(home.Paths.Root) + "}]}";
+        pm.Import(json, false);
+        Assert.Equal(home.Paths.Root, pm.Get("n").StartDir);
+    }
+
+    [Fact]
+    public void Import_ReportsMappedAndEnvNamesNotValues()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("existing");
+        var folder = Path.Combine(home.Paths.Root, "mapped");
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"e\",\"provider\":\"login\",\"env\":{\"B_VAR\":\"secret-b\",\"A_VAR\":\"secret-a\"}}]," +
+                   "\"folders\":[{\"dir\":" + JsonSerializer.Serialize(folder) + ",\"profile\":\"existing\"}]}";
+        var r = pm.Import(json, false);
+        Assert.Equal(["e: A_VAR, B_VAR"], r.EnvNames);
+        var mapped = Assert.Single(r.Mapped!);
+        Assert.EndsWith("→ existing", mapped);
+        Assert.DoesNotContain("secret-", string.Join("|", r.EnvNames!.Concat(r.Notices!)));
+        Assert.True(r.ChangedAnything);
+    }
+
+    [Fact]
+    public void Cli_Import_MappingOnly_IsNotNothing()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("existing");
+        var folder = Path.Combine(home.Paths.Root, "m");
+        var file = Path.Combine(home.Paths.Root, "m.json");
+        File.WriteAllText(file, "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"existing\",\"provider\":\"login\"}]," +
+                                "\"folders\":[{\"dir\":" + JsonSerializer.Serialize(folder) + ",\"profile\":\"existing\"}]}");
+        var r = Run(pm, "import", file);
+        Assert.Equal(0, r.code);
+        Assert.Contains("Folder mappings added:", r.o);
+        Assert.DoesNotContain("Nothing to import.", r.o);
+        // Again: the mapping is already there and the profile is skipped, so nothing changed.
+        var again = Run(pm, "import", file);
+        Assert.Contains("Nothing to import.", again.o);
+    }
+
+    [Fact]
+    public void Cli_Import_KeptPrintedOnceUnderHeading()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        pm.Add("s"); pm.SetProvider("s", Providers.ApiKey, apiKey: Key);
+        var file = Path.Combine(home.Paths.Root, "k.json");
+        File.WriteAllText(file, "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"s\",\"provider\":\"login\"}]}");
+        var r = Run(pm, "import", file, "--force");
+        Assert.Contains("Kept their sign-in:" + Environment.NewLine + "  s: kept its API key", r.o);
+        Assert.DoesNotContain("Kept s:", r.o);
+        Assert.Single(r.o.Split(Environment.NewLine), l => l.Contains("kept its API key"));
+    }
+
+    [Fact]
+    public void ImportFile_RefusesOverOneMegabyte()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        var file = Path.Combine(home.Paths.Root, "big.json");
+        File.WriteAllText(file, "{\"schemaVersion\":1,\"profiles\":[],\"pad\":\"" + new string('x', 1024 * 1024) + "\"}");
+        var ex = Assert.Throws<ClauderooException>(() => pm.ImportFile(file, false));
+        Assert.Contains("over 1 MB", ex.Message);
+        var cli = Run(pm, "import", file);
+        Assert.Equal(1, cli.code);
+        Assert.Contains("over 1 MB", cli.e);
+        var missing = Assert.Throws<ClauderooException>(() => pm.ImportFile(Path.Combine(home.Paths.Root, "nope.json"), false));
+        Assert.StartsWith("File not found:", missing.Message);
+    }
+
+    [Fact]
+    public void Import_FailureAfterAdd_ReportedAsCreatedButNotFinished()
+    {
+        var (pm, home, _, _) = Make(); using var _h = home;
+        // A file where the skills folder should go makes Own fail after Add has created the profile.
+        var dir = home.Paths.ProfileDir("half");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "skills"), "blocker");
+        var json = "{\"schemaVersion\":1,\"profiles\":[{\"name\":\"half\",\"provider\":\"apikey\",\"overrides\":[\"skills\"]}]}";
+        var r = pm.Import(json, false);
+        Assert.Empty(r.Created);
+        Assert.Empty(r.NeedSecret);
+        Assert.Contains(r.Skipped, s => s.StartsWith("half: created but not finished: "));
+        Assert.True(pm.Config.Profiles.ContainsKey("half"));
+    }
+
+    [Fact]
     public void Import_NewerSchema_Refused()
     {
         var (pm, home, _, _) = Make(); using var _h = home;

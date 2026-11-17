@@ -41,8 +41,8 @@ sealed class ProfilesForm : Form
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
-    private readonly Button _export = Btn("&Export…");
-    private readonly Button _import = Btn("&Import…");
+    private readonly Button _export = Btn("E&xport…");
+    private readonly Button _import = Btn("Import…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -1335,7 +1335,8 @@ sealed class ProfilesForm : Form
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        File.WriteAllText(dialog.FileName, _pm.Export(null, includeEnv));
+        // The save dialog has already confirmed any overwrite.
+        _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true);
         SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
     }
 
@@ -1348,10 +1349,9 @@ sealed class ProfilesForm : Form
             Title = "Import profiles", Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", CheckFileExists = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        var json = File.ReadAllText(dialog.FileName);
-        var force = MessageBox.Show(this, "Update profiles that already exist?", "clauderoo",
+        var force = MessageBox.Show(this, "Update profiles that already exist? Choose No to skip them.", "clauderoo",
             MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
-        var result = _pm.Import(json, force);
+        var result = _pm.ImportFile(dialog.FileName, force);
         Reload(null);
         MessageBox.Show(this, TrayText.ImportSummary(result), "Import profiles", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }

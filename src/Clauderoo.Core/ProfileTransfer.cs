@@ -3,9 +3,18 @@ using System.Text.Json.Nodes;
 
 namespace Clauderoo.Core;
 
-/// <summary>What an import did. Skipped and NeedSecret entries are ready-to-print text, "name: reason".</summary>
+/// <summary>
+/// What an import did. Skipped, NeedSecret, KeptProvider and EnvNames entries are ready-to-print text, "name: detail".
+/// Notices holds the sync notices and problems raised along the way; Mapped holds "dir → profile" for each folder mapping added;
+/// EnvNames lists the environment variable names (never values) each imported profile now has.
+/// </summary>
 public record ImportResult(IReadOnlyList<string> Created, IReadOnlyList<string> Updated,
-    IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret, IReadOnlyList<string>? KeptProvider = null);
+    IReadOnlyList<string> Skipped, IReadOnlyList<string> NeedSecret, IReadOnlyList<string>? KeptProvider = null,
+    IReadOnlyList<string>? Notices = null, IReadOnlyList<string>? Mapped = null, IReadOnlyList<string>? EnvNames = null)
+{
+    /// <summary>True when the import created or updated a profile or added a folder mapping.</summary>
+    public bool ChangedAnything => Created.Count + Updated.Count + (Mapped?.Count ?? 0) > 0;
+}
 
 public partial class ProfileManager
 {
@@ -95,9 +104,38 @@ public partial class ProfileManager
         }
     }
 
+    /// <summary>The largest file <see cref="ImportFile"/> reads; real exports are a few KB.</summary>
+    internal const long MaxImportBytes = 1024 * 1024;
+
+    /// <summary>Reads an export file and imports it. Refuses files over 1 MB; IO errors become plain messages.</summary>
+    public ImportResult ImportFile(string path, bool force)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ClauderooException($"Not a valid file path: {path}");
+        }
+        string text;
+        try
+        {
+            var info = new FileInfo(full);
+            if (!info.Exists) throw new ClauderooException($"File not found: {full}");
+            if (info.Length > MaxImportBytes)
+                throw new ClauderooException($"{full} is too big to be a clauderoo export (over 1 MB).");
+            text = File.ReadAllText(full);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            throw new ClauderooException($"Couldn't read {full}: {e.Message}");
+        }
+        return Import(text, force);
+    }
+
     /// <summary>
     /// Creates (or with <paramref name="force"/>, updates) the profiles in an export, then adds its folder mappings.
     /// Existing profiles are left untouched without force. Secret-based profiles come in with the login provider.
+    /// Owned items are only ever added: an import never shares a profile's own copies back.
     /// </summary>
     public ImportResult Import(string json, bool force)
     {
@@ -113,22 +151,18 @@ public partial class ProfileManager
             if (schema > ExportSchemaVersion)
                 throw new ClauderooException($"This export is from a newer clauderoo (schema {schema}).");
 
-            var created = new List<string>();
-            var updated = new List<string>();
-            var skipped = new List<string>();
-            var needSecret = new List<string>();
-            var kept = new List<string>();
-            var startDirs = new Dictionary<string, string?>();
+            var log = new ImportLog();
 
             if (root.TryGetProperty("profiles", out var plist) && plist.ValueKind == JsonValueKind.Array)
                 foreach (var p in plist.EnumerateArray())
-                    ImportProfileSafe(p, force, created, updated, skipped, needSecret, kept, startDirs);
+                    ImportProfileSafe(p, force, log);
 
             // Everything below edits config directly; one load and one save, and only when something changed.
             var cfg = Config;
             var dirty = false;
-            foreach (var (name, dir) in startDirs)
+            foreach (var (name, dir) in log.StartDirs)
                 if (cfg.Profiles.TryGetValue(name, out var pe) && pe.StartDir != dir) { pe.StartDir = dir; dirty = true; }
+            var skipped = log.Skipped;
 
             if (root.TryGetProperty("folders", out var flist) && flist.ValueKind == JsonValueKind.Array)
             {
@@ -161,6 +195,7 @@ public partial class ProfileManager
                         foreach (var k in existing) cfg.Folders.Remove(k.Key);
                     }
                     cfg.Folders[key] = profile;
+                    log.Mapped.Add($"{key} → {profile}");
                     dirty = true;
                 }
             }
@@ -175,26 +210,57 @@ public partial class ProfileManager
             }
 
             if (dirty) ConfigStore.Save(paths, cfg);
-            return new ImportResult(created, updated, skipped, needSecret, kept);
+            return new ImportResult(log.Created, log.Updated, skipped, log.NeedSecret, log.Kept.Distinct().ToList(),
+                log.Notices, log.Mapped, log.EnvNames);
+        }
+    }
+
+    private sealed class ImportLog
+    {
+        public List<string> Created { get; } = [];
+        public List<string> Updated { get; } = [];
+        public List<string> Skipped { get; } = [];
+        public List<string> NeedSecret { get; } = [];
+        public List<string> Kept { get; } = [];
+        public List<string> Notices { get; } = [];
+        public List<string> Mapped { get; } = [];
+        public List<string> EnvNames { get; } = [];
+        public Dictionary<string, string?> StartDirs { get; } = [];
+
+        public void Collect(SyncReport r)
+        {
+            Notices.AddRange(r.Notices);
+            Notices.AddRange(r.Problems);
+        }
+
+        /// <summary>Drops the "name: …" entries a failed profile left behind.</summary>
+        public void Forget(string name)
+        {
+            Created.Remove(name);
+            Updated.Remove(name);
+            StartDirs.Remove(name);
+            NeedSecret.RemoveAll(s => s.StartsWith(name + ":", StringComparison.Ordinal));
+            Kept.RemoveAll(s => s.StartsWith(name + ":", StringComparison.Ordinal));
+            EnvNames.RemoveAll(s => s.StartsWith(name + ":", StringComparison.Ordinal));
         }
     }
 
     // One profile's failure must not abort the rest: it is reported in Skipped and the import carries on.
-    private void ImportProfileSafe(JsonElement p, bool force, List<string> created, List<string> updated,
-        List<string> skipped, List<string> needSecret, List<string> kept, Dictionary<string, string?> startDirs)
+    private void ImportProfileSafe(JsonElement p, bool force, ImportLog log)
     {
-        try { ImportProfile(p, force, created, updated, skipped, needSecret, kept, startDirs); }
-        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
+        var added = false;
+        try { ImportProfile(p, force, log, ref added); }
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             var name = Str(p, "name") ?? "";
-            created.Remove(name); updated.Remove(name);
-            skipped.Add($"{name}: failed - {e.Message}");
+            log.Forget(name);
+            log.Skipped.Add(added ? $"{name}: created but not finished: {e.Message}" : $"{name}: failed - {e.Message}");
         }
     }
 
-    private void ImportProfile(JsonElement p, bool force, List<string> created, List<string> updated,
-        List<string> skipped, List<string> needSecret, List<string> kept, Dictionary<string, string?> startDirs)
+    private void ImportProfile(JsonElement p, bool force, ImportLog log, ref bool added)
     {
+        var skipped = log.Skipped;
         var name = Str(p, "name") ?? "";
         try { ProfileName.Validate(name); }
         catch (ClauderooException e) { skipped.Add($"{name}: {e.Message}"); return; }
@@ -244,39 +310,62 @@ public partial class ProfileManager
             foreach (var o in ov.EnumerateArray())
                 if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(o.GetString()!)) overrides.Add(o.GetString()!);
 
-        if (!exists) Add(name);
+        if (!exists)
+        {
+            log.Collect(Add(name));
+            added = true;
+        }
 
         // A profile that holds a stored secret never has its provider changed: switching would delete the secret.
         var holdsSecret = exists && (HasApiKey(name) || HasToken(name));
         if (holdsSecret && provider != Providers.Of(current!))
-            kept.Add($"{name}: kept its {(Providers.Of(current!) == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
+            log.Kept.Add($"{name}: kept its {(Providers.Of(current!) == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
         switch (provider)
         {
             case var _ when holdsSecret:
                 break;
             case Providers.ApiKey or Providers.Token:
-                SetProvider(name, Providers.Login);
-                needSecret.Add(provider == Providers.ApiKey
+                log.Collect(SetProvider(name, Providers.Login));
+                log.NeedSecret.Add(provider == Providers.ApiKey
                     ? $"{name}: set the key with `cr provider {name} apikey`"
                     : $"{name}: set the token with `cr provider {name} token`");
                 break;
             case Providers.Vertex:
-                SetProvider(name, Providers.Vertex, vertex);
+                log.Collect(SetProvider(name, Providers.Vertex, vertex));
                 break;
             default:
-                SetProvider(name, Providers.Login);
+                log.Collect(SetProvider(name, Providers.Login));
                 break;
         }
 
-        if (envVars != null) ReplaceEnv(name, envVars);
+        if (envVars != null)
+        {
+            log.Collect(ReplaceEnv(name, envVars));
+            if (envVars.Count > 0)
+                log.EnvNames.Add($"{name}: {string.Join(", ", envVars.Keys.OrderBy(k => k, StringComparer.Ordinal))}");
+        }
 
+        // Owned items are only added. An import never shares a profile's own copies back, even with force.
         var have = Get(name).Overrides.ToList();
         foreach (var item in overrides.Where(i => !have.Contains(i))) Own(name, item);
-        if (exists && hasOverrides)
-            foreach (var item in have.Where(i => !overrides.Contains(i))) Share(name, item);
 
-        startDirs[name] = Str(p, "startDir");
-        (exists ? updated : created).Add(name);
+        // Only a startDir present in the file is applied, and only one that exists on this machine.
+        if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("startDir", out var sd)
+            && sd.ValueKind is JsonValueKind.String or JsonValueKind.Null)
+        {
+            var dir = sd.ValueKind == JsonValueKind.String ? sd.GetString() : null;
+            if (string.IsNullOrWhiteSpace(dir)) log.StartDirs[name] = null;
+            else if (IsUsableStartDir(dir)) log.StartDirs[name] = dir;
+            else log.Notices.Add($"{name}: start folder {dir} doesn't exist on this machine, so it wasn't set.");
+        }
+
+        (exists ? log.Updated : log.Created).Add(name);
+    }
+
+    private static bool IsUsableStartDir(string dir)
+    {
+        try { return Path.IsPathFullyQualified(dir) && Directory.Exists(dir); }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
     }
 
     private static string? Str(JsonElement el, string prop) =>

@@ -257,21 +257,22 @@ public static class Commands
             {
                 var force = pos.Remove("--force");
                 if (pos.Count != 1) throw new ClauderooException("Usage: clauderoo import <file> [--force]");
-                if (!File.Exists(pos[0])) throw new ClauderooException($"File not found: {Path.GetFullPath(pos[0])}");
-                string text;
-                try { text = File.ReadAllText(pos[0]); }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-                {
-                    throw new ClauderooException($"Couldn't read {pos[0]}: {e.Message}");
-                }
-                var r = pm.Import(text, force);
+                var r = pm.ImportFile(pos[0], force);
                 if (r.Created.Count > 0) output.WriteLine($"Created: {string.Join(", ", r.Created)}");
                 if (r.Updated.Count > 0) output.WriteLine($"Updated: {string.Join(", ", r.Updated)}");
-                foreach (var s in r.Skipped) output.WriteLine($"Skipped {s}");
-                foreach (var s in r.NeedSecret) output.WriteLine($"Needs a secret: {s}");
-                foreach (var s in r.KeptProvider ?? []) output.WriteLine($"Kept {s}");
-                if (r.Created.Count + r.Updated.Count + r.Skipped.Count + r.NeedSecret.Count == 0)
-                    output.WriteLine("Nothing to import.");
+                void Section(string heading, IReadOnlyList<string>? items)
+                {
+                    if (items is not { Count: > 0 }) return;
+                    output.WriteLine(heading);
+                    foreach (var i in items) output.WriteLine("  " + i);
+                }
+                Section("Folder mappings added:", r.Mapped);
+                Section("Environment variables (names only):", r.EnvNames);
+                Section("Skipped:", r.Skipped);
+                Section("Kept their sign-in:", r.KeptProvider);
+                Section("Needs a key or token:", r.NeedSecret);
+                Section("Notices:", r.Notices);
+                if (!r.ChangedAnything) output.WriteLine("Nothing to import.");
                 return 0;
             }
             case "default":
