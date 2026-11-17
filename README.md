@@ -51,6 +51,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
 - **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
+- **MCP server.** `cr mcp` lets a Claude session list your profiles, check their usage, change the default and hand a one-shot prompt to another profile.
 - **Safe by design.** Removed profiles are moved, never deleted. To fetch usage it reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only; the token is never written, copied, logged or shown.
 
 ## Screenshots
@@ -191,6 +192,8 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `version` | Print the installed version (`--version` works too) |
 | `upgrade [--check]` | Install the latest GitHub release after verifying its SHA256. `--check` only says whether a newer one exists. Builds not made from a release can't upgrade |
 | `uninstall [--yes]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept. Quit the tray app first |
+| `mcp` | Run clauderoo's MCP server over stdio. Claude Code starts it; you don't run it yourself. See [MCP server](#mcp-server) |
+| `mcp install` | Print the `claude mcp add` command that registers the server, and copy it to the clipboard. It never runs it |
 
 ## Providers
 
@@ -268,6 +271,36 @@ The tray checks every 5 minutes, or every 2 minutes for a profile with a session
 clauderoo never refreshes a sign-in. When a profile's sign-in has expired, usage says so; start a session of that profile and Claude refreshes it.
 
 The usage endpoint isn't documented by Anthropic. If it changes, usage shows as unavailable and everything else keeps working.
+
+### MCP server
+
+`cr mcp` is an MCP server (stdio, JSON-RPC 2.0) that gives Claude Code four clauderoo tools:
+
+| Tool | What it does |
+| --- | --- |
+| `list_profiles` | Each profile's name, provider, account or Vertex project, whether it's the default, its running sessions and its last saved usage. Uses no quota |
+| `usage {profile?}` | 5-hour and 7-day usage for one profile or all of them. Uses no quota. A reading under 2 minutes old is reused, each profile is checked at most once every 2 minutes, and a rate limit is waited out for at least 10 minutes |
+| `set_default {profile}` | Make a profile the default for new terminals |
+| `delegate {profile, prompt, cwd?}` | Run a one-shot `claude -p` under another profile and return its output |
+
+**Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or click **Use from Claude…** in the profile manager, and you get this command to run once in a terminal:
+
+```powershell
+claude mcp add --scope user clauderoo -- "%LOCALAPPDATA%\clauderoo\cr.exe" mcp
+```
+
+Run it from a terminal using your home profile. Every profile then gets it through the shared MCP servers.
+
+**What `delegate` will and won't do:**
+
+- The prompt goes to `claude` on **stdin**. It is never on the command line, so it can't be read as a `claude` option. Prompts with a NUL character or over 100 KB are refused.
+- The run uses the **target profile's own permissions** and allow-list. `-p` can't ask, so anything that would need your approval is denied. clauderoo never passes `--dangerously-skip-permissions` or any `--permission-mode`.
+- It runs with `--strict-mcp-config` and an empty MCP config, so it can't load MCP servers, clauderoo's included.
+- It refuses the profile the calling session already runs under (`CLAUDEROO_PROFILE`).
+- It refuses a working folder (`cwd`) that holds sign-ins or settings: your user folder itself, anything under `~/.clauderoo` or `~/.claude`, including through junctions. It also refuses network (UNC) folders and folders whose real location can't be resolved. The default is the server's working folder.
+- It uses the **target account's quota**.
+- It stops after **10 minutes** and kills the run's process tree. Runs also stop when the MCP client goes away.
+- Output is cut to 100 KB per stream, and any of the target's tokens are scrubbed from it.
 
 ### Profiles that own their settings.json
 

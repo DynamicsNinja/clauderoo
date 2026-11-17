@@ -167,6 +167,7 @@ sealed class ProfilesForm : Form
     private readonly Button _setDefault = Btn("Set as &default");
     private readonly Button _start = Btn("S&tart session");
     private readonly Button _save = Btn("&Save");
+    private readonly Button _useFromClaude = Btn("Use from Cl&aude…");
 
     private readonly System.Windows.Forms.Timer _runningTimer = new() { Interval = 3000 };
     private Dictionary<string, int> _running = new(StringComparer.Ordinal);
@@ -338,14 +339,19 @@ sealed class ProfilesForm : Form
         var bottomButtons = Flow(FlowDirection.LeftToRight);
         bottomButtons.Anchor = AnchorStyles.Right;
         bottomButtons.Controls.AddRange([_setDefault, _start, _unsaved, _save]);
-        var bottom = Table(2);
+        // "Use from Claude…" is about clauderoo as a whole, not the selected profile, so it sits apart on the left.
+        _useFromClaude.Anchor = AnchorStyles.Left;
+        _useFromClaude.Margin = new Padding(0, 0, 12, 0);
+        var bottom = Table(3);
         bottom.Dock = DockStyle.Fill;
         bottom.Margin = new Padding(0, 8, 0, 0);
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.Controls.Add(_restartNote, 0, 0);
-        bottom.Controls.Add(bottomButtons, 1, 0);
+        bottom.Controls.Add(_useFromClaude, 0, 0);
+        bottom.Controls.Add(_restartNote, 1, 0);
+        bottom.Controls.Add(bottomButtons, 2, 0);
 
         var root = _root = Table(2);
         root.Dock = DockStyle.Fill;
@@ -435,6 +441,8 @@ sealed class ProfilesForm : Form
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
         _setDefault.Click += (_, _) => Guard(SetDefault);
+        // Only shows and copies the command; never runs it or writes ~/.claude.json.
+        _useFromClaude.Click += (_, _) => Guard(() => UseFromClaudeDialog.ShowFor(this));
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
         _runningTimer.Tick += (_, _) => RefreshRunning();

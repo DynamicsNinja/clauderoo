@@ -476,10 +476,6 @@ public static class Commands
         return 0;
     }
 
-    /// <summary>The 'claude mcp add' line that registers the installed cr.exe as a user-scope MCP server.</summary>
-    public static string McpAddCommand() =>
-        $"claude mcp add --scope user clauderoo -- \"{Path.Combine(Path.GetDirectoryName(HelperExePath.Resolve())!, Installer.ShortAlias)}\" mcp";
-
     private static int McpCmd(List<string> pos, List<string> claudeArgs, TextWriter output, TextWriter err, ProfileManager pm,
         string? claudePath, UsageClient? usage, Func<string, bool>? clipboard, TextReader? mcpInput)
     {
@@ -489,8 +485,8 @@ public static class Commands
         {
             // Never runs it and never writes ~/.claude.json: the user runs it once under the home profile and the
             // MCP merge gives it to every profile.
-            var line = McpAddCommand();
-            output.WriteLine("Register clauderoo with Claude Code by running this once, in a terminal using your home profile:");
+            var line = McpRegistration.Command(); // the same text the window's "Use from Claude…" shows
+            output.WriteLine(McpRegistration.Explanation);
             output.WriteLine();
             output.WriteLine("  " + line);
             output.WriteLine();
