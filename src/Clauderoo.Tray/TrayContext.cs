@@ -32,7 +32,10 @@ sealed class TrayContext : ApplicationContext
     private IReadOnlyList<Problem> _problems = [];
     private IReadOnlyList<ProfileInfo> _profiles = [];
     private IReadOnlyDictionary<string, int> _running = new Dictionary<string, int>();
-    private (string Headline, string Detail, bool Exists)? _configError;
+    private ConfigError? _configError;
+    private bool _seeded;        // the first sync's problems are already known (no balloon for them)
+    private bool _fixing;        // a Fix runs on a worker thread: full syncs wait
+    private bool _countingRunning;
 
     private Icon? _trayIcon;
     private (AppIconState State, bool HighContrast, Size Size)? _trayIconKey;
@@ -40,6 +43,9 @@ sealed class TrayContext : ApplicationContext
     private readonly List<string> _pendingNotices = [];
     private DateTime _lastBalloon = DateTime.MinValue;
     private bool _balloonOpensProblems;
+    private Point _clickPos;
+
+    private sealed record ConfigError(ConfigIssue Issue, string Headline, string Detail, string Message);
 
     public TrayContext(bool openProfiles = false)
     {
@@ -49,15 +55,27 @@ sealed class TrayContext : ApplicationContext
         _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now);
         _owner = new OwnerWindow(() => Guard(() => UpdateStatus(forceIcon: true)));
 
-        _menu.Opening += (_, _) => RebuildMenu();
+        _menu.Opening += (_, e) =>
+        {
+            RebuildMenu();
+            e.Cancel = false; // the menu is rebuilt while opening; never let an empty-at-start menu cancel itself
+        };
         _icon = new NotifyIcon { Text = "clauderoo", ContextMenuStrip = _menu };
         UpdateStatus(forceIcon: true);
         _icon.Visible = true;
 
-        // Single left click opens the menu (after the double-click time, so a double-click doesn't flash it);
-        // double-click starts the default profile, which is the bold item in the menu.
-        _icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) { _clickTimer.Stop(); _clickTimer.Start(); } };
-        _clickTimer.Tick += (_, _) => { _clickTimer.Stop(); ShowMenuAtCursor(); };
+        // Single left click opens the menu (shown after the double-click time, so a double-click doesn't flash it);
+        // double-click starts the default profile, which is the bold item in the menu. The foreground is taken at
+        // the click itself, while Windows still allows it.
+        _icon.MouseClick += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            _clickPos = Cursor.Position;
+            SetForegroundWindow(_owner.Handle);
+            _clickTimer.Stop();
+            _clickTimer.Start();
+        };
+        _clickTimer.Tick += (_, _) => { _clickTimer.Stop(); ShowMenu(_clickPos); };
         _icon.MouseDoubleClick += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
@@ -65,14 +83,14 @@ sealed class TrayContext : ApplicationContext
             Guard(StartDefault);
         };
         _icon.BalloonTipClicked += (_, _) => { if (_balloonOpensProblems) Guard(ShowProblems); };
-        _icon.BalloonTipClosed += (_, _) => _balloonOpensProblems = false;
 
         _debounce.Tick += (_, _) =>
         {
             _debounce.Stop();
+            if (_fixing) { _debounce.Start(); return; }
             Guard(FullSync);
         };
-        _runningTimer.Tick += (_, _) => Guard(() => { RefreshRunning(); UpdateStatus(); });
+        _runningTimer.Tick += async (_, _) => await RefreshRunningInBackground();
         _runningTimer.Start();
         _noticeTimer.Tick += (_, _) => { _noticeTimer.Stop(); FlushNotices(); };
 
@@ -83,32 +101,43 @@ sealed class TrayContext : ApplicationContext
         _manageSignal = ManageSignal.Listen(() => Post(() => Guard(ShowProfiles)));
         if (openProfiles) Post(() => Guard(ShowProfiles));
 
-        // Learn the current problems right away instead of waiting for the first change.
+        // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
         Post(() => Guard(FullSync));
     }
 
     // ---------- state ----------
 
-    /// <summary>Loads the config, or records (and shows once) why it can't be loaded.</summary>
+    /// <summary>
+    /// Loads the config, or records why it can't be loaded. Only "isn't set up yet" gets a balloon (once); a damaged or
+    /// unreadable file shows on the icon, tooltip and menu. When the config comes back, a sync is started.
+    /// </summary>
     private ClauderooConfig? LoadConfig()
     {
         try
         {
             var cfg = _pm.Config;
-            _configError = null;
+            if (_configError != null)
+            {
+                _configError = null;
+                UpdateStatus();
+                Kick();
+            }
             return cfg;
         }
         catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
         {
-            var exists = File.Exists(_paths.ConfigFile);
-            var first = _configError == null;
-            var (headline, detail) = TrayText.ConfigProblem(exists);
-            _configError = (headline, detail, exists);
+            var issue = !File.Exists(_paths.ConfigFile) ? ConfigIssue.Missing
+                : e is ClauderooException ? ConfigIssue.Damaged
+                : ConfigIssue.Unreadable;
+            var previous = _configError;
+            var (headline, detail) = TrayText.ConfigProblem(issue, e.Message);
+            _configError = new ConfigError(issue, headline, detail, e.Message);
             _profiles = [];
             _problems = [];
-            _problemsForm?.SetProblems(_problems);
+            _problemsForm?.ShowConfigError(headline);
             UpdateStatus();
-            if (first) Balloon($"{headline}. Click the tray icon for options.", ToolTipIcon.Warning);
+            if (issue == ConfigIssue.Missing && previous?.Issue != ConfigIssue.Missing)
+                Balloon($"{headline}. Click the tray icon to set it up.", ToolTipIcon.Info);
             return null;
         }
     }
@@ -127,10 +156,12 @@ sealed class TrayContext : ApplicationContext
     private void SetProblems(IReadOnlyList<Problem> problems)
     {
         _problems = problems;
-        var fresh = _alerted.NewOnly(problems.Select(p => p.Detail));
+        var fresh = _alerted.NewOnly(problems.Select(TrayText.Key));
         _problemsForm?.SetProblems(problems);
         UpdateStatus();
-        if (fresh.Count > 0)
+        var first = !_seeded;
+        _seeded = true;
+        if (fresh.Count > 0 && !first) // problems already there at startup: icon and tooltip only
             Balloon(TrayText.ProblemBalloon(problems), ToolTipIcon.Warning, opensProblems: true);
     }
 
@@ -146,6 +177,21 @@ sealed class TrayContext : ApplicationContext
     {
         try { _running = TrayMenuState.CountRunning(_pm); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* keep the last known counts */ }
+    }
+
+    // The 15 s refresh probes processes and waits on the sessions lock: done on a worker thread.
+    private async Task RefreshRunningInBackground()
+    {
+        if (_countingRunning) return;
+        _countingRunning = true;
+        try
+        {
+            _running = await Task.Run(() => TrayMenuState.CountRunning(_pm)); // resumes on the UI thread
+            UpdateStatus();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* keep the last known counts */ }
+        catch (Exception) { /* never take the tray down from a timer */ }
+        finally { _countingRunning = false; }
     }
 
     /// <summary>Icon badge and tooltip from the current state.</summary>
@@ -164,7 +210,7 @@ sealed class TrayContext : ApplicationContext
         }
 
         var text = _configError is { } err
-            ? TrayText.Cut($"clauderoo — {err.Headline}. Click for options.")
+            ? TrayText.Cut($"{err.Headline}\nClick the icon for options")
             : TrayText.Tooltip(_profiles.FirstOrDefault(p => p.IsDefault) ?? _profiles.FirstOrDefault(p => p.IsHome),
                 _problems.Count, total);
         if (_icon.Text != text) _icon.Text = text;
@@ -172,9 +218,8 @@ sealed class TrayContext : ApplicationContext
 
     // ---------- menu ----------
 
-    private void ShowMenuAtCursor()
+    private void ShowMenu(Point pos)
     {
-        var pos = Cursor.Position;
         var area = Screen.FromPoint(pos).WorkingArea;
         var above = pos.Y > area.Top + area.Height / 2;
         var left = pos.X > area.Left + area.Width / 2;
@@ -201,6 +246,9 @@ sealed class TrayContext : ApplicationContext
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
             SetUp = () => Guard(SetUp),
             Retry = () => Guard(FullSync),
+            CopyConfigDetails = () => Guard(() => Clipboard.SetText(
+                $"{_configError?.Headline}\r\n{_configError?.Message}\r\nSettings file: {_paths.ConfigFile}")),
+            ShowConfigFile = () => Guard(ShowConfigFile),
             Exit = ExitThread,
         };
 
@@ -211,7 +259,7 @@ sealed class TrayContext : ApplicationContext
         }
         if (_configError is { } err)
         {
-            TrayMenu.BuildFallback(_menu, err.Headline, err.Detail, offerSetUp: !err.Exists, actions);
+            TrayMenu.BuildFallback(_menu, err.Issue, err.Headline, err.Detail, actions);
             return;
         }
 
@@ -222,6 +270,15 @@ sealed class TrayContext : ApplicationContext
 
     // ---------- actions ----------
 
+    /// <summary>The config is needed: shows the plain headline (never the CLI wording) when it can't be loaded.</summary>
+    private ClauderooConfig? RequireConfig()
+    {
+        var cfg = LoadConfig();
+        if (cfg == null && _configError is { } err)
+            Balloon($"{err.Headline}. Click the tray icon for options.", ToolTipIcon.Warning);
+        return cfg;
+    }
+
     // Single Profiles window: opened on first use, brought to the front afterwards.
     private void ShowProfiles()
     {
@@ -230,11 +287,7 @@ sealed class TrayContext : ApplicationContext
             _profilesForm.ShowAndActivate(reload: true);
             return;
         }
-        if (LoadConfig() == null)
-        {
-            Balloon($"{_configError!.Value.Headline}. {_configError.Value.Detail}", ToolTipIcon.Warning);
-            return;
-        }
+        if (RequireConfig() == null) return;
         var form = new ProfilesForm(_pm, name => StartSession(name, null));
         form.FormClosed += (_, _) =>
         {
@@ -250,27 +303,47 @@ sealed class TrayContext : ApplicationContext
         var form = _problemsForm;
         if (form is not { IsDisposed: false })
         {
-            form = new ProblemsForm(Fix, () => Guard(ShowProfiles));
+            form = new ProblemsForm(FixAsync, () => Guard(ShowProfiles));
             var created = form;
             form.FormClosed += (_, _) => { if (_problemsForm == created) _problemsForm = null; };
             _problemsForm = form;
         }
-        form.SetProblems(_problems);
+        if (_configError is { } err) form.ShowConfigError(err.Headline);
+        else form.SetProblems(_problems);
         form.ShowAndActivate();
     }
 
-    private void Fix(Problem p)
+    /// <summary>
+    /// Runs the fix on a worker thread, then re-checks every profile. A fix that worked is reported as fixed even if
+    /// the follow-up sync fails; that is said separately.
+    /// </summary>
+    private async Task<FixOutcome> FixAsync(Problem p)
     {
-        var report = _pm.Fix(p); // throws with a message the window shows
+        SyncReport report;
+        _fixing = true;
+        try { report = await Task.Run(() => _pm.Fix(p)); } // throws with a message the window shows
+        finally { _fixing = false; }
+
         QueueNotices(report.Notices, now: true);
-        FullSync();
+        try
+        {
+            FullSync();
+        }
+        catch (Exception)
+        {
+            return new FixOutcome(true,
+                "Fixed. clauderoo couldn't re-check your profiles just now; it will try again the next time Claude's settings change.");
+        }
+        return _problems.Any(q => TrayText.Key(q) == TrayText.Key(p))
+            ? new FixOutcome(false, "clauderoo tried, but the problem is still there. Copy the details and send them to whoever helps you with clauderoo.")
+            : new FixOutcome(true, "Fixed.");
     }
 
     private void StartDefault()
     {
-        var cfg = _pm.Config;
+        if (RequireConfig() is not { } cfg) return;
         var name = cfg.DefaultProfile ?? cfg.HomeProfileName
-                   ?? throw new ClauderooException("No default profile is set.");
+                   ?? throw new ClauderooException("No default profile is set. Open Manage profiles to choose one.");
         StartSession(name, null);
     }
 
@@ -283,7 +356,7 @@ sealed class TrayContext : ApplicationContext
     // The new terminal runs `clauderoo run`, which records the session itself; the running count follows within 15 s.
     private void StartSession(string name, string? dir)
     {
-        var cfg = _pm.Config;
+        if (RequireConfig() is not { } cfg) return;
         dir ??= _pm.Get(name).StartDir
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable()));
@@ -299,6 +372,7 @@ sealed class TrayContext : ApplicationContext
 
     private void NewProfile()
     {
+        if (RequireConfig() == null) return;
         var name = InputDialog.Ask("New profile", "Profile name (a-z, 0-9, -):")?.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(name)) return;
         var report = _pm.Add(name);
@@ -314,10 +388,23 @@ sealed class TrayContext : ApplicationContext
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_paths.ProfilesDir}\"") { UseShellExecute = true })?.Dispose();
     }
 
+    private void ShowConfigFile()
+    {
+        var args = File.Exists(_paths.ConfigFile) ? $"/select,\"{_paths.ConfigFile}\"" : $"\"{_paths.Root}\"";
+        Process.Start(new ProcessStartInfo("explorer.exe", args) { UseShellExecute = true })?.Dispose();
+    }
+
     private void SetUp()
     {
-        _pm.Init();
-        _configError = null;
+        try
+        {
+            _pm.Init();
+        }
+        catch (ClauderooException e)
+        {
+            Balloon(TrayText.SetUpFailed(e.Message), ToolTipIcon.Warning);
+            return;
+        }
         Balloon("clauderoo is set up. Your current Claude login is the 'personal' profile.", ToolTipIcon.Info);
         FullSync();
     }
@@ -422,6 +509,7 @@ sealed class TrayContext : ApplicationContext
         catch (Exception e) { Balloon(e.Message, ToolTipIcon.Warning); }
     }
 
+    // Every balloon decides for itself whether clicking it opens the Problems window.
     private void Balloon(string text, ToolTipIcon kind, bool opensProblems = false)
     {
         try
@@ -460,8 +548,10 @@ sealed class TrayContext : ApplicationContext
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     /// <summary>
-    /// An invisible top-level window: brought to the foreground before the menu is shown from a left click (so an
-    /// outside click closes it), and told about DPI changes (WM_DPICHANGED) so the tray icon is reloaded.
+    /// An invisible top-level window, brought to the foreground before the menu is shown from a left click (so an
+    /// outside click closes it). The app is system-DPI-aware (the default; Program.cs doesn't change it), so Windows
+    /// doesn't send it WM_DPICHANGED today: scaling changes reach the tray through DisplaySettingsChanged. The
+    /// handler stays so the icon also follows the DPI if the app is ever made per-monitor aware.
     /// </summary>
     private sealed class OwnerWindow : NativeWindow
     {

@@ -1,8 +1,20 @@
+using System.Text.RegularExpressions;
 using Clauderoo.Core;
 
 namespace Clauderoo.Tray;
 
-/// <summary>The words the tray uses (menu labels, tooltip, balloons). Pure: no UI, no I/O.</summary>
+/// <summary>Why the settings couldn't be loaded.</summary>
+internal enum ConfigIssue
+{
+    /// <summary>No config.json yet: clauderoo was never set up.</summary>
+    Missing,
+    /// <summary>config.json exists but isn't valid.</summary>
+    Damaged,
+    /// <summary>config.json couldn't be read (locked, no access).</summary>
+    Unreadable,
+}
+
+/// <summary>The words the tray uses (menu labels, tooltip, balloons, Problems window). Pure: no UI, no I/O.</summary>
 internal static class TrayText
 {
     public const string ClaudeLogin = "Claude login";
@@ -13,6 +25,9 @@ internal static class TrayText
     /// <summary>NotifyIcon.Text limit.</summary>
     public const int TooltipMax = 127;
 
+    /// <summary>Longest account (email) or project shown before it's cut with "…".</summary>
+    public const int AccountMax = 40;
+
     public static string ProviderName(string provider) => provider switch
     {
         Providers.Vertex => Vertex,
@@ -20,13 +35,20 @@ internal static class TrayText
         _ => ClaudeLogin,
     };
 
-    /// <summary>The account part: email (or "not signed in") for a Claude login, the project for Vertex, nothing for an API key.</summary>
+    /// <summary>
+    /// The account part: email (or "not signed in") for a Claude login, the project for Vertex, nothing for an API key.
+    /// Cut to <see cref="AccountMax"/> characters.
+    /// </summary>
     public static string? Account(ProfileInfo p) => p.Provider switch
     {
-        Providers.Vertex => string.IsNullOrWhiteSpace(p.ProviderDetail) ? null : p.ProviderDetail,
+        Providers.Vertex => string.IsNullOrWhiteSpace(p.ProviderDetail) ? null : Cut(p.ProviderDetail, AccountMax),
         Providers.ApiKey => null,
-        _ => string.IsNullOrWhiteSpace(p.Email) ? NotSignedIn : p.Email,
+        _ => string.IsNullOrWhiteSpace(p.Email) ? NotSignedIn : Cut(p.Email, AccountMax),
     };
+
+    /// <summary>True for a Claude login with no account: the menu shows "not signed in" muted.</summary>
+    public static bool IsSignedOut(ProfileInfo p) =>
+        p.Provider is not (Providers.Vertex or Providers.ApiKey) && string.IsNullOrWhiteSpace(p.Email);
 
     /// <summary>"Claude login · someone@example.com", "Google Vertex AI · my-proj", "API key".</summary>
     public static string Describe(ProfileInfo p) =>
@@ -42,8 +64,9 @@ internal static class TrayText
 
     public static string Running(int n) => Plural(n, "session running", "sessions running");
 
+    /// <summary>The menu's first line: "clauderoo — all good", or the clickable "3 problems…" (with a mnemonic).</summary>
     public static string Header(int problems) =>
-        problems == 0 ? "clauderoo — all good" : $"clauderoo — {Problems(problems)}";
+        problems == 0 ? "clauderoo — all good" : $"{problems} &{(problems == 1 ? "problem" : "problems")}…";
 
     /// <summary>Error if a problem can't be fixed from the tray, Warning if any problem, Running if sessions run.</summary>
     public static AppIconState IconState(IReadOnlyCollection<Problem> problems, int running) =>
@@ -55,6 +78,9 @@ internal static class TrayText
     /// <summary>A problem clauderoo can't fix itself (damaged file, a file in the way, unknown).</summary>
     public static bool IsSevere(Problem p) => p.Fix == null;
 
+    /// <summary>What identifies a problem for "is this new?": the same profile and plain title.</summary>
+    public static string Key(Problem p) => p.Profile + "\n" + p.Title;
+
     public static string FixLabel(ProblemFix fix) => fix switch
     {
         ProblemFix.ShareAgain => "&Share it again",
@@ -62,33 +88,65 @@ internal static class TrayText
         _ => "&Sync again",
     };
 
+    static readonly Regex ItemPattern = new(@"^[^:\s]+: (?<d>\S+) is ", RegexOptions.Compiled);
+
+    /// <summary>One plain line: what the Fix button will do, or what to do when there's no fix.</summary>
+    public static string Explain(Problem p)
+    {
+        var who = p.Profile.Length > 0 ? p.Profile : "this profile";
+        var item = ItemPattern.Match(p.Detail) is { Success: true } m ? m.Groups["d"].Value : "shared";
+        return p.Fix switch
+        {
+            ProblemFix.ShareAgain =>
+                $"Share it again replaces {who}'s own {item} folder with the shared one; clauderoo keeps a backup of the old folder.",
+            ProblemFix.RecreateLink =>
+                $"Repair the link points {who}'s {item} folder back at the shared one. Nothing in the shared folder is changed.",
+            ProblemFix.Resync =>
+                $"Sync again retries the update for {who}. If another program is using Claude's files, close it first.",
+            _ when p.Title.Contains("damaged") =>
+                "A Claude settings file has a mistake in it, so clauderoo left it alone. Copy the details and send them to whoever helps you with clauderoo.",
+            _ when p.Title.StartsWith("A file is blocking") =>
+                $"Something put a file where {who}'s shared folder should be. Copy the details and send them to whoever helps you with clauderoo.",
+            _ => "clauderoo can't fix this one by itself. Copy the details and send them to whoever helps you with clauderoo.",
+        };
+    }
+
     /// <summary>
-    /// "clauderoo — double-click: start work (Google Vertex AI, my-proj) · 2 problems · 1 session running", cut to
-    /// <see cref="TooltipMax"/> characters (the account is shortened first).
+    /// Three lines within <see cref="TooltipMax"/>:
+    /// "clauderoo — double-click starts work" / "Google Vertex AI · my-proj" / "⚠ 2 problems · ● 1 session running".
     /// </summary>
     public static string Tooltip(ProfileInfo? def, int problems, int running)
     {
-        var tail = " · " + (problems == 0 ? "no problems" : Problems(problems))
-                   + (running > 0 ? " · " + Running(running) : "");
-        if (def == null) return Cut("clauderoo — no default profile" + tail);
+        var status = (problems == 0 ? "No problems" : "⚠ " + Problems(problems))
+                     + (running > 0 ? " · ● " + Running(running) : "");
+        if (def == null) return Cut("clauderoo — no default profile\n" + status);
 
-        var head = $"clauderoo — double-click: start {def.Name} (";
-        var provider = ProviderName(def.Provider);
-        var account = Account(def);
-        var full = head + provider + (account != null ? ", " + account : "") + ")" + tail;
-        if (full.Length <= TooltipMax || account == null) return Cut(full);
-
-        // Too long: shorten the account (an email or project id) to what fits.
-        var room = TooltipMax - (head.Length + provider.Length + 2 + 1 + tail.Length) - 1;
-        return Cut(room >= 4
-            ? head + provider + ", " + account[..room] + "…)" + tail
-            : head + provider + ")" + tail);
+        var line2 = Describe(def);
+        var line1 = "clauderoo — double-click starts " + def.Name;
+        // Fit: shorten the provider line first, then the name line.
+        var room = TooltipMax - status.Length - 2;
+        if (line1.Length + line2.Length > room)
+            line2 = Cut(line2, Math.Max(1, room - line1.Length));
+        if (line1.Length + line2.Length > room)
+            line1 = Cut(line1, Math.Max(1, room - line2.Length));
+        return Cut(line1 + "\n" + line2 + "\n" + status);
     }
 
-    /// <summary>The fallback-menu headline for a config that can't be loaded.</summary>
-    public static (string Headline, string Detail) ConfigProblem(bool configExists) => configExists
-        ? ("clauderoo's settings file is damaged", "Profiles can't be shown until it's repaired.")
-        : ("clauderoo isn't set up yet", "Set it up to start sessions from here.");
+    /// <summary>The fallback menu's headline and plain detail for a config that can't be loaded.</summary>
+    public static (string Headline, string Detail) ConfigProblem(ConfigIssue issue, string? message = null) => issue switch
+    {
+        ConfigIssue.Missing => ("clauderoo isn't set up yet", "Set it up to start sessions from here."),
+        ConfigIssue.Damaged => ("clauderoo's settings file is damaged", Cut(message ?? "Its settings file can't be understood.", 90)),
+        _ => ("clauderoo's settings can't be read right now", "Another program may be using the file. Retry in a moment."),
+    };
+
+    /// <summary>Plain words for <see cref="ProfileManager.Init"/>'s failures.</summary>
+    public static string SetUpFailed(string message) =>
+        message.Contains("CLAUDE_CONFIG_DIR")
+            ? "Claude is already set to use another folder — ask for help setting up clauderoo."
+            : message.StartsWith("Home folder not found")
+                ? "Claude hasn't been used on this PC yet — start Claude once, then choose Set up."
+                : message;
 
     public static string Cut(string s, int max = TooltipMax) => s.Length <= max ? s : s[..(max - 1)] + "…";
 

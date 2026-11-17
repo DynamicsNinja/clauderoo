@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Clauderoo.Core/Clauderoo.Core.csproj" />
     <ProjectReference Include="../../src/Clauderoo.Cli/Clauderoo.Cli.csproj" />
+    <ProjectReference Include="../../src/Clauderoo.Tray/Clauderoo.Tray.csproj" />
   </ItemGroup>
 
 </Project>

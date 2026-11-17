@@ -29,6 +29,8 @@ internal sealed class TrayMenuActions
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action SetUp { get; init; } = () => { };
     public Action Retry { get; init; } = () => { };
+    public Action CopyConfigDetails { get; init; } = () => { };
+    public Action ShowConfigFile { get; init; } = () => { };
     public Action Exit { get; init; } = () => { };
 }
 
@@ -41,28 +43,43 @@ internal static class TrayMenu
     /// <summary>Tag on the default profile's item: the renderer draws the star in the check column.</summary>
     sealed class DefaultMark;
 
+    /// <summary>Tag on a profile item: the text after <see cref="MutedTail"/>'s position is drawn grey.</summary>
+    sealed record ProfileMark(bool IsDefault, string? MutedTail);
+
+    /// <summary>Tag on a disabled header whose glyph keeps its colour.</summary>
+    sealed class ColourGlyph;
+
     public static void Build(ContextMenuStrip menu, TrayMenuState s, TrayMenuActions a)
     {
         Reset(menu);
         var dpi = menu.DeviceDpi;
         var items = menu.Items;
 
-        items.Add(Header(TrayText.Header(s.Problems.Count), menu.Font));
-        items.Add(new ToolStripSeparator());
-
-        foreach (var p in s.Profiles)
-            items.Add(ProfileItem(p, s.Running.GetValueOrDefault(p.Name), menu, a, dpi));
-
-        items.Add(new ToolStripSeparator());
         if (s.Problems.Count > 0)
         {
+            // The header itself is the way into the problems.
             var severe = s.Problems.Any(TrayText.IsSevere);
-            var problems = Item($"{s.Problems.Count} &{(s.Problems.Count == 1 ? "problem" : "problems")}…",
+            var header = Item(TrayText.Header(s.Problems.Count),
                 Glyphs.Get(severe ? Glyph.Error : Glyph.Warning, GlyphSize, dpi, severe ? StatusColors.Fail : StatusColors.Warn),
                 a.ShowProblems);
-            problems.AccessibleName = $"{TrayText.Problems(s.Problems.Count)}, show them";
-            items.Add(problems);
+            header.Font = Bold(menu.Font);
+            header.AccessibleName = $"{TrayText.Problems(s.Problems.Count)}, show them";
+            items.Add(header);
         }
+        else
+        {
+            var header = Header(TrayText.Header(0), menu.Font);
+            header.Image = Glyphs.Get(Glyph.Ok, GlyphSize, dpi, StatusColors.Ok);
+            header.Tag = new ColourGlyph();
+            items.Add(header);
+        }
+        items.Add(new ToolStripSeparator());
+
+        var troubled = s.Problems.Select(p => p.Profile).ToHashSet();
+        foreach (var p in s.Profiles)
+            items.Add(ProfileItem(p, s.Running.GetValueOrDefault(p.Name), troubled.Contains(p.Name), menu, a, dpi));
+
+        items.Add(new ToolStripSeparator());
         items.Add(Item("&Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
         items.Add(Item("&New profile…", Neutral(Glyph.Add, dpi), a.NewProfile));
 
@@ -81,45 +98,53 @@ internal static class TrayMenu
     }
 
     /// <summary>The menu when the settings can't be loaded: what's wrong in plain words, and what can be done.</summary>
-    public static void BuildFallback(ContextMenuStrip menu, string headline, string detail, bool offerSetUp, TrayMenuActions a)
+    public static void BuildFallback(ContextMenuStrip menu, ConfigIssue issue, string headline, string detail, TrayMenuActions a)
     {
         Reset(menu);
         var dpi = menu.DeviceDpi;
         var items = menu.Items;
         var head = Header(headline, menu.Font);
         head.Image = Glyphs.Get(Glyph.Error, GlyphSize, dpi, StatusColors.Fail);
+        head.Tag = new ColourGlyph();
         items.Add(head);
-        items.Add(new ToolStripMenuItem(detail) { Enabled = false });
+        items.Add(new ToolStripMenuItem(detail.Replace("&", "&&")) { Enabled = false });
         items.Add(new ToolStripSeparator());
-        if (offerSetUp) items.Add(Item("&Set up clauderoo", Neutral(Glyph.Play, dpi), a.SetUp));
+        switch (issue)
+        {
+            case ConfigIssue.Missing:
+                items.Add(Item("&Set up clauderoo", Neutral(Glyph.Play, dpi), a.SetUp));
+                break;
+            case ConfigIssue.Damaged:
+                items.Add(Item("&Copy details", Neutral(Glyph.Info, dpi), a.CopyConfigDetails));
+                items.Add(Item("Show the settings &file", Neutral(Glyph.FolderOpen, dpi), a.ShowConfigFile));
+                break;
+        }
         items.Add(Item("&Retry", Neutral(Glyph.Refresh, dpi), a.Retry));
-        items.Add(Item("Open &Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
         items.Add(new ToolStripSeparator());
         items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));
     }
 
-    static ToolStripMenuItem ProfileItem(ProfileInfo p, int running, ContextMenuStrip menu, TrayMenuActions a, int dpi)
+    static ToolStripMenuItem ProfileItem(ProfileInfo p, int running, bool hasProblems, ContextMenuStrip menu, TrayMenuActions a, int dpi)
     {
         var name = p.Name;
         var label = TrayText.ProfileLabel(p);
+        var glyph = p.Provider switch
+        {
+            Providers.Vertex => Glyph.Cloud,
+            Providers.ApiKey => Glyph.Key,
+            _ => Glyph.Person,
+        };
         var item = new ToolStripMenuItem(label.Replace("&", "&&"))
         {
-            Image = Neutral(p.Provider switch
-            {
-                Providers.Vertex => Glyph.Cloud,
-                Providers.ApiKey => Glyph.Key,
-                _ => Glyph.Person,
-            }, dpi),
-            AccessibleName = label + (p.IsDefault ? ", default" : "") + (running > 0 ? ", " + TrayText.Running(running) : ""),
-            ToolTipText = p.IsDefault ? "Default profile: double-click the tray icon to start it." : null,
+            // A profile with problems: its provider glyph turns amber.
+            Image = Glyphs.Get(glyph, GlyphSize, dpi, hasProblems ? StatusColors.Warn : SystemColors.MenuText),
+            AccessibleName = label + (p.IsDefault ? ", default" : "") + (hasProblems ? ", has problems" : "")
+                             + (running > 0 ? ", " + TrayText.Running(running) : ""),
+            ToolTipText = p.IsDefault ? "Default profile: double-click the tray icon to start it."
+                : hasProblems ? "This profile has problems: see the first menu item." : null,
+            Tag = new ProfileMark(p.IsDefault, TrayText.IsSignedOut(p) ? TrayText.NotSignedIn : null),
         };
-        if (p.IsDefault)
-        {
-            item.Font = Bold(menu.Font);
-            item.Tag = new DefaultMark();
-        }
-        // Clicking the profile itself starts it; the arrow opens the other actions. (Click on a cascading item
-        // still fires; the submenu also opens on hover, so both stay reachable.)
+        if (p.IsDefault) item.Font = Bold(menu.Font);
         item.Click += (_, _) =>
         {
             menu.Close(ToolStripDropDownCloseReason.ItemClicked); // a cascading item doesn't close the menu itself
@@ -146,7 +171,7 @@ internal static class TrayMenu
     }
 
     static ToolStripMenuItem Header(string text, Font font) =>
-        new(text) { Enabled = false, Font = Bold(font), AccessibleRole = AccessibleRole.StaticText };
+        new(text.Replace("&", "&&")) { Enabled = false, Font = Bold(font), AccessibleRole = AccessibleRole.StaticText };
 
     static ToolStripMenuItem Item(string text, Image? image, Action onClick)
     {
@@ -179,7 +204,7 @@ internal static class TrayMenu
         menu.ShowImageMargin = true;
         menu.ShowCheckMargin = true; // the star column for the default profile
         menu.ShowItemToolTips = true;
-        if (menu.Renderer is not StarRenderer) menu.Renderer = new StarRenderer();
+        if (menu.Renderer is not TrayRenderer) menu.Renderer = new TrayRenderer();
     }
 
     static Font? _bold;
@@ -192,13 +217,20 @@ internal static class TrayMenu
         return _bold;
     }
 
-    /// <summary>Draws the default profile's star in the check column, left of the provider glyph.</summary>
-    sealed class StarRenderer : ToolStripProfessionalRenderer
+    /// <summary>
+    /// The professional renderer plus: the default profile's star in the check column, "not signed in" in grey, and
+    /// header glyphs that keep their colour although the header is disabled.
+    /// </summary>
+    sealed class TrayRenderer : ToolStripProfessionalRenderer
     {
         protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
         {
-            base.OnRenderItemImage(e);
-            if (e.Item.Tag is not DefaultMark) return;
+            if (e.Item.Tag is ColourGlyph && e.Item.Image is { } img)
+                e.Graphics.DrawImage(img, e.ImageRectangle); // base would grey it out (the item is disabled)
+            else
+                base.OnRenderItemImage(e);
+
+            if (e.Item.Tag is not ProfileMark { IsDefault: true }) return;
             var r = e.ImageRectangle;
             var dpi = e.Item.Owner?.DeviceDpi ?? 96;
             // The check column ends where the image column starts; a slightly smaller star fits it with a gap.
@@ -207,6 +239,27 @@ internal static class TrayMenu
             var left = Math.Max(0, (int)Math.Round(3 * dpi / 96.0)); // clear of the selection border
             var x = left + Math.Max(0, (r.X - gap - left - star.Width) / 2);
             e.Graphics.DrawImage(star, new Rectangle(x, r.Y + (r.Height - star.Height) / 2, star.Width, star.Height));
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            if (e.Item.Tag is not ProfileMark { MutedTail: { } tail } || !e.Item.Enabled
+                || e.Text is not { } text || !text.EndsWith(tail))
+            {
+                base.OnRenderItemText(e);
+                return;
+            }
+            // Draw the text in two runs: the name and provider in the normal colour, "not signed in" in grey.
+            var flags = e.TextFormat | TextFormatFlags.NoPadding;
+            var head = text[..^tail.Length];
+            var pad = TextRenderer.MeasureText(e.Graphics, "x", e.TextFont, e.TextRectangle.Size, e.TextFormat).Width
+                      - TextRenderer.MeasureText(e.Graphics, "x", e.TextFont, e.TextRectangle.Size, flags).Width;
+            var r = e.TextRectangle;
+            var x = r.X + pad / 2;
+            var headWidth = TextRenderer.MeasureText(e.Graphics, head, e.TextFont, r.Size, flags).Width;
+            TextRenderer.DrawText(e.Graphics, head, e.TextFont, new Rectangle(x, r.Y, r.Right - x, r.Height), e.TextColor, flags);
+            TextRenderer.DrawText(e.Graphics, tail, e.TextFont, new Rectangle(x + headWidth, r.Y, Math.Max(0, r.Right - x - headWidth), r.Height),
+                StatusColors.Muted, flags);
         }
     }
 }
