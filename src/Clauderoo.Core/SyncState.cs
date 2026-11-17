@@ -14,6 +14,12 @@ public class SyncState
     /// <summary>Top-level settings.json keys clauderoo wrote for this profile's provider overlay.</summary>
     public List<string> ManagedTop { get; set; } = [];
 
+    /// <summary>
+    /// Model env values clauderoo last wrote into settings.json (key -> value); null in state written before this was
+    /// recorded. A session's change is measured against these, so a stale file never overrides a newer saved config.
+    /// </summary>
+    public Dictionary<string, string>? ManagedModels { get; set; }
+
     public static SyncState Load(string profileDir)
     {
         var file = Path.Combine(profileDir, FileName);

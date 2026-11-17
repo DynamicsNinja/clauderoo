@@ -169,14 +169,15 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     /// Brings a shared file to the expected content (hash <paramref name="expectedHash"/>). If the session changed it since
     /// clauderoo last wrote it, the session's version is backed up first and a notice is reported.
     /// </summary>
-    private void SyncShared(string profile, string f, string dir, string expectedHash, Action write, SyncState state, SyncReport report)
+    private void SyncShared(string profile, string f, string dir, string expectedHash, Action write, SyncState state,
+        SyncReport report, bool noBackup = false)
     {
         var target = Path.Combine(dir, f);
         if (File.Exists(target))
         {
             var tgtHash = HashFile(target);
             state.Hashes.TryGetValue(f, out var recorded);
-            if (tgtHash != recorded && tgtHash != expectedHash)
+            if (tgtHash != recorded && tgtHash != expectedHash && !noBackup)
             {
                 var backup = $"{f}.bak-{Stamp}";
                 File.Copy(target, Path.Combine(dir, backup), overwrite: true);
@@ -235,20 +236,106 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     {
         state.ManagedEnv = [.. overlay.Env.Keys];
         state.ManagedTop = [.. overlay.Top.Keys];
+        state.ManagedModels = Models.Where(m => overlay.Env.ContainsKey(m.Key))
+            .ToDictionary(m => m.Key, m => overlay.Env[m.Key], StringComparer.Ordinal);
+    }
+
+    private record ModelKey(string Key, string Family, Func<VertexSettings, string?> Get, Action<VertexSettings, string> Set);
+
+    /// <summary>The only provider keys a session may change: Claude's "update model" prompt writes these.</summary>
+    private static readonly ModelKey[] Models =
+    [
+        new("ANTHROPIC_DEFAULT_SONNET_MODEL", "Sonnet", v => v.SonnetModel, (v, s) => v.SonnetModel = s),
+        new("ANTHROPIC_DEFAULT_OPUS_MODEL", "Opus", v => v.OpusModel, (v, s) => v.OpusModel = s),
+        new("ANTHROPIC_DEFAULT_HAIKU_MODEL", "Haiku", v => v.HaikuModel, (v, s) => v.HaikuModel = s),
+    ];
+
+    /// <summary>State hash key for a profile-owned settings.json (kept apart from the shared copy's hash).</summary>
+    private const string OwnedSettingsKey = "settings.json (owned)";
+
+    private static string DecodeText(byte[] b)
+    {
+        using var r = new StreamReader(new MemoryStream(b), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return r.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Adopts model keys a session changed in a vertex profile's settings.json into the profile config (spec
+    /// 2026-11-17). Only when the file differs from what clauderoo last wrote; a key counts as changed when it holds a
+    /// non-blank string that is neither the configured value nor the value clauderoo last wrote. Returns the session's
+    /// parsed file when something was adopted.
+    /// </summary>
+    private JsonObject? AdoptModels(string profile, ProfileEntry entry, string dir, string hashKey, SyncState state, SyncReport report)
+    {
+        if (Providers.Of(entry) != Providers.Vertex) return null;
+        var file = Path.Combine(dir, Settings);
+        if (!File.Exists(file) || !state.Hashes.TryGetValue(hashKey, out var recorded)) return null; // first sync: never
+        var bytes = File.ReadAllBytes(file);
+        if (HashBytes(bytes) == recorded) return null; // unchanged since clauderoo wrote it: config wins
+        if (ParseObject(DecodeText(bytes)) is not { } current || current["env"] is not JsonObject env) return null;
+
+        var changes = new List<(ModelKey Model, string Value)>();
+        foreach (var m in Models)
+        {
+            if (env[m.Key] is not JsonValue jv || !jv.TryGetValue<string>(out var value) || string.IsNullOrWhiteSpace(value))
+                continue; // removed or blanked: restored, not adopted
+            var configured = entry.Vertex is { } v ? m.Get(v) : null;
+            var lastWritten = state.ManagedModels is { } mm ? mm.GetValueOrDefault(m.Key) : configured;
+            if (value != configured && value != lastWritten) changes.Add((m, value));
+        }
+        if (changes.Count == 0 || !SaveAdopted(profile, entry, changes, report)) return null;
+
+        entry.Vertex ??= new VertexSettings();
+        foreach (var (m, value) in changes)
+        {
+            m.Set(entry.Vertex, value);
+            report.Notices.Add($"{profile}: {m.Family} model updated to {value} by Claude.");
+        }
+        return current;
+    }
+
+    /// <summary>
+    /// Writes adopted models into the saved config, patching the on-disk copy so a concurrent save of other fields
+    /// is kept. A key whose saved value no longer matches this sync's config (saved meanwhile) is left to that newer value.
+    /// </summary>
+    private bool SaveAdopted(string profile, ProfileEntry entry, List<(ModelKey Model, string Value)> changes, SyncReport report)
+    {
+        try
+        {
+            var disk = ConfigStore.Load(paths);
+            if (disk == null || !disk.Profiles.TryGetValue(profile, out var de) || Providers.Of(de) != Providers.Vertex)
+                return false;
+            changes.RemoveAll(c => (de.Vertex is { } dv ? c.Model.Get(dv) : null)
+                != (entry.Vertex is { } v ? c.Model.Get(v) : null));
+            if (changes.Count == 0) return false;
+            de.Vertex ??= new VertexSettings();
+            foreach (var (m, value) in changes) m.Set(de.Vertex, value);
+            ConfigStore.Save(paths, disk);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+        {
+            report.Problems.Add($"{profile}: could not save the model Claude chose: {e.Message}");
+            return false;
+        }
     }
 
     private void SyncSettings(string profile, ProfileEntry entry, string dir, SyncState state, SyncReport report)
     {
+        var owned = entry.Overrides.Contains(Settings);
+        var adoptedFrom = AdoptModels(profile, entry, dir, owned ? OwnedSettingsKey : Settings, state, report);
+
         var overlay = ProviderOverlay.Build(profile, entry, HelperExe);
         var noOverlay = overlay.Env.Count == 0 && overlay.Top.Count == 0
             && state.ManagedEnv.Count == 0 && state.ManagedTop.Count == 0;
 
-        if (entry.Overrides.Contains(Settings))
+        if (owned)
         {
             if (noOverlay) return; // owned and nothing to manage: untouched, as today
             SyncOwnedSettings(profile, dir, overlay, state, report);
             return;
         }
+        state.Hashes.Remove(OwnedSettingsKey);
 
         var source = Path.Combine(cfg.HomeDir, Settings);
         var homeExists = File.Exists(source);
@@ -293,7 +380,10 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
         var bytes = SerializeSettings(generated);
         var target = Path.Combine(dir, Settings);
-        SyncShared(profile, Settings, dir, HashBytes(bytes), () => AtomicFile.WriteAllBytes(target, bytes), state, report);
+        // When the adopted model keys were the session's only change, there is nothing of its own to back up.
+        var onlyModelsChanged = adoptedFrom != null && JsonNode.DeepEquals(adoptedFrom, generated);
+        SyncShared(profile, Settings, dir, HashBytes(bytes), () => AtomicFile.WriteAllBytes(target, bytes), state, report,
+            noBackup: onlyModelsChanged);
         RecordManaged(state, overlay);
     }
 
@@ -308,9 +398,11 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         {
             var sig = Signature(file);
             JsonObject current;
+            byte[]? raw = null;
             if (sig != null)
             {
-                var parsed = ParseObject(File.ReadAllText(file));
+                raw = File.ReadAllBytes(file);
+                var parsed = ParseObject(DecodeText(raw));
                 if (parsed == null)
                 {
                     report.Problems.Add($"{profile}: settings.json is not valid JSON; provider settings not applied");
@@ -329,8 +421,10 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             }
 
             string? notice = null;
+            var final = raw;
             if (sig == null || !JsonNode.DeepEquals(current, merged))
             {
+                final = SerializeSettings(merged);
                 var tmp = AtomicFile.TmpName(file);
                 try
                 {
@@ -343,7 +437,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                         File.Copy(file, Path.Combine(dir, backup), overwrite: true);
                         notice = $"{profile}: provider settings replaced hand-written provider keys in settings.json (saved {backup}).";
                     }
-                    File.WriteAllBytes(tmp, SerializeSettings(merged));
+                    File.WriteAllBytes(tmp, final);
                     BeforeOwnedSettingsCommit?.Invoke();
                     if (Signature(file) != sig)
                     {
@@ -360,6 +454,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             }
             if (notice != null) report.Notices.Add(notice);
             RecordManaged(state, overlay);
+            state.Hashes[OwnedSettingsKey] = HashBytes(final!);
             return;
         }
         report.Problems.Add($"{profile}: settings.json kept changing; provider settings not applied");
