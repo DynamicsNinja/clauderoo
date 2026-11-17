@@ -296,11 +296,18 @@ Run it from a terminal using your home profile. Every profile then gets it throu
 - The prompt goes to `claude` on **stdin**. It is never on the command line, so it can't be read as a `claude` option. Prompts with a NUL character or over 100 KB are refused.
 - The run uses the **target profile's own permissions** and allow-list. `-p` can't ask, so anything that would need your approval is denied. clauderoo never passes `--dangerously-skip-permissions` or any `--permission-mode`.
 - It runs with `--strict-mcp-config` and an empty MCP config, so it can't load MCP servers, clauderoo's included.
-- It refuses the profile the calling session already runs under (`CLAUDEROO_PROFILE`).
-- It refuses a working folder (`cwd`) that holds sign-ins or settings: your user folder itself, anything under `~/.clauderoo` or `~/.claude`, including through junctions. It also refuses network (UNC) folders and folders whose real location can't be resolved. The default is the server's working folder.
+- It refuses the profile the calling session runs under, when that session was started by clauderoo (`CLAUDEROO_PROFILE`).
+- The run doesn't inherit the calling session's provider, model or account: variables such as `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, any variable a profile sets with `cr env`, and every `CLAUDECODE*` and `CLAUDE_CODE_*` variable are removed. Only the target profile's own settings apply.
+- It refuses these working folders (`cwd`), matched by name and by real location (through junctions and links):
+  - your user folder itself, and every folder above it, such as `C:\Users` and `C:\`;
+  - `~/.clauderoo`, `~/.claude` (or the home profile's folder), `~/.ssh` and `%APPDATA%\gcloud`, anything inside them, and any folder that contains one of them;
+  - network (UNC) folders, and folders whose real location can't be resolved.
+
+  The default is the server's working folder.
+- At most **2** delegated runs are in progress at once. A third gets "2 delegated runs are already in progress; try again when one finishes."
 - It uses the **target account's quota**.
 - It stops after **10 minutes** and kills the run's process tree. Runs also stop when the MCP client goes away.
-- Output is cut to 100 KB per stream, and any of the target's tokens are scrubbed from it.
+- Output is cut to 100 KB per stream, and the target's sign-in and setup tokens are scrubbed from it.
 
 ### Profiles that own their settings.json
 

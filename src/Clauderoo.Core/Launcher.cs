@@ -3,8 +3,10 @@ using System.Diagnostics;
 namespace Clauderoo.Core;
 
 public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null,
-    IReadOnlyDictionary<string, string>? ExtraEnv = null)
+    IReadOnlyDictionary<string, string>? ExtraEnv = null, Func<string, bool>? DropEnv = null)
 {
+    // DropEnv: inherited variables it matches are removed before ConfigDirEnv and ExtraEnv are applied (a delegated
+    // run's clean environment, see DelegateEnv). Null for every normal launch.
     /// <summary>ExtraEnv can carry a secret (CLAUDE_CODE_OAUTH_TOKEN), so only its names are ever printed.</summary>
     public override string ToString() =>
         $"LaunchSpec {{ FileName = {FileName}, Args = [{string.Join(", ", Args)}], WorkingDir = {WorkingDir}, " +
@@ -133,6 +135,8 @@ public static class Launcher
             WorkingDirectory = s.WorkingDir,
         };
         foreach (var a in s.Args) psi.ArgumentList.Add(a);
+        if (s.DropEnv is not null)
+            foreach (var k in psi.Environment.Keys.Where(s.DropEnv).ToList()) psi.Environment.Remove(k);
         if (s.ConfigDirEnv is null) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
         else psi.Environment["CLAUDE_CONFIG_DIR"] = s.ConfigDirEnv;
         // A token inherited from the calling shell (e.g. cr run inside a token profile's session) would sign the

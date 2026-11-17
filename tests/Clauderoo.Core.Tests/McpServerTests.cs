@@ -59,6 +59,7 @@ public class McpServerTests
         public readonly StringWriter Log = new();
         public DateTimeOffset Now = Start;
         public string? CallerProfile;
+        public readonly Dictionary<string, string> EnvVars = new(StringComparer.OrdinalIgnoreCase);
         public readonly string Proj;
         public readonly McpServer Server;
 
@@ -75,7 +76,7 @@ public class McpServerTests
             Http = new Handler(answer ?? (_ => OkUsage()));
             Usage = new UsageClient(Http, () => Now, "1.0");
             Server = new McpServer(Pm, Usage, Runner.Run, now: () => Now,
-                getEnv: n => n == "CLAUDEROO_PROFILE" ? CallerProfile : null,
+                getEnv: n => n == "CLAUDEROO_PROFILE" ? CallerProfile : EnvVars.GetValueOrDefault(n),
                 claudePath: claude, defaultCwd: Proj, log: Log);
         }
 
@@ -371,6 +372,151 @@ public class McpServerTests
             await AssertCwdRefused(f, Path.Combine(real, "sub"));
         }
         finally { Directory.Delete(profileDir); } // the junction only
+    }
+
+    // A folder above the protected ones (C:\, C:\Users) can read every profile's sign-in, so it's refused too.
+    [Fact]
+    public async Task Delegate_CwdAncestorOfProtected_Refused()
+    {
+        using var f = new Fixture();
+        var userProfile = f.Home.Paths.UserProfile;
+        await AssertCwdRefused(f, Path.GetDirectoryName(userProfile)!);
+        await AssertCwdRefused(f, Path.GetPathRoot(userProfile)!);
+        // The real user folder's parent too (C:\Users), whatever the test's home is.
+        await AssertCwdRefused(f, Path.GetDirectoryName(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))!);
+        // A project folder that is really a junction to an ancestor.
+        var link = Path.Combine(f.Proj, "up");
+        Junction.Create(link, Path.GetDirectoryName(userProfile)!);
+        try { await AssertCwdRefused(f, link); }
+        finally { Directory.Delete(link); }
+        Assert.Equal(0, f.Runner.Calls);
+
+        var ok = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd = f.Proj });
+        Assert.False(IsError(ok));
+    }
+
+    // gcloud's sign-in (Vertex profiles) and SSH keys are protected like Claude's own, by name and by real path.
+    [Fact]
+    public async Task Delegate_CwdGcloudOrSsh_Refused()
+    {
+        using var f = new Fixture();
+        var appData = Directory.CreateDirectory(Path.Combine(f.Home.Dir, "AppData", "Roaming")).FullName;
+        f.EnvVars["APPDATA"] = appData;
+        var gcloud = Directory.CreateDirectory(Path.Combine(appData, "gcloud", "configurations")).Parent!.FullName;
+        var ssh = Directory.CreateDirectory(Path.Combine(f.Home.Paths.UserProfile, ".ssh", "sub")).Parent!.FullName;
+        var toGcloud = Path.Combine(f.Proj, "gc");
+        var toSsh = Path.Combine(f.Proj, "keys");
+        Junction.Create(toGcloud, gcloud);
+        Junction.Create(toSsh, ssh);
+        try
+        {
+            foreach (var cwd in new[] { gcloud, Path.Combine(gcloud, "configurations"), ssh, Path.Combine(ssh, "sub"),
+                         toGcloud, toSsh, appData, Path.GetDirectoryName(appData)! })
+                await AssertCwdRefused(f, cwd);
+        }
+        finally
+        {
+            Directory.Delete(toGcloud);
+            Directory.Delete(toSsh);
+        }
+        Assert.Equal(0, f.Runner.Calls);
+    }
+
+    // A delegated run's launch spec drops the caller's provider, model and session variables; normal launches don't.
+    [Fact]
+    public async Task Delegate_SpecDropsCallerEnv()
+    {
+        using var f = new Fixture();
+        f.Pm.SetEnv("work", [new("MY_PROFILE_SETTING", "v")], []);
+        Assert.False(IsError(await CallOne(f, "delegate", new { profile = "ci", prompt = "x" })));
+        var drop = f.Runner.Spec!.DropEnv!;
+        foreach (var n in new[] { "CLAUDE_CODE_USE_VERTEX", "anthropic_vertex_project_id", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                     "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "CLAUDECODE",
+                     "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "my_profile_setting" })
+            Assert.True(drop(n), n);
+        foreach (var n in new[] { "PATH", "USERPROFILE", "APPDATA", "CLAUDE_CONFIG_DIR", "HTTPS_PROXY" })
+            Assert.False(drop(n), n);
+        Assert.Equal(StoredToken, f.Runner.Spec.ExtraEnv!["CLAUDE_CODE_OAUTH_TOKEN"]); // the target's own still applies
+
+        Assert.Null(Launcher.InPlace(f.Pm.Config, f.Home.Paths, "work", f.Proj, [], "claude.exe").DropEnv);
+    }
+
+    private static Func<LaunchSpec, CancellationToken, Task<(int, string, string)>> BlockUntil(Task release) =>
+        async (_, ct) =>
+        {
+            await release.WaitAsync(ct);
+            return (0, "finished", "");
+        };
+
+    [Fact]
+    public async Task Delegate_ThirdConcurrentRun_Refused()
+    {
+        using var f = new Fixture();
+        var release = new TaskCompletionSource();
+        f.Runner.AnswerAsync = BlockUntil(release.Task);
+        var input = new PipeReader();
+        var inner = new StringWriter();
+        var output = TextWriter.Synchronized(inner);
+        string[] Lines() { lock (output) return inner.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries); }
+        async Task WaitLines(int n)
+        {
+            var sw = Stopwatch.StartNew();
+            while (Lines().Length < n && sw.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(5);
+        }
+        var run = f.Server.RunAsync(input, output, CancellationToken.None);
+        input.Send(Call(1, "delegate", new { profile = "work", prompt = "a" }));
+        input.Send(Call(2, "delegate", new { profile = "ci", prompt = "b" }));
+        input.Send(Call(3, "delegate", new { profile = "work", prompt = "c" }));
+        await WaitLines(1);
+        var third = JsonNode.Parse(Assert.Single(Lines()))!.AsObject();
+        Assert.Equal(3, third["id"]!.GetValue<int>());
+        Assert.True(IsError(third["result"]!.AsObject()));
+        Assert.Equal("2 delegated runs are already in progress; try again when one finishes.", Text(third["result"]!.AsObject()));
+        Assert.Equal(2, f.Runner.Calls);
+
+        release.SetResult(); // both finish; a new one is accepted again
+        await WaitLines(3);
+        input.Send(Call(4, "delegate", new { profile = "work", prompt = "d" }));
+        await WaitLines(4);
+        input.Complete();
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        var last = JsonNode.Parse(Lines()[3])!.AsObject();
+        Assert.Equal(4, last["id"]!.GetValue<int>());
+        Assert.False(IsError(last["result"]!.AsObject()));
+        Assert.Equal(3, f.Runner.Calls);
+    }
+
+    [Fact]
+    public async Task Delegate_DuplicateInflightId_Refused()
+    {
+        using var f = new Fixture();
+        var cancelled = new TaskCompletionSource();
+        f.Runner.AnswerAsync = BlockUntilCancelled(cancelled);
+        var input = new PipeReader();
+        var inner = new StringWriter();
+        var output = TextWriter.Synchronized(inner);
+        string Snapshot() { lock (output) return inner.ToString(); }
+        var run = f.Server.RunAsync(input, output, CancellationToken.None);
+        input.Send(Call(5, "delegate", new { profile = "work", prompt = "a" }));
+        input.Send(Call(5, "delegate", new { profile = "ci", prompt = "b" }));
+        input.Send("""{"jsonrpc":"2.0","id":5,"method":"tools/list"}""");
+        var sw = Stopwatch.StartNew();
+        while (Snapshot().Count(c => c == '\n') < 2 && sw.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(5);
+        var lines = Snapshot().Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => JsonNode.Parse(l)!.AsObject()).ToList();
+        Assert.Equal(2, lines.Count);
+        foreach (var l in lines)
+        {
+            Assert.Equal(5, l["id"]!.GetValue<int>());
+            Assert.Equal(-32600, l["error"]!["code"]!.GetValue<int>());
+        }
+        Assert.Equal(1, f.Runner.Calls);
+        Assert.Equal("work", f.Runner.Spec!.Profile);
+
+        // The original run still owns the id: cancelling 5 stops it.
+        input.Send("""{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}""");
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        input.Complete();
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     // A run that is stopped while its stdin write is still blocked leaves no faulted task behind.

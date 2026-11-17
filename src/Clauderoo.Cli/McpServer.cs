@@ -39,6 +39,10 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
     private readonly Dictionary<string, (string Status, string? Note)> _lastOutcome = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _blockedUntil = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _inflight = new();
+    private int _delegates;
+
+    /// <summary>The most delegated runs in progress at once; one more is refused with a tool error.</summary>
+    public const int MaxDelegates = 2;
 
     // Relaxed escaping keeps apostrophes and non-ASCII readable; quotes and control characters are still escaped, so
     // every message stays on one line. stdout is UTF-8.
@@ -112,12 +116,27 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 await Send(output, Error(id, -32600, "Invalid Request"), stop).ConfigureAwait(false);
                 continue;
             }
+            var key = id?.ToJsonString() ?? "null";
+            // An id still in use by a running delegate would make its cancel and its response ambiguous.
+            if (_inflight.ContainsKey(key))
+            {
+                await Send(output, Error(id, -32600, "Invalid Request: that id belongs to a request still in progress."), stop)
+                    .ConfigureAwait(false);
+                continue;
+            }
 
             if (method == "tools/call" && prms?["name"] is JsonValue nv && nv.TryGetValue<string>(out var tn) && tn == "delegate")
             {
+                // At most MaxDelegates runs at once: each is a whole claude process on another account's quota.
+                if (Volatile.Read(ref _delegates) >= MaxDelegates)
+                {
+                    await Send(output, Result(id, ToolJson(new ToolResult(
+                        $"{MaxDelegates} delegated runs are already in progress; try again when one finishes.", true))), stop)
+                        .ConfigureAwait(false);
+                    continue;
+                }
                 // A delegated run can take minutes: it runs in the background so other requests are still answered.
                 // Its launch spec is built here, on the reader loop, so config reads never race a set_default.
-                var key = id?.ToJsonString() ?? "null";
                 var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 JsonObject? immediate = null;
                 Task<ToolResult>? work = null;
@@ -129,7 +148,9 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                     await Send(output, immediate!, stop).ConfigureAwait(false);
                     continue;
                 }
-                _inflight[key] = cts;
+                _inflight.TryAdd(key, cts); // the key was checked free above, and only this loop adds
+                Interlocked.Increment(ref _delegates);
+                running.RemoveAll(t => t.IsCompleted);
                 running.Add(Task.Run(async () =>
                 {
                     JsonObject resp;
@@ -138,7 +159,8 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                     catch (Exception e) { resp = ToolErrorResponse(id, e); }
                     finally
                     {
-                        _inflight.TryRemove(key, out _);
+                        _inflight.TryRemove(new KeyValuePair<string, CancellationTokenSource>(key, cts));
+                        Interlocked.Decrement(ref _delegates);
                         cancelled = cts.IsCancellationRequested;
                         cts.Dispose();
                     }
@@ -234,14 +256,16 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             Tool("delegate",
                 "Run a one-shot prompt with 'claude -p' under another profile and return its output. It uses the TARGET " +
                 "account's quota. It runs with that profile's own permissions and allow-list: anything needing approval " +
-                "is denied, since it can't ask. No MCP servers are loaded. Times out after 10 minutes. It refuses the " +
-                "profile this session already runs under.",
+                "is denied, since it can't ask. No MCP servers are loaded. Times out after 10 minutes. At most 2 run at " +
+                "once; a third is refused until one finishes. It refuses the profile this session runs under, when this " +
+                "session was started by clauderoo.",
                 new JsonObject
                 {
                     ["profile"] = Str("Profile to run under."),
                     ["prompt"] = Str("The prompt."),
-                    ["cwd"] = Str("Project folder to run in. Defaults to the server's working folder. Your user folder, " +
-                        "~/.claude and ~/.clauderoo are refused."),
+                    ["cwd"] = Str("Project folder to run in. Defaults to the server's working folder. Refused: your user " +
+                        "folder and any folder above it (such as C:\\), ~/.claude, ~/.clauderoo, ~/.ssh, %APPDATA%\\gcloud, " +
+                        "anything inside those, and network folders."),
                 },
                 "profile", "prompt"),
         ];
@@ -424,17 +448,20 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
         var cfg = pm.Config;
         var dir = SafeCwd(cfg, string.IsNullOrWhiteSpace(cwdArg) ? defaultCwd ?? Environment.CurrentDirectory : cwdArg);
 
-        // A token profile's token is decrypted here, into the child's environment only.
-        var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, DelegateArgs, claudePath), profile);
+        // A token profile's token is decrypted here, into the child's environment only. The child doesn't inherit the
+        // calling session's provider, model, account or session variables (DelegateEnv): only the target's own apply.
+        var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, DelegateArgs, claudePath)
+            with { DropEnv = DelegateEnv.Filter(cfg) }, profile);
         return RunDelegate(profile, prompt, spec, ct);
     }
 
     /// <summary>
     /// The folder a delegated run may work in. Reading files in the working folder needs no approval, so it must not
-    /// be (or be under) clauderoo's folder (profiles, isolated dirs, saved keys) or the home Claude folder, nor be the
-    /// user-profile folder itself (~/.claude.json). Compared after normalising, case-insensitively, by name and by real
-    /// path (links resolved on both sides). It fails closed: a UNC or network folder (which could loop back onto any
-    /// of these) and a folder whose real path can't be resolved are refused.
+    /// be (or be under) clauderoo's folder (profiles, isolated dirs, saved keys), the home Claude folder, gcloud's
+    /// sign-in folder (%APPDATA%\gcloud) or ~/.ssh, nor be the user-profile folder itself (~/.claude.json). Nor may it
+    /// be an ANCESTOR of any of these (C:\, C:\Users), from where they're all readable. Compared after normalising,
+    /// case-insensitively, by name and by real path (links resolved on both sides). It fails closed: a UNC or network
+    /// folder (which could loop back onto any of these) and a folder whose real path can't be resolved are refused.
     /// </summary>
     private string SafeCwd(ClauderooConfig cfg, string requested)
     {
@@ -452,21 +479,40 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             if (Directory.Exists(p) && FinalPath(p) is { } f) yield return Norm(f);
         }
         // The profile and isolated folders are listed one by one too: any of them may be a junction to another drive.
+        var realProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var under = new[] { pm.Paths.Root, pm.Paths.DefaultHomeDir, cfg.HomeDir, pm.Paths.ProfilesDir,
                 Path.Combine(pm.Paths.Root, "isolated") }
             .Concat(cfg.Profiles.Keys.SelectMany(n => new[] { pm.Paths.ProfileDir(n), pm.Paths.IsolatedDir(n) }))
+            .Concat(ExtraProtected(realProfile))
             .SelectMany(Forms).ToList();
-        var exact = new[] { pm.Paths.UserProfile, Path.GetDirectoryName(cfg.HomeJson),
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) }.SelectMany(Forms).ToList();
+        var exact = new[] { pm.Paths.UserProfile, Path.GetDirectoryName(cfg.HomeJson), realProfile }
+            .SelectMany(Forms).ToList();
 
         foreach (var c in new[] { Norm(dir), Norm(final) })
         {
-            if (under.Any(u => c.Equals(u, StringComparison.OrdinalIgnoreCase)
-                               || c.StartsWith(u + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                || exact.Any(e => c.Equals(e, StringComparison.OrdinalIgnoreCase)))
-                throw CantRunIn(dir, "it holds Claude or clauderoo settings and sign-ins");
+            if (under.Any(u => c.Equals(u, StringComparison.OrdinalIgnoreCase) || IsUnder(c, u))
+                || exact.Any(e => c.Equals(e, StringComparison.OrdinalIgnoreCase))
+                // An ancestor (C:\, C:\Users) can read everything below it.
+                || under.Concat(exact).Any(p => IsUnder(p, c)))
+                throw CantRunIn(dir, "it holds, or contains, Claude, clauderoo, gcloud or SSH settings and sign-ins");
         }
         return dir;
+    }
+
+    // Other sign-ins a delegated run could read from its working folder: gcloud's (Vertex profiles) and SSH keys.
+    private IEnumerable<string> ExtraProtected(string realProfile)
+    {
+        foreach (var appData in new[] { _getEnv("APPDATA"), Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) })
+            if (!string.IsNullOrEmpty(appData)) yield return Path.Combine(appData, "gcloud");
+        foreach (var home in new[] { pm.Paths.UserProfile, realProfile })
+            if (!string.IsNullOrEmpty(home)) yield return Path.Combine(home, ".ssh");
+    }
+
+    // True when `path` is strictly inside `folder`. A drive root ("C:\") already ends in a separator.
+    private static bool IsUnder(string path, string folder)
+    {
+        var prefix = Path.EndsInDirectorySeparator(folder) ? folder : folder + Path.DirectorySeparatorChar;
+        return path.Length > prefix.Length && path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ClauderooException CantRunIn(string dir, string why) =>
