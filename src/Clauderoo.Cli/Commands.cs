@@ -30,6 +30,9 @@ public static class Commands
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
   provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
   env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  export <file> [names...] [--no-env] [--force]
+                                      save profile settings to a file (no secrets or logins)
+  import <file> [--force]             create profiles from an export (--force updates existing ones)
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
@@ -101,7 +104,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -241,6 +244,40 @@ public static class Commands
                 var which = WhichProfile.Resolve(pm.Config, pm.Paths, Environment.GetEnvironmentVariable, pm.Env);
                 if (json) JsonOut.Write(output, new { which.Profile, which.Source, which.Isolated });
                 else output.WriteLine(WhichProfile.Describe(which));
+                return 0;
+            }
+            case "export":
+            {
+                var force = pos.Remove("--force");
+                var noEnv = pos.Remove("--no-env");
+                if (pos.Count < 1) throw new ClauderooException("Usage: clauderoo export <file> [profiles...] [--no-env] [--force]");
+                var names = pos.Skip(1).ToList();
+                pm.ExportToFile(pos[0], names.Count > 0 ? names : null, !noEnv, force);
+                output.WriteLine($"Exported to {Path.GetFullPath(pos[0])}. No secrets or logins are included.");
+                if (!noEnv)
+                    err.WriteLine("warning: environment variable values are included as plain text. Check the file before sharing it, or use --no-env.");
+                return 0;
+            }
+            case "import":
+            {
+                var force = pos.Remove("--force");
+                if (pos.Count != 1) throw new ClauderooException("Usage: clauderoo import <file> [--force]");
+                var r = pm.ImportFile(pos[0], force);
+                if (r.Created.Count > 0) output.WriteLine($"Created: {string.Join(", ", r.Created)}");
+                if (r.Updated.Count > 0) output.WriteLine($"Updated: {string.Join(", ", r.Updated)}");
+                void Section(string heading, IReadOnlyList<string>? items)
+                {
+                    if (items is not { Count: > 0 }) return;
+                    output.WriteLine(heading);
+                    foreach (var i in items) output.WriteLine("  " + i);
+                }
+                Section("Folder mappings added:", r.Mapped);
+                Section("Environment variables (names only):", r.EnvNames);
+                Section("Skipped:", r.Skipped);
+                Section("Kept their sign-in:", r.KeptProvider);
+                Section("Needs a key or token:", r.NeedSecret);
+                Section("Notices:", r.Notices);
+                if (!r.ChangedAnything) output.WriteLine("Nothing to import.");
                 return 0;
             }
             case "default":

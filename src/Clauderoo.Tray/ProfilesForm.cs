@@ -44,6 +44,8 @@ sealed class ProfilesForm : Form
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
     private readonly Button _autoSwitch = Btn("Auto-s&witch…");
+    private readonly Button _export = Btn("E&xport…");
+    private readonly Button _import = Btn("Import…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -222,19 +224,24 @@ sealed class ProfilesForm : Form
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        var transferButtons = Flow(FlowDirection.LeftToRight);
+        transferButtons.Margin = new Padding(0, 6, 0, 0);
+        transferButtons.Controls.AddRange([_export, _import]);
         // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
         _autoSwitch.Margin = new Padding(0, 6, 6, 0);
         _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
-        left.RowCount = 3;
+        left.RowCount = 4;
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_list, 0, 0);
         left.Controls.Add(leftButtons, 0, 1);
-        left.Controls.Add(_autoSwitch, 0, 2);
+        left.Controls.Add(transferButtons, 0, 2);
+        left.Controls.Add(_autoSwitch, 0, 3);
 
         // Right: the home explanation, or the provider choice.
         _homePanel = Table(1);
@@ -424,6 +431,8 @@ sealed class ProfilesForm : Form
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
         _autoSwitch.Click += async (_, _) => await EditAutoSwitchAsync();
+        _export.Click += (_, _) => Guard(ExportProfiles);
+        _import.Click += (_, _) => Guard(ImportProfiles);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -485,6 +494,7 @@ sealed class ProfilesForm : Form
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
                      (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
                      (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
+                     (_export, Glyph.Save), (_import, Glyph.FolderOpen),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -1474,6 +1484,70 @@ sealed class ProfilesForm : Form
         var report = Write(() => _pm.Add(name));
         Reload(name);
         ShowResult(report, $"Profile '{name}' created. Start a session in it to sign in.");
+    }
+
+    private const string ExportEnvWarning =
+        "Environment variables are saved as plain text in the file. Check it before sharing it.";
+
+    // Export every profile except home: a small options dialog first, then the save dialog.
+    private void ExportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        bool includeEnv;
+        using (var options = new Form
+        {
+            Text = "Export profiles", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12),
+        })
+        {
+            var env = new CheckBox { Text = "Include environment variables", AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var note = new WrapLabel { Text = ExportEnvWarning, Margin = new Padding(0, 0, 0, 10) };
+            var ok = new Button { Text = "Continue", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 0) };
+            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, MinimumSize = new Size(80, 0) };
+            var buttons = Flow(FlowDirection.RightToLeft);
+            buttons.Dock = DockStyle.Fill;
+            buttons.Controls.AddRange([cancel, ok]);
+            var table = Table(1);
+            table.Controls.Add(env, 0, 0);
+            table.Controls.Add(note, 0, 1);
+            table.Controls.Add(buttons, 0, 2);
+            table.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
+            options.Controls.Add(table);
+            options.AcceptButton = ok;
+            options.CancelButton = cancel;
+            options.Font = Font;
+            if (options.ShowDialog(this) != DialogResult.OK) return;
+            includeEnv = env.Checked;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export profiles", FileName = "clauderoo-profiles.json", DefaultExt = "json",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        // The save dialog has already confirmed any overwrite.
+        // Gated too, so the export reads a config no tray write is halfway through.
+        Write(() => _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true));
+        SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
+    }
+
+    private void ImportProfiles()
+    {
+        if (!ConfirmLeave()) return;
+        ClearResult();
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Import profiles", Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var force = MessageBox.Show(this, "Update profiles that already exist? Choose No to skip them.", "clauderoo",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        var result = Write(() => _pm.ImportFile(dialog.FileName, force)); // changes the config: inside the write gate
+        Reload(null);
+        MessageBox.Show(this, TrayText.ImportSummary(result), "Import profiles", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void RenameProfile()

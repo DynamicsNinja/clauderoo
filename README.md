@@ -49,7 +49,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
-- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, and run the setup check.
+- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, export and import them, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
 - **Auto-switch.** When the default profile nears a usage limit, new terminals move to another profile that has room.
 - **Safe by design.** Removed profiles are moved, never deleted. To fetch usage it reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only; the token is never written, copied, logged or shown.
@@ -174,6 +174,34 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
 | `check <name> [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
 | `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
+
+### Export and import
+
+| Command | What it does |
+| --- | --- |
+| `export <file> [names…] [--no-env] [--force]` | Save profile settings (provider, Vertex project and models, environment, owned items, start folder) and folder mappings to a file. Without names, every profile except home is exported. An existing file is only replaced with `--force` |
+| `import <file> [--force]` | Create the profiles in an export and add their folder mappings. Existing profiles are skipped and listed; `--force` updates them instead |
+
+Import only files from people you trust: environment variables and folder mappings take effect in new sessions.
+
+Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+
+Folder mappings in the file are added for new and existing profiles alike, even without `--force`; a folder already mapped to another profile is skipped. With `--force`, an import also:
+
+- updates the settings of profiles that already exist (provider, Vertex project and models, environment, start folder);
+- re-points folders that are already mapped to another profile;
+- keeps the provider of a profile that holds an API key or token, so the secret is never deleted.
+
+An import only ever adds owned items. It never gives a profile's own copies back to home, with or without `--force`. A start folder that doesn't exist on this machine is left out and reported. The summary lists what was created, updated and mapped, the names (never the values) of the environment variables that arrived, and anything skipped.
+
+The manager window has the same two actions under the profile list. **Export…** exports every profile except home: it asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. To share a single profile, use `cr export <file> <name>`. **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
+
+**Onboarding a colleague on Vertex.**
+
+1. Export the Vertex profile with `cr export vertex.json work`. (**Export…** in the window exports every profile except home.)
+2. Your colleague imports it (`cr import vertex.json`, or **Import…** in the window).
+3. They sign in to gcloud (**Sign in to Google…** in the window, or `gcloud auth application-default login`).
+4. They run **Check setup** (`cr check <name>`) to confirm everything works.
 
 ### Sharing
 

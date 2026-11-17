@@ -16,6 +16,23 @@ public class TrayTextTests
     static Problem P(ProblemFix? fix, string profile = "work", string title = "t") => new(profile, title, profile + ": raw", fix);
 
     [Fact]
+    public void ImportSummary_Text()
+    {
+        var r = new ImportResult(["a"], ["b", "c"], ["d: already exists (use --force to update it)"], ["e: needs an API key"], ["f"],
+            Notices: ["a: start folder X doesn't exist on this machine, so it wasn't set."], Mapped: ["C:\\w → b"], EnvNames: ["a: A_VAR"]);
+        var nl = Environment.NewLine;
+        Assert.Equal(string.Join(nl, "Created:", "  a", "Updated:", "  b", "  c", "Folder mappings added:", "  C:\\w → b",
+            "Environment variables (names only):", "  a: A_VAR", "Skipped:",
+            "  d: already exists (answer Yes to update existing profiles)", "Kept their sign-in:", "  f",
+            "Needs a key or token:", "  e: needs an API key",
+            "Notices:", "  a: start folder X doesn't exist on this machine, so it wasn't set."), TrayText.ImportSummary(r));
+        Assert.Equal("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], [], [])));
+        // A mapping alone is a change.
+        Assert.DoesNotContain("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], [], [], Mapped: ["C:\\w → b"])));
+        Assert.StartsWith("Nothing was imported.", TrayText.ImportSummary(new ImportResult([], [], ["x: already exists"], [])));
+    }
+
+    [Fact]
     public void Label_Login_WithEmail()
     {
         Assert.Equal("personal (home) — Claude login · someone@example.com",
