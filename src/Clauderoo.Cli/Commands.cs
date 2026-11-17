@@ -34,6 +34,8 @@ public static class Commands
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   status                              show the default profile and any problems
+  mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
+  mcp install                         print (and copy) the 'claude mcp add' command that registers it
   --json                              list, status, maps, which, check and usage: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
@@ -51,13 +53,13 @@ public static class Commands
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable = null, string? claudePath = null,
         Func<string?>? readSecret = null, Func<CancellationTokenSource, IDisposable>? hookCancel = null, ReleaseHooks? hooks = null,
-        UsageClient? usage = null)
+        UsageClient? usage = null, Func<string, bool>? clipboard = null, TextReader? mcpInput = null)
     {
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
             return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
-                hookCancel ?? HookConsoleCancel, hooks, usage);
+                hookCancel ?? HookConsoleCancel, hooks, usage, clipboard, mcpInput);
         }
         catch (SessionsRunningException e)
         {
@@ -87,7 +89,8 @@ public static class Commands
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
-        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks, UsageClient? usage)
+        Func<string, string?> readSecret, Func<CancellationTokenSource, IDisposable> hookCancel, ReleaseHooks? hooks, UsageClient? usage,
+        Func<string, bool>? clipboard, TextReader? mcpInput)
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h" or "/?")
         {
@@ -98,7 +101,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage"];
+            "version", "upgrade", "uninstall", "usage", "mcp"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -109,8 +112,9 @@ public static class Commands
 
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
+        // 'mcp' owns stdout for the protocol, so it never pre-syncs (its notices would corrupt the stream).
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
-            or "version" or "upgrade" or "uninstall"))
+            or "version" or "upgrade" or "uninstall" or "mcp"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -327,6 +331,8 @@ public static class Commands
             }
             case "usage":
                 return UsageCmd(pos, json, output, err, pm, hookCancel, usage);
+            case "mcp":
+                return McpCmd(pos, claudeArgs, output, err, pm, claudePath, usage, clipboard, mcpInput);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -467,6 +473,44 @@ public static class Commands
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
+        return 0;
+    }
+
+    /// <summary>The 'claude mcp add' line that registers the installed cr.exe as a user-scope MCP server.</summary>
+    public static string McpAddCommand() =>
+        $"claude mcp add --scope user clauderoo -- \"{Path.Combine(Path.GetDirectoryName(HelperExePath.Resolve())!, Installer.ShortAlias)}\" mcp";
+
+    private static int McpCmd(List<string> pos, List<string> claudeArgs, TextWriter output, TextWriter err, ProfileManager pm,
+        string? claudePath, UsageClient? usage, Func<string, bool>? clipboard, TextReader? mcpInput)
+    {
+        const string usageText = "Usage: clauderoo mcp | clauderoo mcp install";
+        if (claudeArgs.Count > 0) throw new ClauderooException(usageText);
+        if (pos.Count == 1 && pos[0] == "install")
+        {
+            // Never runs it and never writes ~/.claude.json: the user runs it once under the home profile and the
+            // MCP merge gives it to every profile.
+            var line = McpAddCommand();
+            output.WriteLine("Register clauderoo with Claude Code by running this once, in a terminal using your home profile:");
+            output.WriteLine();
+            output.WriteLine("  " + line);
+            output.WriteLine();
+            bool copied;
+            try { copied = (clipboard ?? NativeClipboard.SetText)(line); }
+            catch (Exception) { copied = false; }
+            if (copied) output.WriteLine("(Copied to the clipboard.)");
+            else err.WriteLine("warning: couldn't copy it to the clipboard; copy it from above.");
+            return 0;
+        }
+        if (pos.Count > 0) throw new ClauderooException(usageText);
+
+        var client = usage ?? throw new InvalidOperationException("No usage client was given.");
+        var server = new McpServer(pm, client, McpServer.ProcessRunner(pm.Sessions), claudePath: claudePath, log: err);
+        var input = mcpInput ?? new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false));
+        // stdout carries only protocol messages: anything else that writes to Console.Out lands on stderr instead.
+        var saved = Console.Out;
+        Console.SetOut(err);
+        try { server.RunAsync(input, output, CancellationToken.None).GetAwaiter().GetResult(); }
+        finally { Console.SetOut(saved); }
         return 0;
     }
 
