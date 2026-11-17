@@ -151,7 +151,7 @@ All commands work with either `clauderoo` or `cr`.
 | `start [name] [dir] --isolated` | Run with a separate config folder: no shared plugins, skills, hooks or MCP servers. A Claude login profile needs its own `/login` there once; other providers work right away |
 | `which [--json]` | Show which profile this terminal is using, and why |
 | `sessions [profile] [--json]` | List conversations across profiles (home's read-only, isolated folders included), newest first: id, profile, folder, when and your first prompt |
-| `resume <id> --as <profile> [--isolated] [--tab]` | Continue a conversation under another profile. The start of the id is enough. It's copied into that profile (a newer or bigger copy there is kept; an older one is saved as `.bak-<time>`), then Claude starts in the conversation's own folder with `--resume`. It can't copy into the home profile, because clauderoo never writes inside `~/.claude` |
+| `resume <id> --as <profile> [--isolated] [--tab]` | Continue a conversation under another profile. The start of the id is enough. It's copied into that profile (a newer or bigger copy there is kept; an older one is saved as `.bak-<time>`), then Claude starts in the conversation's own folder with `--resume`. It can't copy into the home profile, because clauderoo never writes inside `~/.claude`; `--as <home> --isolated` works, since that folder is clauderoo's |
 
 ### Folders
 

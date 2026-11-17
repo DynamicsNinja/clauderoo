@@ -246,14 +246,114 @@ public class ConversationTests
         var before = HashTree(Path.Combine(home.Paths.DefaultHomeDir, "projects"));
         var c = ConversationIndex.List(pm).Single();
 
-        foreach (var iso in new[] { false, true })
-        {
-            var ex = Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "personal", iso));
-            Assert.Equal("Conversations can't be copied into the home profile, because clauderoo never writes inside ~/.claude.",
-                ex.Message);
-        }
+        var ex = Assert.Throws<ClauderooException>(() => ConversationIndex.CopyTo(pm, c, "personal", false));
+        Assert.Equal("Conversations can't be copied into the home profile, because clauderoo never writes inside ~/.claude.",
+            ex.Message);
         Assert.Equal(before, HashTree(Path.Combine(home.Paths.DefaultHomeDir, "projects")));
-        Assert.False(Directory.Exists(home.Paths.IsolatedDir("personal")));
+
+        // Home's isolated folder belongs to clauderoo, so it's a valid target; ~/.claude stays untouched.
+        Assert.Equal(CopyOutcome.Copied, ConversationIndex.CopyTo(pm, c, "personal", true));
+        Assert.True(File.Exists(Path.Combine(home.Paths.IsolatedDir("personal"), "projects", Slug, Id1 + ".jsonl")));
+        Assert.Equal(before, HashTree(Path.Combine(home.Paths.DefaultHomeDir, "projects")));
+    }
+
+    [Fact]
+    public void Copy_SourceOpenForWriting_Copies()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var src = Write(home.Paths.DefaultHomeDir, Id1, Now.AddHours(-1), UserLine(Id1, home.Dir, "live"));
+        var whole = File.ReadAllText(src);
+        var folder = Path.Combine(Path.GetDirectoryName(src)!, Id1);
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "tool.txt"), "T");
+        var c = ConversationIndex.List(pm).Single();
+
+        // Claude holds the jsonl (and files in its folder) open for appending; a line is half written.
+        using (var writer = new FileStream(src, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        using (var folderWriter = new FileStream(Path.Combine(folder, "tool.txt"), FileMode.Append, FileAccess.Write,
+                   FileShare.ReadWrite | FileShare.Delete))
+        {
+            writer.Write(Encoding.UTF8.GetBytes("{\"type\":\"assistant\",\"mess"));
+            writer.Flush();
+            Assert.Equal(CopyOutcome.Copied, ConversationIndex.CopyTo(pm, c, "work", false));
+        }
+
+        var tdir = Path.Combine(home.Paths.ProfileDir("work"), "projects", Slug);
+        Assert.Equal(whole, File.ReadAllText(Path.Combine(tdir, Id1 + ".jsonl")));
+        Assert.Equal("T", File.ReadAllText(Path.Combine(tdir, Id1, "tool.txt")));
+    }
+
+    [Fact]
+    public void Copy_BackupNamesTaken_UsesSuffix()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var src = Write(home.Paths.DefaultHomeDir, Id1, Now.AddHours(-1), UserLine(Id1, home.Dir, "newer and longer"));
+        Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(src)!, Id1));
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(src)!, Id1, "n.txt"), "new");
+        var target = Write(home.Paths.ProfileDir("work"), Id1, Now.AddHours(-2), UserLine(Id1, home.Dir, "old"));
+        var tFolder = Path.Combine(Path.GetDirectoryName(target)!, Id1);
+        Directory.CreateDirectory(tFolder);
+        File.WriteAllText(Path.Combine(tFolder, "o.txt"), "old");
+        var stamp = Now.ToString("yyyyMMdd-HHmmss");
+        File.WriteAllText($"{target}.bak-{stamp}", "earlier backup");
+        Directory.CreateDirectory($"{tFolder}.bak-{stamp}");
+
+        var c = ConversationIndex.List(pm, "personal").Single();
+        Assert.Equal(CopyOutcome.BackedUpAndCopied, ConversationIndex.CopyTo(pm, c, "work", false));
+
+        Assert.Equal("earlier backup", File.ReadAllText($"{target}.bak-{stamp}"));
+        Assert.Contains("\"old\"", File.ReadAllText($"{target}.bak-{stamp}-1"));
+        Assert.Empty(Directory.GetFileSystemEntries($"{tFolder}.bak-{stamp}"));
+        Assert.Equal("old", File.ReadAllText(Path.Combine($"{tFolder}.bak-{stamp}-1", "o.txt")));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(tFolder, "n.txt")));
+        Assert.Equal(File.ReadAllText(src), File.ReadAllText(target));
+    }
+
+    [Fact]
+    public void List_IdFromFileName_NotContent()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        Write(home.Paths.DefaultHomeDir, Id1, Now, UserLine(Id2, home.Dir, "forked"));
+        // A file name that isn't a plain id is skipped: it could never be resumed safely.
+        Write(home.Paths.DefaultHomeDir, "bad name", Now, UserLine(Id2, home.Dir, "x"));
+
+        var c = Assert.Single(ConversationIndex.List(pm));
+        Assert.Equal(Id1, c.Id);
+    }
+
+    [Fact]
+    public void FirstPrompt_StripsControlCharacters()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        Write(home.Paths.DefaultHomeDir, Id1, Now, UserLine(Id1, home.Dir, "\u001b[31mred\u0007 text\u0000"));
+
+        Assert.Equal("[31mred text", ConversationIndex.List(pm).Single().FirstPrompt);
+        var t = Run(pm, "sessions");
+        var j = Run(pm, "sessions", "--json");
+        Assert.DoesNotContain('\u001b', t.o);
+        Assert.DoesNotContain('\u0007', t.o);
+        using var doc = JsonDocument.Parse(j.o);
+        Assert.Equal("[31mred text", doc.RootElement.GetProperty("conversations")[0].GetProperty("firstPrompt").GetString());
+    }
+
+    [Fact]
+    public void Resume_HomeIsolated_Copies()
+    {
+        var (pm, home, _) = Make(); using var _h = home;
+        var cwd = Path.Combine(home.Dir, "src");
+        Directory.CreateDirectory(cwd);
+        Write(home.Paths.ProfileDir("work"), Id1, Now, UserLine(Id1, cwd, "p"));
+        var projects = Path.Combine(home.Paths.DefaultHomeDir, "projects");
+        var before = HashTree(projects);
+
+        var r = Run(pm, "resume", Id1[..8], "--as", "personal", "--isolated");
+
+        Assert.Equal(0, r.code);
+        Assert.Equal(["--resume", Id1], r.inPlace!.Args);
+        Assert.Equal(home.Paths.IsolatedDir("personal"), r.inPlace.ConfigDirEnv);
+        Assert.Equal(cwd, r.inPlace.WorkingDir);
+        Assert.True(File.Exists(Path.Combine(home.Paths.IsolatedDir("personal"), "projects", Slug, Id1 + ".jsonl")));
+        Assert.Equal(before, HashTree(projects));
     }
 
     [Fact]

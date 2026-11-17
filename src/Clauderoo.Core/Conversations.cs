@@ -57,16 +57,20 @@ public static partial class ConversationIndex
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             foreach (var file in files)
             {
-                try { into.Add(Read(file, profile, isolated, Path.GetFileName(slugDir))); }
+                try { if (Read(file, profile, isolated, Path.GetFileName(slugDir)) is { } c) into.Add(c); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* gone or locked: skip */ }
             }
         }
     }
 
-    private static Conversation Read(string file, string profile, bool isolated, string slug)
+    private static Conversation? Read(string file, string profile, bool isolated, string slug)
     {
+        // The id is the file name: that's the file Claude's --resume opens, and CopyTo copies. A sessionId inside the
+        // file can differ (Claude writes earlier sessions' ids into resumed or forked files), so it's never used.
+        var id = Path.GetFileNameWithoutExtension(file);
+        if (!SafeId(id)) return null;
         var when = new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero);
-        string? id = null, cwd = null, prompt = null;
+        string? cwd = null, prompt = null;
         // Claude may be writing this file right now: read-only, sharing everything, and only the head.
         using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         {
@@ -77,7 +81,7 @@ public static partial class ConversationIndex
             var text = new UTF8Encoding(false, false).GetString(buf, 0, n);
             foreach (var line in text.Split('\n'))
             {
-                if (id != null && cwd != null && prompt != null) break;
+                if (cwd != null && prompt != null) break;
                 var l = line.Trim();
                 if (l.Length == 0 || l[0] != '{') continue;
                 try
@@ -85,15 +89,13 @@ public static partial class ConversationIndex
                     using var doc = JsonDocument.Parse(l);
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object) continue;
-                    id ??= Str(root, "sessionId") is { } s && SafeId(s) ? s : null;
                     cwd ??= Str(root, "cwd") is { Length: > 0 } c ? c : null;
                     if (prompt == null && Str(root, "type") == "user") prompt = UserText(root);
                 }
                 catch (JsonException) { /* partial or foreign line */ }
             }
         }
-        var fromName = Path.GetFileNameWithoutExtension(file);
-        return new Conversation(id ?? fromName, profile, isolated, slug, cwd, when, prompt, file);
+        return new Conversation(id, profile, isolated, slug, cwd, when, prompt, file);
     }
 
     private static string? Str(JsonElement obj, string name) =>
@@ -119,7 +121,8 @@ public static partial class ConversationIndex
             raw = sb.ToString();
         }
         if (raw == null) return null;
-        var collapsed = Whitespace().Replace(raw, " ").Trim();
+        // Control characters (escape sequences included) never reach the terminal or the JSON.
+        var collapsed = new string(Whitespace().Replace(raw, " ").Where(ch => !char.IsControl(ch)).ToArray()).Trim();
         if (collapsed.Length == 0) return null;
         return collapsed.Length > PromptLength ? collapsed[..PromptLength] : collapsed;
     }
@@ -162,7 +165,8 @@ public static partial class ConversationIndex
     {
         var cfg = pm.Config;
         var entry = pm.Get(targetProfile);
-        if (entry.Home) throw new ClauderooException(HomeTargetRefused);
+        // Home's own folder is ~/.claude and is never written; home's isolated folder is clauderoo's and is fine.
+        if (entry.Home && !targetIsolated) throw new ClauderooException(HomeTargetRefused);
         if (!SafeSegment(c.Slug)) throw new ClauderooException($"Unexpected conversation folder '{c.Slug}'.");
         var fileName = Path.GetFileName(c.FilePath);
         var stem = Path.GetFileNameWithoutExtension(fileName);
@@ -193,25 +197,44 @@ public static partial class ConversationIndex
         var srcFolder = Path.Combine(Path.GetDirectoryName(c.FilePath)!, stem);
         var tgtFolder = Path.Combine(slugDir, stem);
         string? tmpFolder = null;
+        string? folderMovedTo = null;
         try
         {
-            CopyFile(c.FilePath, tmpFile, src.LastWriteTimeUtc);
+            // A live conversation is open for appending, so only whole lines are copied (see CopyFile).
+            CopyFile(c.FilePath, tmpFile, src.LastWriteTimeUtc, wholeLines: true);
             if (Directory.Exists(srcFolder) && !IsReparsePoint(srcFolder))
             {
                 tmpFolder = Path.Combine(slugDir, $".{stem}.tmp-{Guid.NewGuid():N}");
                 CopyTree(srcFolder, tmpFolder);
             }
 
-            // Everything is staged; now swap it in, moving older copies aside (never deleting them).
+            // Everything is staged. Both backup names are picked (and known free) before anything moves.
+            var hadFolder = tmpFolder != null && (Directory.Exists(tgtFolder) || File.Exists(tgtFolder));
+            var folderBak = hadFolder ? FreeName($"{tgtFolder}.bak-{stamp}") : null;
+            var fileBak = existing.Exists ? FreeName($"{target}.bak-{stamp}", folderBak) : null;
+
+            // Swap in, moving older copies aside (never deleting them).
             if (tmpFolder != null)
             {
-                if (Directory.Exists(tgtFolder) || File.Exists(tgtFolder))
-                    Directory.Move(tgtFolder, $"{tgtFolder}.bak-{stamp}");
+                if (folderBak != null)
+                {
+                    Directory.Move(tgtFolder, folderBak);
+                    folderMovedTo = folderBak;
+                }
                 Directory.Move(tmpFolder, tgtFolder);
                 tmpFolder = null;
             }
-            if (existing.Exists) File.Move(target, $"{target}.bak-{stamp}");
-            File.Move(tmpFile, target);
+            try
+            {
+                if (fileBak != null) File.Move(target, fileBak);
+                File.Move(tmpFile, target);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // Put the old folder back so the target's file and folder still belong together.
+                if (folderMovedTo != null) RestoreFolder(tgtFolder, folderMovedTo, slugDir, stem);
+                throw;
+            }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -219,18 +242,64 @@ public static partial class ConversationIndex
             if (tmpFolder != null) TryDeleteOwnTree(tmpFolder);
             throw new ClauderooException(
                 $"Couldn't copy conversation {Short(c.Id)} to {targetProfile}: {e.Message} " +
-                "If that conversation is still open in Claude, close it and try again.");
+                $"Check that {targetProfile}'s copy of it isn't open in Claude, then try again.");
         }
         return existing.Exists ? CopyOutcome.BackedUpAndCopied : CopyOutcome.Copied;
     }
 
-    private static void CopyFile(string source, string dest, DateTime lastWriteUtc)
+    // "<name>", or "<name>-1", "<name>-2"… : the first that is neither a file, a folder nor <taken>.
+    private static string FreeName(string name, string? taken = null)
     {
-        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var output = new FileStream(dest, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        bool Used(string n) => File.Exists(n) || Directory.Exists(n) || string.Equals(n, taken, StringComparison.OrdinalIgnoreCase);
+        if (!Used(name)) return name;
+        for (var i = 1; ; i++)
+            if (!Used($"{name}-{i}")) return $"{name}-{i}";
+    }
+
+    // Best effort: the fresh copy goes aside under a free name (never deleted) and the old folder comes back.
+    private static void RestoreFolder(string tgtFolder, string backup, string slugDir, string stem)
+    {
+        try
+        {
+            Directory.Move(tgtFolder, FreeName(Path.Combine(slugDir, $".{stem}.undone-{Guid.NewGuid():N}")));
+            Directory.Move(backup, tgtFolder);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    // Claude may be appending to the source right now, so it's opened sharing everything. With wholeLines, a line
+    // still being written at the end is left out; the source's newer time makes the next resume copy it again.
+    private static void CopyFile(string source, string dest, DateTime lastWriteUtc, bool wholeLines = false)
+    {
+        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var output = new FileStream(dest, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+        {
             input.CopyTo(output);
+            if (wholeLines) TrimToLastNewline(output);
+        }
         // Keeps the source's time, so the next copy can tell whether the source moved on.
         File.SetLastWriteTimeUtc(dest, lastWriteUtc);
+    }
+
+    private static void TrimToLastNewline(FileStream f)
+    {
+        var buf = new byte[4096];
+        var end = f.Length;
+        while (end > 0)
+        {
+            var start = Math.Max(0, end - buf.Length);
+            f.Position = start;
+            var n = (int)(end - start);
+            f.ReadExactly(buf, 0, n);
+            for (var i = n - 1; i >= 0; i--)
+                if (buf[i] == (byte)'\n')
+                {
+                    f.SetLength(start + i + 1);
+                    return;
+                }
+            end = start;
+        }
+        // No newline at all: not a line being appended to a jsonl, so the copy is kept whole.
     }
 
     // Recursive copy that skips every reparse point (junctions, symlinks), so it never leaves the source folder.
