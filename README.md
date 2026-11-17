@@ -42,7 +42,9 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 ## Features
 
 - **Side-by-side sessions.** Run `work` and `personal` in different terminals at the same time.
-- **Three ways to sign in.** Each profile can use its own Claude login, **Google Vertex AI** or an Anthropic **API key**. API keys are stored encrypted with Windows DPAPI.
+- **Four ways to sign in.** Each profile can use its own Claude login, a **Claude token** from `claude setup-token`, **Google Vertex AI** or an Anthropic **API key**. Keys and tokens are stored encrypted with Windows DPAPI.
+- **Folder mapping.** Map a folder to a profile and `cr start` there picks it without a name.
+- **Isolated sessions.** `cr start work --isolated` runs a profile with nothing shared: no plugins, skills, hooks or MCP servers.
 - **Shared setup.** Shared folders are linked with junctions, and shared files are copied one way from home, with a backup made before anything is overwritten.
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
@@ -112,13 +114,15 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
+`list`, `status`, `maps`, `which` and `check` take `--json` for scripts. The output starts with `"schemaVersion": 1`; an error goes to stderr as `{"schemaVersion":1,"error":"…"}` with exit code 1.
+
 ### Profiles
 
 | Command | What it does |
 | --- | --- |
 | `init [--name <n>] [--home <path>]` | Set up clauderoo around your existing `~/.claude` |
 | `add <name>` | Create a profile (names may use `a-z`, `0-9` and `-`) |
-| `list` | List profiles and the account each one is logged in with |
+| `list [--json]` | List profiles and the account each one is logged in with |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
 | `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Provider settings come back as the Claude login |
@@ -128,16 +132,28 @@ All commands work with either `clauderoo` or `cr`.
 
 | Command | What it does |
 | --- | --- |
-| `start <name> [dir] [-- args]` | Run Claude for a profile in this terminal (`run` does the same) |
+| `start [name] [dir] [-- args]` | Run Claude for a profile in this terminal (`run` does the same). Without a name, the folder's mapping picks the profile, or else the default |
 | `start <name> [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead. Prompts there can't contain `" % ! ;` |
+| `start [name] [dir] --isolated` | Run with a separate config folder: no shared plugins, skills, hooks or MCP servers. A Claude login profile needs its own `/login` there once; other providers work right away |
+| `which [--json]` | Show which profile this terminal is using, and why |
+
+### Folders
+
+| Command | What it does |
+| --- | --- |
+| `map <name> [dir]` | Use the profile for `dir` (default: the current folder) and every folder inside it |
+| `unmap [dir]` | Remove a folder mapping |
+| `maps [--json]` | List folder mappings |
+
+The longest mapped folder wins. Mappings follow a profile when it's renamed and are dropped when it's removed. You can also edit them under **Folders** in the manager window.
 
 ### Providers and environment
 
 | Command | What it does |
 | --- | --- |
-| `provider <name> login\|vertex\|apikey` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key |
+| `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token` |
 | `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
-| `check <name>` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
+| `check <name> [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
 | `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
 
 ### Sharing
@@ -152,7 +168,7 @@ All commands work with either `clauderoo` or `cr`.
 | Command | What it does |
 | --- | --- |
 | `manage` | Open the profile manager window |
-| `status` | Show the default profile and any problems |
+| `status [--json]` | Show the default profile and any problems |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |
@@ -166,6 +182,7 @@ Every profile except home can sign in its own way:
 | **Claude login** (default) | The profile's own `/login`, stored in its own folder |
 | **Google Vertex AI** | Your Google Cloud sign-in (Application Default Credentials) against a GCP project and region |
 | **API key** | An Anthropic API key, stored encrypted for your Windows user with DPAPI and handed to Claude through `apiKeyHelper` |
+| **Claude token** | A long-lived token from `claude setup-token`, stored encrypted with DPAPI and passed to Claude as `CLAUDE_CODE_OAUTH_TOKEN` when clauderoo starts the session. It never goes into `settings.json`, so a plain `claude` isn't signed in with it: start token profiles with `cr start` or from the tray |
 
 The home profile always uses its own Claude login.
 
@@ -174,6 +191,7 @@ You can pick the provider and edit environment variables in the manager window (
 ```powershell
 cr provider work vertex --project my-gcp-project --region us-east5 [--sonnet <model>] [--opus <model>] [--haiku <model>]
 cr provider work apikey          # reads the key from stdin or prompts for it without showing it
+cr provider work token           # the same, for a token from `claude setup-token`
 cr provider work login
 cr env work set HTTPS_PROXY=http://proxy:8080
 cr env work unset HTTPS_PROXY

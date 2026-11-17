@@ -53,6 +53,8 @@ sealed class ProfilesForm : Form
     private readonly RadioButton _rbLogin = Radio(TrayText.AccessKey(TrayText.ClaudeLogin, "login"));
     private readonly RadioButton _rbVertex = Radio(TrayText.AccessKey(TrayText.Vertex, "x AI"));
     private readonly RadioButton _rbApiKey = Radio(TrayText.AccessKey(TrayText.ApiKey, "API"));
+    // No access key: every letter of "Claude token" is taken by another control (arrow keys move between the radios).
+    private readonly RadioButton _rbToken = Radio(TrayText.Token);
 
     private readonly TableLayoutPanel _vertexPanel = FieldGrid();
     private readonly TextBox _project = Field("e.g. my-gcp-project");
@@ -68,6 +70,33 @@ sealed class ProfilesForm : Form
 
     private readonly TableLayoutPanel _apiKeyPanel = FieldGrid();
     private readonly TextBox _apiKey = Field("");
+
+    private readonly TableLayoutPanel _tokenPanel = FieldGrid();
+    private readonly TextBox _token = Field("");
+    private readonly WrapLabel _tokenHelp = new()
+    {
+        Text = "Create one with 'claude setup-token'. Sessions started from clauderoo use it; a plain 'claude' " +
+               "isn't signed in with it.",
+        ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6),
+    };
+    private const string TokenSavedCue = "(saved — leave empty to keep)";
+    private const string TokenCue = "Paste the token (sk-ant-oat…)";
+
+    // Folders that `cr start` maps to this profile; changed right away (not part of Save).
+    private readonly Label _foldersLabel = new() { Text = "&Folders", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly WrapLabel _foldersHint = new()
+    {
+        Text = "'cr start' in one of these folders, or a folder inside it, uses this profile.",
+        ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 3),
+    };
+    private readonly TableLayoutPanel _foldersRow;
+    private readonly ListBox _folders = new()
+    {
+        Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, IntegralHeight = false, HorizontalScrollbar = true,
+        Margin = new Padding(0, 0, 6, 0), AccessibleName = "Folders",
+    };
+    private readonly Button _addFolder = Btn("Add folder…");
+    private readonly Button _removeFolder = Btn("Remove folder");
 
     private readonly TableLayoutPanel _loginPanel = FieldGrid();
     private readonly Label _account = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 0, 3), UseMnemonic = false };
@@ -138,6 +167,7 @@ sealed class ProfilesForm : Form
     private bool _currentIsHome;
     private bool _currentIsDefault;
     private bool _hasSavedKey;     // the current profile has an API key stored
+    private bool _hasSavedToken;   // the current profile has a Claude token stored
     private string _loadedState = "";
     private bool _loading;         // suppresses change handlers while filling controls
     private bool _switching;       // suppresses re-entrant selection changes
@@ -188,7 +218,7 @@ sealed class ProfilesForm : Form
         _homePanel.Controls.Add(_homeAccount, 0, 3);
 
         var radios = Flow(FlowDirection.TopDown);
-        radios.Controls.AddRange([_rbLogin, _rbVertex, _rbApiKey]);
+        radios.Controls.AddRange([_rbLogin, _rbVertex, _rbApiKey, _rbToken]);
         _providerRow = Table(2);
         // Each label sits right before its control in the tab order, so its mnemonic moves focus there.
         _providerRow.Controls.Add(new Label { Text = "Pr&ovider:", AutoSize = true, Margin = new Padding(0, 4, 12, 0) }, 0, 0);
@@ -201,11 +231,29 @@ sealed class ProfilesForm : Form
         AddField(_vertexPanel, "Op&us model:", _opus);
         AddField(_vertexPanel, "&Haiku model:", _haiku);
         _vertexPanel.Margin = new Padding(0, 0, 0, 2);
-        foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey })
+        foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey, _token })
             tb.MinimumSize = new Size(240, 0);
         _apiKey.UseSystemPasswordChar = true;
         AddField(_apiKeyPanel, "API &key:", _apiKey);
+        _token.UseSystemPasswordChar = true;
+        _token.AccessibleName = "Claude token";
+        AddField(_tokenPanel, "Token:", _token);
+        _tokenPanel.Margin = new Padding(0, 0, 0, 2);
         AddField(_loginPanel, "Account:", _account);
+
+        // Folders: the list, with its buttons stacked on the right.
+        var folderButtons = Flow(FlowDirection.TopDown);
+        _addFolder.Margin = new Padding(0, 0, 0, 4);
+        _removeFolder.Margin = Padding.Empty;
+        folderButtons.Controls.AddRange([_addFolder, _removeFolder]);
+        _foldersRow = Table(2);
+        _foldersRow.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _foldersRow.Margin = new Padding(0, 0, 0, 6);
+        _foldersRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _foldersRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _foldersRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _foldersRow.Controls.Add(_folders, 0, 0);
+        _foldersRow.Controls.Add(folderButtons, 1, 0);
 
         _checkRow = Flow(FlowDirection.LeftToRight);
         _checkRow.Margin = new Padding(0, 0, 0, 4);
@@ -224,8 +272,8 @@ sealed class ProfilesForm : Form
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Control[] topRows =
         [
-            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _loginPanel, _fieldError,
-            _checkRow, _checkStatus, _checkList, _envLabel, _envHint,
+            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
+            _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow, _envLabel, _envHint,
         ];
         top.RowCount = topRows.Length;
         for (var i = 0; i < topRows.Length; i++)
@@ -288,10 +336,10 @@ sealed class ProfilesForm : Form
         AcceptButton = _save;
 
         // Size the window from its content, measured with the largest provider panel and every optional line showing.
-        _homePanel.Visible = _apiKeyPanel.Visible = _loginPanel.Visible = false;
+        _homePanel.Visible = _apiKeyPanel.Visible = _tokenPanel.Visible = _tokenHelp.Visible = _loginPanel.Visible = false;
         _unsaved.Visible = true;
         var rightWidth = Math.Max(_vertexPanel.GetPreferredSize(Size.Empty).Width, _env.MinimumSize.Width);
-        foreach (var w in new[] { _vertexHelp, _envHint }) w.WrapTo(rightWidth - w.Margin.Horizontal);
+        foreach (var w in new[] { _vertexHelp, _foldersHint, _envHint }) w.WrapTo(rightWidth - w.Margin.Horizontal);
         var topPref = top.GetPreferredSize(Size.Empty);
         right.Size = new Size(rightWidth,
             topPref.Height + envButtons.GetPreferredSize(Size.Empty).Height + envButtons.Padding.Vertical + _env.MinimumSize.Height);
@@ -306,7 +354,8 @@ sealed class ProfilesForm : Form
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
 
         // Status labels wrap to the width of their column.
-        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _fieldError, _checkStatus, _checkList, _envHint);
+        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _fieldError, _checkStatus, _checkList,
+            _foldersHint, _envHint);
         WrapTo(right, _envError);
         WrapTo(root, _result);
         // SizeChanged: a wrapped label takes its new height after TextChanged has been raised.
@@ -327,15 +376,18 @@ sealed class ProfilesForm : Form
         _new.Click += (_, _) => Guard(NewProfile);
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
-        foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey })
+        foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
                 if (!rb.Checked) return;
                 UpdateProviderPanels();
                 OnEdited();
             };
-        foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey })
+        foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey, _token })
             tb.TextChanged += (_, _) => OnEdited();
+        _folders.SelectedIndexChanged += (_, _) => _removeFolder.Enabled = _folders.SelectedIndex >= 0;
+        _addFolder.Click += (_, _) => Guard(AddFolder);
+        _removeFolder.Click += (_, _) => Guard(RemoveFolder);
         // Commit each keystroke so validation and the Save state follow typing in the grid.
         _env.CurrentCellDirtyStateChanged += (_, _) =>
         {
@@ -381,7 +433,8 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_addFolder, Glyph.FolderOpen),
+                     (_removeFolder, Glyph.Remove),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -398,6 +451,16 @@ sealed class ProfilesForm : Form
         var line = TextRenderer.MeasureText("Ag", _boldFont).Height;
         _list.ItemHeight = Math.Min(255, 2 * line + LogicalToDeviceUnits(12));
         _list.Invalidate();
+        SizeFolderList();
+    }
+
+    // Three rows high, and never shorter than its two buttons.
+    private void SizeFolderList()
+    {
+        var border = _folders.Height - _folders.ClientSize.Height;
+        var buttons = _addFolder.GetPreferredSize(Size.Empty).Height + _addFolder.Margin.Vertical
+                      + _removeFolder.GetPreferredSize(Size.Empty).Height;
+        _folders.Height = Math.Max(3 * _folders.ItemHeight + border, buttons);
     }
 
     // High Contrast switched on or off while the window is open: new icon, re-inked glyphs and status colours.
@@ -485,7 +548,7 @@ sealed class ProfilesForm : Form
     private static Glyph ProviderGlyph(string provider) => provider switch
     {
         Providers.Vertex => Glyph.Cloud,
-        Providers.ApiKey => Glyph.Key,
+        Providers.ApiKey or Providers.Token => Glyph.Key,
         _ => Glyph.Person,
     };
 
@@ -611,10 +674,12 @@ sealed class ProfilesForm : Form
             _current = info?.Name;
             _currentIsHome = info?.IsHome ?? false;
             _currentIsDefault = info?.IsDefault ?? false;
-            _project.Text = _region.Text = _sonnet.Text = _opus.Text = _haiku.Text = _apiKey.Text = "";
+            _project.Text = _region.Text = _sonnet.Text = _opus.Text = _haiku.Text = _apiKey.Text = _token.Text = "";
             _apiKey.PlaceholderText = "Paste the key (sk-ant-…)";
+            _token.PlaceholderText = TokenCue;
             _env.Rows.Clear();
-            _hasSavedKey = false;
+            _hasSavedKey = _hasSavedToken = false;
+            LoadFolders(info?.Name);
 
             if (info == null)
             {
@@ -639,6 +704,9 @@ sealed class ProfilesForm : Form
                     }
                     _hasSavedKey = _pm.HasApiKey(info.Name);
                     if (_hasSavedKey) _apiKey.PlaceholderText = "•••• saved (type to replace)";
+                    // The saved token itself is never read here: only whether there is one.
+                    _hasSavedToken = _pm.HasToken(info.Name);
+                    if (_hasSavedToken) _token.PlaceholderText = TokenSavedCue;
                     foreach (var kv in _pm.GetEnv(info.Name).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
                         _env.Rows.Add(kv.Key, kv.Value);
                 }
@@ -647,6 +715,7 @@ sealed class ProfilesForm : Form
                 {
                     Providers.Vertex => _rbVertex,
                     Providers.ApiKey => _rbApiKey,
+                    Providers.Token => _rbToken,
                     _ => _rbLogin,
                 }).Checked = true;
             }
@@ -681,7 +750,8 @@ sealed class ProfilesForm : Form
     }
 
     private string SelectedProvider =>
-        _rbVertex.Checked ? Providers.Vertex : _rbApiKey.Checked ? Providers.ApiKey : Providers.Login;
+        _rbVertex.Checked ? Providers.Vertex : _rbApiKey.Checked ? Providers.ApiKey
+        : _rbToken.Checked ? Providers.Token : Providers.Login;
 
     // Shows what fits the selected profile: the home explanation, or the provider fields, checks and env vars.
     private void UpdateProviderPanels()
@@ -693,7 +763,10 @@ sealed class ProfilesForm : Form
         _providerRow.Visible = editable;
         _vertexPanel.Visible = _vertexHelp.Visible = editable && p == Providers.Vertex;
         _apiKeyPanel.Visible = editable && p == Providers.ApiKey;
+        _tokenPanel.Visible = _tokenHelp.Visible = editable && p == Providers.Token;
         _loginPanel.Visible = editable && p == Providers.Login;
+        // Folder mappings work for every profile, the home profile too.
+        _foldersLabel.Visible = _foldersHint.Visible = _foldersRow.Visible = _current != null;
         _fieldError.Visible = _checkRow.Visible = _checkStatus.Visible = editable;
         _signIn.Visible = p == Providers.Vertex;
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
@@ -709,7 +782,7 @@ sealed class ProfilesForm : Form
     {
         var parts = new List<string>
         {
-            SelectedProvider, _project.Text, _region.Text, _sonnet.Text, _opus.Text, _haiku.Text, _apiKey.Text,
+            SelectedProvider, _project.Text, _region.Text, _sonnet.Text, _opus.Text, _haiku.Text, _apiKey.Text, _token.Text,
         };
         foreach (var (name, value) in EnvRows()) parts.Add(name + "=" + value);
         return string.Join("\u0001", parts);
@@ -747,6 +820,14 @@ sealed class ProfilesForm : Form
             }
             else if (SelectedProvider == Providers.ApiKey && string.IsNullOrWhiteSpace(_apiKey.Text) && !_hasSavedKey)
                 missing = "Paste the API key to save.";
+            else if (SelectedProvider == Providers.Token)
+            {
+                var token = _token.Text.Trim();
+                if (token.Length == 0 && !_hasSavedToken) missing = "Paste the token to save.";
+                // Never echoes what was typed.
+                else if (token.Length > 0 && !token.StartsWith("sk-ant-oat", StringComparison.Ordinal))
+                    missing = "That doesn't look like a Claude token: it starts with sk-ant-oat.";
+            }
         }
         if (missing == null) _fieldError.Show(null, StatusColors.Muted, "");
         else _fieldError.Show(Glyph.Info, StatusColors.Muted, missing);
@@ -831,6 +912,10 @@ sealed class ProfilesForm : Form
                 MessageBox.Show(this, $"Switching {name} away from API key deletes its saved key. Continue?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 return false;
+            if (provider != Providers.Token && _pm.HasToken(name) &&
+                MessageBox.Show(this, $"This deletes the saved token for {name}.{Environment.NewLine}{Environment.NewLine}Continue?",
+                    "clauderoo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return false;
         }
         catch (Exception e)
         {
@@ -851,7 +936,9 @@ sealed class ProfilesForm : Form
                 }
                 : null;
             var apiKey = provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(_apiKey.Text) ? _apiKey.Text.Trim() : null;
-            Collect(_pm.SetProvider(name, provider, vertex, apiKey), notices, problems);
+            // An empty token box keeps the saved token (Core keeps it when none is given).
+            var token = provider == Providers.Token && !string.IsNullOrWhiteSpace(_token.Text) ? _token.Text.Trim() : null;
+            Collect(_pm.SetProvider(name, provider, vertex, apiKey, token), notices, problems);
             providerSaved = true;
             Collect(_pm.ReplaceEnv(name, env), notices, problems);
         }
@@ -1316,6 +1403,61 @@ sealed class ProfilesForm : Form
         if (_current == null || !ConfirmLeave()) return;
         ClearResult();
         _startSession(_current);
+    }
+
+    // ---------- folders ----------
+
+    private void LoadFolders(string? name, string? select = null)
+    {
+        _folders.BeginUpdate();
+        try
+        {
+            _folders.Items.Clear();
+            if (name != null)
+                foreach (var (dir, profile) in _pm.Maps())
+                    if (string.Equals(profile, name, StringComparison.OrdinalIgnoreCase)) _folders.Items.Add(dir);
+            var idx = -1;
+            for (var i = 0; select != null && i < _folders.Items.Count; i++)
+                if (string.Equals((string)_folders.Items[i], select, StringComparison.OrdinalIgnoreCase)) idx = i;
+            _folders.SelectedIndex = idx;
+        }
+        finally { _folders.EndUpdate(); }
+        _removeFolder.Enabled = _folders.SelectedIndex >= 0;
+    }
+
+    // Takes effect right away: the mapping only tells `cr start` which profile a folder uses.
+    private void AddFolder()
+    {
+        if (_current == null) return;
+        var name = _current;
+        using var dlg = new FolderBrowserDialog { Description = $"Choose a folder for {name}", UseDescriptionForTitle = true };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        ClearResult();
+        var dir = FolderMap.Normalize(dlg.SelectedPath);
+        var other = _pm.Maps().Where(m => string.Equals(m.Dir, dir, StringComparison.OrdinalIgnoreCase))
+            .Select(m => m.Profile).FirstOrDefault();
+        if (string.Equals(other, name, StringComparison.OrdinalIgnoreCase))
+        {
+            LoadFolders(name, dir);
+            SetResult($"{dir} already uses {name}.", SystemColors.ControlText);
+            return;
+        }
+        if (other != null && MessageBox.Show(this, $"{dir} uses {other} now.{Environment.NewLine}{Environment.NewLine}" +
+                                                   $"Use {name} for it instead?", "clauderoo",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        _pm.Map(name, dir);
+        LoadFolders(name, dir);
+        SetResult($"{dir} now uses {name}.", SystemColors.ControlText);
+    }
+
+    private void RemoveFolder()
+    {
+        if (_current == null || _folders.SelectedItem is not string dir) return;
+        ClearResult();
+        var name = _current;
+        _pm.Unmap(dir);
+        LoadFolders(name);
+        SetResult($"{dir} no longer uses {name}.", SystemColors.ControlText);
     }
 
     private void SetDefault()

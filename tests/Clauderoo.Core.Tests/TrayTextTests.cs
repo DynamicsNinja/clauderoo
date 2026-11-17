@@ -40,6 +40,34 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void ProviderLabel_Token_IsClaudeToken()
+    {
+        var p = new ProfileInfo("ci", false, false, null, [], @"C:\x\ci", Providers.Token);
+        Assert.Equal("Claude token", TrayText.ProviderName(Providers.Token));
+        Assert.Equal("ci — Claude token", TrayText.ProfileLabel(p));
+        Assert.False(TrayText.IsSignedOut(p)); // no email to show, and that's not "not signed in"
+        Assert.Null(TrayText.Account(p));
+    }
+
+    [Fact]
+    public void MenuItems_IncludeStartIsolated()
+    {
+        string? started = null;
+        using var menu = new ContextMenuStrip();
+        var state = new TrayMenuState([Login("work", "w@example.com", isDefault: true)], [],
+            new Dictionary<string, int>(), false);
+        TrayMenu.Build(menu, state, new TrayMenuActions { StartIsolated = n => started = n });
+
+        var profile = menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text!.StartsWith("work"));
+        var sub = profile.DropDownItems.OfType<ToolStripMenuItem>().ToList();
+        var iso = Assert.Single(sub, i => i.Text == "Start &isolated session");
+        Assert.Equal(1, sub.FindIndex(i => i == iso)); // right after "Start session"
+        Assert.False(string.IsNullOrEmpty(iso.ToolTipText));
+        iso.PerformClick();
+        Assert.Equal("work", started);
+    }
+
+    [Fact]
     public void Account_CutAt40()
     {
         var email = new string('a', 60) + "@example.com";

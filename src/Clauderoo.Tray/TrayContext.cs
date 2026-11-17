@@ -257,6 +257,7 @@ sealed class TrayContext : ApplicationContext
         {
             Start = name => Guard(() => StartSession(name, null)),
             StartInFolder = name => Guard(() => StartInFolder(name)),
+            StartIsolated = name => Guard(() => StartSession(name, null, isolated: true)),
             SetDefault = name => Guard(() => SetDefault(name)),
             ShowProblems = () => Guard(ShowProblems),
             ShowProfiles = () => Guard(ShowProfiles),
@@ -390,13 +391,14 @@ sealed class TrayContext : ApplicationContext
         if (dlg.ShowDialog() == DialogResult.OK) StartSession(name, dlg.SelectedPath);
     }
 
-    // The new terminal runs `clauderoo run`, which records the session itself; the running count follows within 15 s.
-    private void StartSession(string name, string? dir)
+    // The new terminal runs `clauderoo run [--isolated]`, which records the session (and prepares an isolated folder)
+    // itself; the running count follows within 15 s.
+    private void StartSession(string name, string? dir, bool isolated = false)
     {
         if (RequireConfig() is not { } cfg) return;
         dir ??= _pm.Get(name).StartDir
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable()));
+        using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable(), isolated: isolated));
     }
 
     // The Profiles window shows a failed start in a message box: give it the plain words too.

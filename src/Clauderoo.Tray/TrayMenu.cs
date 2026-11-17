@@ -22,6 +22,7 @@ internal sealed class TrayMenuActions
 {
     public Action<string> Start { get; init; } = _ => { };
     public Action<string> StartInFolder { get; init; } = _ => { };
+    public Action<string> StartIsolated { get; init; } = _ => { };
     public Action<string> SetDefault { get; init; } = _ => { };
     public Action ShowProblems { get; init; } = () => { };
     public Action ShowProfiles { get; init; } = () => { };
@@ -134,7 +135,7 @@ internal static class TrayMenu
         var glyph = p.Provider switch
         {
             Providers.Vertex => Glyph.Cloud,
-            Providers.ApiKey => Glyph.Key,
+            Providers.ApiKey or Providers.Token => Glyph.Key,
             _ => Glyph.Person,
         };
         var item = new ToolStripMenuItem(label.Replace("&", "&&"))
@@ -159,6 +160,9 @@ internal static class TrayMenu
         var start = Item("&Start session", Neutral(Glyph.Play, dpi), () => a.Start(name));
         if (p.IsDefault) start.Font = Bold(menu.Font);
         item.DropDownItems.Add(start);
+        var isolated = Item("Start &isolated session", Neutral(Glyph.Play, dpi), () => a.StartIsolated(name));
+        isolated.ToolTipText = "Uses a separate settings folder: no shared plugins, skills, hooks or MCP servers.";
+        item.DropDownItems.Add(isolated);
         item.DropDownItems.Add(Item("Start in &folder…", Neutral(Glyph.FolderOpen, dpi), () => a.StartInFolder(name)));
         var setDefault = Item(p.IsDefault ? "Already the default" : "Set as &default",
             p.IsDefault ? Glyphs.Get(Glyph.Star, GlyphSize, dpi, StatusColors.Accent) : Neutral(Glyph.StarOutline, dpi),
