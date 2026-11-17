@@ -7,13 +7,15 @@ namespace Clauderoo.Core.Tests;
 
 /// <summary>
 /// End to end: a distinctive token planted in a profile's .credentials.json must not come out of any usage path
-/// (client, poller, cache, CLI), whatever the service answers. `cr which` is added to this test when that branch merges.
+/// (client, poller, cache, CLI including `which --json` and `list --json`), whatever the service answers. A Claude-token
+/// profile's stored token (DPAPI-encrypted on disk) must not come out either, in plain text, anywhere.
 /// </summary>
 public class TokenLeakTests
 {
-    // Two accounts, two distinct canaries: a profile's and the home profile's.
+    // Three distinct canaries: a profile's sign-in, the home profile's sign-in, and a token profile's stored token.
     private const string Token = "sk-ant-oat01-LEAKCANARY-7f3e9a1b2c4d5e6f8a9b";
     private const string HomeToken = "sk-ant-oat01-HOMECANARY-1a2b3c4d5e6f7a8b9c0d";
+    private const string StoredToken = "sk-ant-oat01-TOKNCANARY-9z8y7x6w5v4u3t2s1r0q";
     private static readonly DateTime Clock = new(2026, 11, 17, 12, 0, 0);
     private static readonly DateTimeOffset Now = new(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
 
@@ -70,13 +72,15 @@ public class TokenLeakTests
         var pm = new ProfileManager(home.Paths, new FakeEnv(), () => Clock);
         pm.Init();
         pm.Add("work");
+        pm.Add("ci");
+        pm.SetProvider("ci", Providers.Token, token: StoredToken);
         var homeName = pm.Config.HomeProfileName!;
         var planted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             PlantCredential(pm.ConfigDirOf("work"), Token),
             PlantCredential(pm.ConfigDirOf(homeName), HomeToken),
         };
-        string[] profiles = ["work", homeName];
+        string[] profiles = ["work", homeName, "ci"];
 
         var seen = new StringBuilder();
         void Capture(string what, Func<string> run)
@@ -117,7 +121,11 @@ public class TokenLeakTests
             }
 
             // the CLI
-            foreach (var args in new[] { new[] { "usage" }, ["usage", "work"], ["usage", "--json"], ["usage", "work", "--json"], ["list"] })
+            foreach (var args in new[]
+                     {
+                         new[] { "usage" }, ["usage", "work"], ["usage", "ci"], ["usage", "--json"], ["usage", "work", "--json"],
+                         ["usage", "ci", "--json"], ["list"], ["list", "--json"], ["which"], ["which", "--json"],
+                     })
                 Capture($"[{name}] cr {string.Join(' ', args)}", () =>
                 {
                     var o = new StringWriter();
@@ -135,8 +143,13 @@ public class TokenLeakTests
         Assert.DoesNotContain(HomeToken, text);
         Assert.DoesNotContain("LEAKCANARY", text);
         Assert.DoesNotContain("HOMECANARY", text);
+        Assert.DoesNotContain(StoredToken, text);
+        Assert.DoesNotContain("TOKNCANARY", text);
+        Assert.Contains("Usage isn't tracked for Claude token.", text); // the token profile was asked about, and said so
+        Assert.Contains("\"schemaVersion\":1", text); // the --json runs printed JSON
+        Assert.True(pm.HasToken("ci")); // the token is really stored (encrypted)
 
-        // nothing under the user's folder holds either token, except the two planted credential files themselves
+        // nothing under the user's folder holds any token, except the two planted credential files themselves
         // (any other .credentials.json, say a copy, is checked like every other file)
         Assert.True(File.Exists(Path.Combine(home.Paths.Root, "usage.json")));
         var checkedFiles = 0;
@@ -146,6 +159,8 @@ public class TokenLeakTests
             var content = File.ReadAllText(file);
             Assert.DoesNotContain("LEAKCANARY", content);
             Assert.DoesNotContain("HOMECANARY", content);
+            Assert.DoesNotContain("TOKNCANARY", content); // DPAPI-encrypted on disk, never in plain text
+            Assert.DoesNotContain("TOKNCANARY", Encoding.Unicode.GetString(File.ReadAllBytes(file)));
             checkedFiles++;
         }
         Assert.True(checkedFiles > 0);

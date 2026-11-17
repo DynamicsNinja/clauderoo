@@ -210,7 +210,8 @@ internal static class TrayMenu
             item.DropDownItems.Add(new ToolStripSeparator());
             item.DropDownItems.Add(new ToolStripMenuItem("● " + TrayText.Running(running)) { Enabled = false });
         }
-        IReadOnlyList<string> usageRows = TrayText.IsSignedOut(p) ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
+        IReadOnlyList<string> usageRows = TrayText.UsageNotTrackedFor(p) is { } notTracked ? [notTracked]
+            : TrayText.IsSignedOut(p) ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
         if (usageRows.Count > 0)
         {
             item.DropDownItems.Add(new ToolStripSeparator());

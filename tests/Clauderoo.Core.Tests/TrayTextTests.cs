@@ -290,4 +290,31 @@ public class TrayTextTests
     [Fact]
     public void UsageNotTracked_NamesProvider() =>
         Assert.Equal("Usage isn't tracked for Google Vertex AI.", TrayText.UsageNotTracked(Providers.Vertex));
+
+    [Fact]
+    public void TokenProfile_UsageNotTracked_InTrayAndWindow()
+    {
+        var token = new ProfileInfo("ci", false, false, null, [], @"C:\x\ci", Providers.Token);
+        // Never polled (the poller's targets are the tracked profiles) ...
+        Assert.False(TrayMenuState.TracksUsage(token));
+        // ... and the window's Usage group and the tray submenu say why, in the same words as the CLI.
+        Assert.Equal("Usage isn't tracked for Claude token.", TrayText.UsageNotTrackedFor(token));
+        Assert.Equal("Usage isn't tracked for Claude token.", new UsageResult.NotTracked(Providers.Token).Message);
+        Assert.Null(TrayText.UsageNotTrackedFor(Login("work", "w@example.com")));
+        Assert.Null(TrayText.UsageNotTrackedFor(Login("personal", null, home: true)));
+
+        // A reading stored under its name (say, from before it became a token profile) isn't shown.
+        var now = DateTimeOffset.Now;
+        var stale = Usage(now, W("5h", 42));
+        using var menu = new ContextMenuStrip();
+        var state = new TrayMenuState([Login("work", "w@example.com", isDefault: true), token], [],
+            new Dictionary<string, int>(), false,
+            Usage: new Dictionary<string, UsageReading> { ["ci"] = stale with { Profile = "ci" } }, Now: now);
+        TrayMenu.Build(menu, state, new TrayMenuActions());
+        var item = menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text!.StartsWith("ci"));
+        Assert.DoesNotContain("42%", item.Text);
+        var rows = item.DropDownItems.OfType<ToolStripMenuItem>().Where(i => !i.Enabled).Select(i => i.Text).ToList();
+        Assert.Contains("Usage isn't tracked for Claude token.", rows);
+        Assert.DoesNotContain(rows, r => r!.Contains("42%"));
+    }
 }

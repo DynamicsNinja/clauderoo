@@ -809,13 +809,13 @@ sealed class ProfilesForm : Form
             _usageRows.RowStyles.Clear();
             _usageRows.RowCount = 0;
 
-            var provider = info.IsHome ? Providers.Login : info.Provider;
-            var tracked = provider == Providers.Login;
-            _usageRefresh.Visible = tracked && _usageView != null;
-            if (!tracked)
+            // Vertex, API-key and token profiles: never polled, never peeked; the window just says why.
+            var notTracked = TrayText.UsageNotTrackedFor(info);
+            _usageRefresh.Visible = notTracked == null && _usageView != null;
+            if (notTracked != null)
             {
                 _usageRows.Visible = false;
-                _usageInfo.Text = TrayText.UsageNotTracked(provider);
+                _usageInfo.Text = notTracked;
                 _usageStatus.Show(null, StatusColors.Muted, "");
                 return;
             }

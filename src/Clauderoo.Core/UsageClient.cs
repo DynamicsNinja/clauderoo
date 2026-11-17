@@ -20,7 +20,11 @@ public abstract record UsageResult
     public sealed record Expired : UsageResult;
     public sealed record NotSignedIn : UsageResult;
     /// <summary>The provider (Vertex, API key, token) has no subscription limits to report.</summary>
-    public sealed record NotTracked(string Provider) : UsageResult;
+    public sealed record NotTracked(string Provider) : UsageResult
+    {
+        /// <summary>"Usage isn't tracked for Claude token." The same words in the CLI, the tray and the window.</summary>
+        public string Message => $"Usage isn't tracked for {Providers.DisplayName(Provider)}.";
+    }
     public sealed record RateLimited(TimeSpan RetryAfter) : UsageResult;
     /// <summary>A plain message, already scrubbed of the token.</summary>
     public sealed record Failed(string Message) : UsageResult;

@@ -608,7 +608,7 @@ public static class Commands
                 }
                 catch (OperationCanceledException) when (cts.IsCancellationRequested)
                 {
-                    if (json) WriteJsonError(err, "Cancelled.");
+                    if (json) JsonOut.Error(err, "Cancelled.");
                     else err.WriteLine("Cancelled.");
                     return 1;
                 }
@@ -616,7 +616,7 @@ public static class Commands
             }
         }
 
-        if (json) WriteUsageJson(rows, output);
+        if (json) JsonOut.Write(output, UsagePayload(rows));
         else foreach (var line in FormatUsage(rows)) output.WriteLine(line);
         return rows.Any(r => r.Reading == null && r.Status is "failed" or "unavailable" or "rateLimited") ? 1 : 0;
     }
@@ -648,7 +648,7 @@ public static class Commands
             case UsageResult.NotSignedIn:
                 return new UsageRow(name, "notSignedIn", null, "Not signed in.");
             case UsageResult.NotTracked nt:
-                return new UsageRow(name, "notTracked", null, $"Not tracked ({nt.Provider} has no subscription limits).");
+                return new UsageRow(name, "notTracked", null, nt.Message);
             default:
                 throw new InvalidOperationException($"Unknown usage result {r.GetType().Name}.");
         }
@@ -678,34 +678,21 @@ public static class Commands
             : local.ToString("ddd d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    // The one place a JSON error is written, next to WriteUsageJson so both can move onto a shared helper.
-    private static void WriteJsonError(TextWriter err, string message) =>
-        err.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { schemaVersion = 1, error = message }));
-
-    // The one place usage JSON is written, so it can be moved onto the shared JSON helper.
-    private static void WriteUsageJson(List<UsageRow> rows, TextWriter output)
+    // The usage --json payload: {profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}.
+    // JsonOut.Write adds schemaVersion first and writes the times as UTC "…Z".
+    private static object UsagePayload(List<UsageRow> rows) => new
     {
-        static string? Iso(DateTimeOffset? t) => t?.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
-        var payload = new
+        Profiles = rows.Select(r => new
         {
-            schemaVersion = 1,
-            profiles = rows.Select(r => new
-            {
-                name = r.Name,
-                status = r.Status,
-                plan = r.Reading?.Plan,
-                fetchedAt = Iso(r.Reading?.FetchedAt),
-                windows = (r.Reading?.Windows ?? []).Select(w => new { name = w.Name, percent = w.Percent, resetsAt = Iso(w.ResetsAt) }).ToList(),
-                // Additive: why a failed or unavailable row has no fresh reading (scrubbed of the token).
-                message = r.Status is "failed" or "unavailable" ? r.Note : null,
-            }).ToList(),
-        };
-        output.WriteLine(System.Text.Json.JsonSerializer.Serialize(payload, new System.Text.Json.JsonSerializerOptions
-        {
-            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            WriteIndented = true,
-        }));
-    }
+            r.Name,
+            r.Status,
+            r.Reading?.Plan,
+            FetchedAt = r.Reading?.FetchedAt,
+            Windows = (r.Reading?.Windows ?? []).Select(w => new { w.Name, w.Percent, w.ResetsAt }),
+            // Additive: why a failed or unavailable row has no fresh reading (scrubbed of the token).
+            Message = r.Status is "failed" or "unavailable" ? r.Note : null,
+        }),
+    };
 
     // Writes each checklist line as soon as it's reported (synchronously, unlike Progress<T>): a "⋯ testing" line per
     // model when the probes start, then every result. The planned (Pending) rows are only for the window.

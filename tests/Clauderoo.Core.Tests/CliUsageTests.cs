@@ -232,7 +232,66 @@ public class CliUsageTests
         var r = Run(pm, h, "usage");
         Assert.Equal(0, r.code);
         Assert.Contains("personal", r.o);
-        Assert.Contains("Not tracked", r.o);
+        Assert.Contains("Usage isn't tracked for Google Vertex AI.", r.o);
+    }
+
+    [Fact]
+    public void Usage_Json_SyncNotice_StdoutIsPureJson()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        // Home's settings.json changes and the profile's copy was edited by hand: the pre-sync replaces the copy, keeps
+        // a .bak-<timestamp> and prints a notice. Under --json that notice must go to stderr, not into the payload.
+        var homeDir = pm.Config.HomeDir;
+        File.WriteAllText(Path.Combine(homeDir, "settings.json"), """{ "theme": "dark" }""");
+        File.WriteAllText(Path.Combine(pm.ConfigDirOf("work"), "settings.json"), """{ "edited": "by hand" }""");
+
+        var r = Run(pm, new Handler(() => Resp(HttpStatusCode.OK, Fixture())), "usage", "work", "--json");
+        Assert.Equal(0, r.code);
+        Assert.Contains(".bak-", r.e); // the notice was printed, on stderr
+        Assert.DoesNotContain(".bak-", r.o);
+        using var doc = JsonDocument.Parse(r.o); // stdout is the payload and nothing else
+        Assert.Equal(1, doc.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal("work", Assert.Single(doc.RootElement.GetProperty("profiles").EnumerateArray()).GetProperty("name").GetString());
+        Assert.NotEmpty(Directory.GetFiles(pm.ConfigDirOf("work"), "settings.json.bak-*"));
+    }
+
+    [Fact]
+    public void Usage_TokenProfile_NotTracked_NeverPeekedOrFetched()
+    {
+        const string stored = "sk-ant-oat01-FAKE-stored-token-for-ci";
+        var (pm, home) = Make();
+        using var _h = home;
+        pm.Add("ci");
+        pm.SetProvider("ci", Providers.Token, token: stored);
+        // A sign-in file in the token profile's folder, held open with no sharing: a peek would fail to read it and
+        // report "failed" instead of "notTracked".
+        var dir = pm.ConfigDirOf("ci");
+        SignIn(dir);
+        var h = new Handler(() => Resp(HttpStatusCode.OK, Fixture()));
+        (int code, string o, string e) text, json;
+        using (new FileStream(Path.Combine(dir, ".credentials.json"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            text = Run(pm, h, "usage", "ci");
+            json = Run(pm, h, "usage", "ci", "--json");
+        }
+
+        Assert.Equal(0, h.Calls); // never fetched
+        Assert.Equal(0, text.code);
+        Assert.Contains("Usage isn't tracked for Claude token.", text.o);
+        Assert.Equal(0, json.code);
+        using var doc = JsonDocument.Parse(json.o);
+        var p = Assert.Single(doc.RootElement.GetProperty("profiles").EnumerateArray());
+        Assert.Equal("notTracked", p.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, p.GetProperty("fetchedAt").ValueKind);
+        Assert.Empty(p.GetProperty("windows").EnumerateArray());
+        Assert.DoesNotContain(stored, text.o + text.e + json.o + json.e);
+        Assert.False(new UsageCache(home.Paths).Load().ContainsKey("ci"));
+
+        // `cr list` shows no usage column value for it either, even with a cached reading under its name.
+        new UsageCache(home.Paths).Put(new UsageReading("ci", Now, "Pro", [new UsageWindow("5h", 42, null)]));
+        var list = Run(pm, h, "list");
+        Assert.DoesNotContain("42%", list.o.Split('\n').Single(l => l.Contains("ci ")));
     }
 
     [Fact]

@@ -259,7 +259,14 @@ internal static class TrayText
         _ => null,
     };
 
-    public static string UsageNotTracked(string provider) => $"Usage isn't tracked for {ProviderName(provider)}.";
+    public static string UsageNotTracked(string provider) => new UsageResult.NotTracked(provider).Message;
+
+    /// <summary>
+    /// Why a profile has no usage: "Usage isn't tracked for Claude token." for a Vertex, API-key or token profile
+    /// (which is never polled), null for a Claude login (home included). The tray menu and the window both use it.
+    /// </summary>
+    public static string? UsageNotTrackedFor(ProfileInfo p) =>
+        TrayMenuState.TracksUsage(p) ? null : UsageNotTracked(p.Provider);
 
     /// <summary>Green below 70 %, amber from 70 %, red from 90 %.</summary>
     public static UsageLevel UsageLevelOf(double percent) =>
