@@ -236,8 +236,26 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     {
         state.ManagedEnv = [.. overlay.Env.Keys];
         state.ManagedTop = [.. overlay.Top.Keys];
-        state.ManagedModels = Models.Where(m => overlay.Env.ContainsKey(m.Key))
-            .ToDictionary(m => m.Key, m => overlay.Env[m.Key], StringComparer.Ordinal);
+        // Vertex: every model key, "" when none was written. Other providers: empty, meaning "no vertex baseline".
+        state.ManagedModels = overlay.Env.ContainsKey(VertexMarker)
+            ? Models.ToDictionary(m => m.Key, m => overlay.Env.GetValueOrDefault(m.Key) ?? "", StringComparer.Ordinal)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    private const string VertexMarker = "CLAUDE_CODE_USE_VERTEX";
+
+    private static string? BlankToNull(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>
+    /// What clauderoo last wrote for a model key: (true, value-or-null) when known, (false, _) when clauderoo has no
+    /// vertex baseline for it (e.g. the profile was login/apikey at the last write).
+    /// </summary>
+    private static (bool Known, string? Value) LastWritten(SyncState state, ModelKey m, string? configured)
+    {
+        if (state.ManagedModels is { } mm)
+            return mm.TryGetValue(m.Key, out var w) ? (true, BlankToNull(w)) : (false, null);
+        // State from before ManagedModels existed: the configured value, if the last write was a vertex overlay.
+        return state.ManagedEnv.Contains(VertexMarker) ? (true, configured) : (false, null);
     }
 
     private record ModelKey(string Key, string Family, Func<VertexSettings, string?> Get, Action<VertexSettings, string> Set);
@@ -262,8 +280,8 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     /// <summary>
     /// Adopts model keys a session changed in a vertex profile's settings.json into the profile config (spec
     /// 2026-11-17). Only when the file differs from what clauderoo last wrote; a key counts as changed when it holds a
-    /// non-blank string that is neither the configured value nor the value clauderoo last wrote. Returns the session's
-    /// parsed file when something was adopted.
+    /// non-blank string other than the value clauderoo last wrote, and only while the config still holds that last
+    /// written value (a newer config save always wins). Returns the session's parsed file when something was adopted.
     /// </summary>
     private JsonObject? AdoptModels(string profile, ProfileEntry entry, string dir, string hashKey, SyncState state, SyncReport report)
     {
@@ -277,11 +295,11 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         var changes = new List<(ModelKey Model, string Value)>();
         foreach (var m in Models)
         {
-            if (env[m.Key] is not JsonValue jv || !jv.TryGetValue<string>(out var value) || string.IsNullOrWhiteSpace(value))
+            if (env[m.Key] is not JsonValue jv || !jv.TryGetValue<string>(out var raw) || BlankToNull(raw) is not { } value)
                 continue; // removed or blanked: restored, not adopted
-            var configured = entry.Vertex is { } v ? m.Get(v) : null;
-            var lastWritten = state.ManagedModels is { } mm ? mm.GetValueOrDefault(m.Key) : configured;
-            if (value != configured && value != lastWritten) changes.Add((m, value));
+            var configured = BlankToNull(entry.Vertex is { } v ? m.Get(v) : null);
+            var (known, lastWritten) = LastWritten(state, m, configured);
+            if (known && configured == lastWritten && value != lastWritten) changes.Add((m, value));
         }
         if (changes.Count == 0 || !SaveAdopted(profile, entry, changes, report)) return null;
 
@@ -289,6 +307,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         foreach (var (m, value) in changes)
         {
             m.Set(entry.Vertex, value);
+            env[m.Key] = value; // trimmed, so a padded value alone doesn't count as an "other" change
             report.Notices.Add($"{profile}: {m.Family} model updated to {value} by Claude.");
         }
         return current;

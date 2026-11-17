@@ -207,6 +207,96 @@ public class AdoptModelTests
     }
 
     [Fact]
+    public void PendingSessionValue_NotAdoptedOverNewerConfigSave()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        syncer.Sync("work");                                      // writes Opus W
+        SessionEdit(h, j => j["env"]![Opus] = "claude-opus-5-5"); // session writes Y
+        cfg.Profiles["work"].Vertex!.OpusModel = "claude-opus-6"; // window saves Z, then syncs
+        ConfigStore.Save(h.Paths, cfg);
+
+        var r = syncer.Sync("work");
+        Assert.DoesNotContain(r.Notices, n => n.Contains("model updated"));
+        Assert.Equal("claude-opus-6", Env(h, Opus));
+        Assert.Equal("claude-opus-6", cfg.Profiles["work"].Vertex!.OpusModel);
+        Assert.Equal("claude-opus-6", ConfigStore.Load(h.Paths)!.Profiles["work"].Vertex!.OpusModel);
+    }
+
+    [Fact]
+    public void LoginToVertex_LeftoverModelKey_NotAdopted()
+    {
+        var (cfg, syncer, h) = Setup(vertex: false); using var _ = h;
+        syncer.Sync("work");
+        SessionEdit(h, j => j["env"] = new JsonObject
+        {
+            [Opus] = "claude-opus-5-5",
+            ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "claude-haiku-5",
+        });
+        cfg.Profiles["work"].Provider = Providers.Vertex;
+        cfg.Profiles["work"].Vertex = new VertexSettings { Project = "proj", Region = "eu", OpusModel = "claude-opus-4-1" };
+        ConfigStore.Save(h.Paths, cfg);
+
+        var r = syncer.Sync("work");
+        Assert.DoesNotContain(r.Notices, n => n.Contains("model updated"));
+        Assert.Equal("claude-opus-4-1", Env(h, Opus));
+        Assert.Null(Env(h, "ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+        var saved = ConfigStore.Load(h.Paths)!.Profiles["work"].Vertex!;
+        Assert.Equal("claude-opus-4-1", saved.OpusModel);
+        Assert.Null(saved.HaikuModel);
+    }
+
+    [Fact]
+    public void LegacyState_FallsBackToConfigured_AndAdopts()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        syncer.Sync("work");
+        var st = SyncState.Load(Dir(h));
+        st.ManagedModels = null; // state written before ManagedModels existed
+        st.Save(Dir(h));
+        SessionEdit(h, j => j["env"]![Opus] = "claude-opus-5-5");
+
+        var r = syncer.Sync("work");
+        Assert.Equal("work: Opus model updated to claude-opus-5-5 by Claude.", Assert.Single(r.Notices));
+        Assert.Equal("claude-opus-5-5", ConfigStore.Load(h.Paths)!.Profiles["work"].Vertex!.OpusModel);
+        Assert.Equal("claude-opus-5-5", Env(h, Opus));
+    }
+
+    [Fact]
+    public void Adopt_UnconfiguredKey_Shared_Trimmed()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h; // Haiku not configured
+        syncer.Sync("work");
+        SessionEdit(h, j => j["env"]!["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = " claude-haiku-5 ");
+
+        var r = syncer.Sync("work");
+        Assert.Equal("work: Haiku model updated to claude-haiku-5 by Claude.", Assert.Single(r.Notices));
+        Assert.Equal("claude-haiku-5", cfg.Profiles["work"].Vertex!.HaikuModel);
+        Assert.Equal("claude-haiku-5", ConfigStore.Load(h.Paths)!.Profiles["work"].Vertex!.HaikuModel);
+        Assert.Equal("claude-haiku-5", Env(h, "ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+
+        var r2 = syncer.Sync("work");
+        Assert.Empty(r2.Notices);
+    }
+
+    [Fact]
+    public void ConfigSaveFailure_ProblemReported_NothingAdopted()
+    {
+        var (cfg, syncer, h) = Setup(); using var _ = h;
+        syncer.Sync("work");
+        SessionEdit(h, j => j["env"]![Opus] = "claude-opus-5-5");
+
+        SyncReport r;
+        using (new FileStream(h.Paths.ConfigFile, FileMode.Open, FileAccess.Read, FileShare.Read)) // blocks the replace
+            r = syncer.Sync("work");
+
+        Assert.StartsWith("work: could not save the model Claude chose: ", Assert.Single(r.Problems));
+        Assert.DoesNotContain(r.Notices, n => n.Contains("model updated"));
+        Assert.Equal("claude-opus-4-1", cfg.Profiles["work"].Vertex!.OpusModel);
+        Assert.Equal("claude-opus-4-1", ConfigStore.Load(h.Paths)!.Profiles["work"].Vertex!.OpusModel);
+        Assert.Equal("claude-opus-4-1", Env(h, Opus));
+    }
+
+    [Fact]
     public void Adopt_BlankValue_NotAdopted()
     {
         var (cfg, syncer, h) = Setup(); using var _ = h;
