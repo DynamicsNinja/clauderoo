@@ -10,6 +10,7 @@ public record ClauderooPaths(string UserProfile)
     public string DefaultHomeJson => Path.Combine(UserProfile, ".claude.json");
 
     public string ProfileDir(string name) => Path.Combine(ProfilesDir, name);
+    public string IsolatedDir(string name) => Path.Combine(Root, "isolated", name);
 
     public static ClauderooPaths ForCurrentUser() =>
         new(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));

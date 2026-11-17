@@ -16,6 +16,7 @@ public static class Commands
   map <profile> [dir]                 use <profile> for dir (default: here) and everything below it
   unmap [dir]                         remove a folder mapping
   maps                                list folder mappings
+  which                               show which profile this terminal is using
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
@@ -78,7 +79,7 @@ public static class Commands
 
         var cmd = args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps"];
+            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -177,6 +178,13 @@ public static class Commands
                 var maps = pm.Maps();
                 if (maps.Count == 0) output.WriteLine("No folder mappings. Add one with 'clauderoo map <profile> [dir]'.");
                 foreach (var m in maps) output.WriteLine($"{m.Dir}  ->  {m.Profile}");
+                return 0;
+            }
+            case "which":
+            {
+                if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo which");
+                output.WriteLine(WhichProfile.Describe(
+                    WhichProfile.Resolve(pm.Config, pm.Paths, Environment.GetEnvironmentVariable, pm.Env)));
                 return 0;
             }
             case "default":

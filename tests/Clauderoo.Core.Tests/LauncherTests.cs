@@ -28,6 +28,14 @@ public class LauncherTests
     }
 
     [Fact]
+    public void InPlace_SetsClauderooProfile()
+    {
+        using var home = new TempHome();
+        var s = Launcher.InPlace(Cfg(), home.Paths, "work", @"C:\proj", [], claudePath: @"C:\bin\claude.cmd");
+        Assert.Equal("work", s.ExtraEnv!["CLAUDEROO_PROFILE"]);
+    }
+
+    [Fact]
     public void Wt_Home_ClearsVar()
     {
         using var home = new TempHome();

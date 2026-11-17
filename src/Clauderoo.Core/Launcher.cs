@@ -2,7 +2,8 @@ using System.Diagnostics;
 
 namespace Clauderoo.Core;
 
-public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null);
+public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null,
+    IReadOnlyDictionary<string, string>? ExtraEnv = null);
 
 public static class Launcher
 {
@@ -44,7 +45,8 @@ public static class Launcher
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
         string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>
-        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile), profile);
+        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile), profile,
+            new Dictionary<string, string> { [WhichProfile.SessionVar] = profile });
 
     private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile)
     {
@@ -113,6 +115,8 @@ public static class Launcher
         foreach (var a in s.Args) psi.ArgumentList.Add(a);
         if (s.ConfigDirEnv is null) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
         else psi.Environment["CLAUDE_CONFIG_DIR"] = s.ConfigDirEnv;
+        if (s.ExtraEnv is not null)
+            foreach (var (k, v) in s.ExtraEnv) psi.Environment[k] = v;
         return Process.Start(psi) ?? throw new ClauderooException($"Failed to start {s.FileName}.");
     }
 }

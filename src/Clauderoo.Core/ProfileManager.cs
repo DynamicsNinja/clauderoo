@@ -25,6 +25,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
     private string Stamp => now().ToString("yyyyMMdd-HHmmss");
 
     public ClauderooPaths Paths => paths;
+    public IEnvStore Env => env;
 
     public SyncReport SyncAll() => NewSyncer(Config).SyncAll();
 
