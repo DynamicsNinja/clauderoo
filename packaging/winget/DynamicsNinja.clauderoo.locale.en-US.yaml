@@ -1,12 +1,12 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
-PackageIdentifier: clauderoo.clauderoo
-PackageVersion: 0.0.0
+PackageIdentifier: DynamicsNinja.clauderoo
+PackageVersion: 0.1.0
 PackageLocale: en-US
 Publisher: Ivan Ficko
 PackageName: clauderoo
-PackageUrl: https://github.com/OWNER/clauderoo
+PackageUrl: https://github.com/DynamicsNinja/clauderoo
 License: MIT
-LicenseUrl: https://github.com/OWNER/clauderoo/blob/main/LICENSE
+LicenseUrl: https://github.com/DynamicsNinja/clauderoo/blob/main/LICENSE
 ShortDescription: Profiles for Claude Code on Windows, with a tray app.
 Description: Run several Claude Code accounts and providers side by side, each with its own login, while sharing settings, plugins and memory.
 Tags:

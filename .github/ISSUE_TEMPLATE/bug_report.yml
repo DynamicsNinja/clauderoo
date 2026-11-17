@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in clauderoo doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Don't paste tokens, API keys, `.credentials.json` contents or private project names.** Security problems go through [SECURITY.md](../blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. cr add work
+        2. cr provider work vertex --project my-gcp-project --region eu
+        3. cr check work
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: clauderoo version
+      description: Output of `cr version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - CLI (cr / clauderoo)
+        - Tray app or profile manager
+        - MCP server (cr mcp)
+        - Install, upgrade or uninstall
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider of the profile involved
+      options:
+        - Claude login
+        - Google Vertex AI
+        - API key
+        - Claude token
+        - Not profile-specific
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display scale
+      placeholder: Windows 11 24H2, 150%
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or screenshot
+      description: Copy the output of the failing command, or the **Show details** text. Remove anything private first.
+      render: text

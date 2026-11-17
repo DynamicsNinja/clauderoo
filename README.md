@@ -10,10 +10,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/DynamicsNinja/clauderoo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/DynamicsNinja/clauderoo/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/DynamicsNinja/clauderoo/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/DynamicsNinja/clauderoo?include_prereleases"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4">
   <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10.0-512BD4">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
-  <img alt="Tests: xUnit" src="https://img.shields.io/badge/tests-xUnit-5C2D91">
   <img alt="Providers" src="https://img.shields.io/badge/providers-Claude%20login%20%7C%20Vertex%20AI%20%7C%20API%20key-CC6744">
 </p>
 
@@ -93,7 +94,7 @@ The release also has a `.sha256` file if you want to check the download yourself
 Publish both projects as single-file builds into one folder, then run the installer from that folder:
 
 ```powershell
-git clone <repo-url> clauderoo
+git clone https://github.com/DynamicsNinja/clauderoo.git
 cd clauderoo
 dotnet publish src\Clauderoo.Cli  -c Release -r win-x64 -p:PublishSingleFile=true --self-contained false -o publish
 dotnet publish src\Clauderoo.Tray -c Release -r win-x64 -p:PublishSingleFile=true --self-contained false -o publish
@@ -332,7 +333,7 @@ Run it from a terminal using your home profile. Every profile then gets it throu
 - The run uses the **target profile's own permissions** and allow-list. `-p` can't ask, so anything that would need your approval is denied. clauderoo never passes `--dangerously-skip-permissions` or any `--permission-mode`.
 - It runs with `--strict-mcp-config` and an empty MCP config, so it can't load MCP servers, clauderoo's included.
 - It refuses the profile the calling session runs under, when that session was started by clauderoo (`CLAUDEROO_PROFILE`).
-- The run doesn't inherit the calling session's provider, model or account: variables such as `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, any variable a profile sets with `cr env`, and every `CLAUDECODE*` and `CLAUDE_CODE_*` variable are removed. Only the target profile's own settings apply.
+- The run doesn't inherit the calling session's provider, model or account: variables such as `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, any variable a profile sets with `cr env`, and every `CLAUDECODE*` and `CLAUDE_CODE_*` variable are removed. The one exception is `CLAUDE_CODE_GIT_BASH_PATH`, which only says where Git Bash is installed. Only the target profile's own settings apply.
 - It refuses these working folders (`cwd`), matched by name and by real location (through junctions and links):
   - your user folder itself, and every folder above it, such as `C:\Users` and `C:\`;
   - `~/.clauderoo`, `~/.claude` (or the home profile's folder), `~/.ssh` and `%APPDATA%\gcloud`, anything inside them, and any folder that contains one of them;
@@ -455,7 +456,8 @@ dotnet test  clauderoo.slnx
 | `src/Clauderoo.Tray` | WinForms tray app and profile manager (`clauderoow.exe`) |
 | `tests/Clauderoo.Core.Tests` | xUnit tests for Core and the Tray views |
 | `tools/IconGen` | Generates the multi-size `.ico` files in `src/Clauderoo.Tray/Icons` |
-| `docs/superpowers` | Design specs and implementation plans for each feature |
+| `packaging/winget` | winget manifest, updated for each release |
+| `.github` | CI and release workflows, issue templates, Dependabot |
 
 ### Regenerating icons
 
@@ -473,11 +475,11 @@ This writes the app and status icons, including the high-contrast versions, to `
 
 ## Contributing
 
-Issues and pull requests are welcome. Before you open a PR:
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a change, and [CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
-1. Run `dotnet test` and make sure everything passes.
-2. Add tests for any behaviour change.
-3. Update this README if you add or change a command.
+## Security
+
+clauderoo handles Claude login tokens, API keys and Google sign-ins. Please report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 ## License
 

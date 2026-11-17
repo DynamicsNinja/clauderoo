@@ -4,7 +4,7 @@
 //   dotnet run --project tools/IconGen               -> writes src/Clauderoo.Tray/Icons/*.ico
 //   dotnet run --project tools/IconGen -- <out dir>  -> writes to another directory
 //
-// Design (see .superpowers/ui-audit-2026-11-17.md, "Icons: deep review", I-1 to I-4):
+// Design:
 //   front card #C8643F with a white C and a #8F3F25 rim, back card #F0B8A2 offset up-right;
 //   a single rounded square at 16 px; state badges at the bottom right; a monochrome outline variant.
 

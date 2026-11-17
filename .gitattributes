@@ -1,0 +1,21 @@
+# Store text with LF in the repository; check it out with the platform's line endings.
+* text=auto
+
+# Windows-only files keep CRLF everywhere.
+*.cs       text eol=crlf
+*.csproj   text eol=crlf
+*.slnx     text eol=crlf
+*.props    text eol=crlf
+*.cmd      text eol=crlf
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+
+# Files read by tools that expect LF.
+*.sh       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+
+# Binaries.
+*.png      binary
+*.ico      binary
+*.zip      binary

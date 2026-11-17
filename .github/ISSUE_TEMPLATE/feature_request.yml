@@ -1,0 +1,20 @@
+name: Feature request
+description: An idea for something clauderoo could do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation and what gets in the way today, rather than the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you picture it working, in the CLI, the tray, or both.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do now instead?
