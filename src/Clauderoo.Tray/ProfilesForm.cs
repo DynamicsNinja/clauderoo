@@ -365,7 +365,6 @@ sealed class ProfilesForm : Form
             _remove.Enabled = editable;
             UpdateRenameEnabled(); // the home profile can be relabelled too
             _start.Enabled = info != null;
-            _setDefault.Enabled = info != null && !info.IsDefault;
             UpdateProviderPanels();
         }
         catch (Exception e)
@@ -616,6 +615,7 @@ sealed class ProfilesForm : Form
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
         _check.Enabled = false;
+        _setDefault.Enabled = false; // Reload would cancel the check
         _rename.Enabled = false; // the check's `claude -p` runs in the profile folder: don't move it meanwhile
         ShowCheckList(null);
         _checkStatus.ForeColor = SystemColors.GrayText;
@@ -695,7 +695,12 @@ sealed class ProfilesForm : Form
     }
 
     // Rename… needs a selected profile and no setup check running in its folder.
-    private void UpdateRenameEnabled() => _rename.Enabled = _current != null && _checkCts == null;
+    private void UpdateRenameEnabled()
+    {
+        _rename.Enabled = _current != null && _checkCts == null;
+        // Set as default reloads the editor, which would cancel a running check.
+        _setDefault.Enabled = _current != null && !_currentIsDefault && _checkCts == null;
+    }
 
     private void SetCheckStatus(bool ok, string message)
     {
