@@ -29,7 +29,7 @@ public class IsolatedTests
         var (dir, _) = pm.PrepareIsolated("work");
         Assert.Equal(home.Paths.IsolatedDir("work"), dir);
         var entries = Directory.GetFileSystemEntries(dir).Select(Path.GetFileName).ToList();
-        Assert.Equal(["settings.json"], entries);
+        Assert.Equal([SyncState.FileName, "settings.json"], entries.Order(StringComparer.Ordinal).ToList());
         var s = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "settings.json")))!.AsObject();
         Assert.Equal("1", s["env"]!["CLAUDE_CODE_USE_VERTEX"]!.GetValue<string>());
         Assert.Equal("proj-1", s["env"]!["ANTHROPIC_VERTEX_PROJECT_ID"]!.GetValue<string>());
@@ -192,6 +192,6 @@ public class IsolatedTests
         Directory.CreateDirectory(Path.Combine(home.Paths.IsolatedDir("work"), "keep"));
         pm.SyncAll();
         Assert.Equal(before, File.ReadAllText(f));
-        Assert.Equal(["keep", "settings.json"], Directory.GetFileSystemEntries(dir).Select(Path.GetFileName).Order().ToList());
+        Assert.Equal([SyncState.FileName, "keep", "settings.json"], Directory.GetFileSystemEntries(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToList());
     }
 }

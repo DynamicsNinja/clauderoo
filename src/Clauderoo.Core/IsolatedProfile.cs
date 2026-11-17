@@ -7,7 +7,8 @@ public partial class ProfileManager
 {
     /// <summary>
     /// Creates (if missing) the isolated config folder for <paramref name="profile"/> and writes only the provider
-    /// overlay into its settings.json (other keys the user added there are kept). The folder never gets junctions or
+    /// overlay into its settings.json (other keys the user added there are kept), plus a small state file
+    /// (<see cref="SyncState.FileName"/>) naming the keys it wrote. The folder never gets junctions or
     /// copies of shared files, and no credential is ever copied into it. FirstRun is true for a login profile that has
     /// not signed in inside the folder yet (no .claude.json).
     /// </summary>
@@ -27,8 +28,13 @@ public partial class ProfileManager
             try { current = JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? []; }
             catch (JsonException) { throw new ClauderooException($"{file} is not valid JSON; fix or delete it."); }
         }
-        var merged = ProviderOverlay.Apply(current, overlay, [], []);
+        // What clauderoo wrote last time is recorded in the folder, so a variable removed with `cr env` goes away too.
+        var state = SyncState.Load(dir);
+        var merged = ProviderOverlay.Apply(current, overlay, state.ManagedEnv, state.ManagedTop);
         AtomicFile.WriteAllText(file, merged.ToJsonString());
+        state.ManagedEnv = [.. overlay.Env.Keys];
+        state.ManagedTop = [.. overlay.Top.Keys];
+        state.Save(dir);
 
         var login = entry.Home || Providers.Of(entry) == Providers.Login;
         return (dir, login && !File.Exists(Path.Combine(dir, ".claude.json")));

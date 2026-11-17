@@ -92,11 +92,12 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         RefuseIfPluginRecordsReference(cfg, name, dir, force, $"remove {name}");
 
         // The API key is deleted only once the folder has moved, so a failed move keeps the profile working.
+        var stamp = Stamp; // one stamp, so the profile and isolated folders pair up in RemovedDir
         var keyDir = dir;
         string? movedProfile = null;
         if (Directory.Exists(dir))
         {
-            var moved = Path.Combine(paths.RemovedDir, $"{name}-{Stamp}");
+            var moved = Path.Combine(paths.RemovedDir, $"{name}-{stamp}");
             try
             {
                 // Unlink shared-folder junctions first so nothing that later deletes the moved
@@ -112,6 +113,8 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
             }
             keyDir = moved;
             movedProfile = moved;
+            // Saved before anything else can fail, so the settings survive even if a rollback below can't finish.
+            ConfigStore.WriteEntry(Path.Combine(moved, EntryFileName), entry);
         }
         // The isolated folder goes aside with its profile (it holds a login, so it is never deleted).
         var isoDir = paths.IsolatedDir(name);
@@ -119,19 +122,30 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         {
             try
             {
+                BeforeIsolatedMove?.Invoke();
                 RemoveNestedLinks(isoDir);
                 Directory.CreateDirectory(paths.RemovedDir);
-                Directory.Move(isoDir, Path.Combine(paths.RemovedDir, $"{name}-{Stamp}-isolated"));
+                Directory.Move(isoDir, Path.Combine(paths.RemovedDir, $"{name}-{stamp}-isolated"));
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
+                var msg = $"Couldn't move {name}'s isolated folder — close {name}'s Claude sessions and try again.";
                 // Put the profile folder back so the profile stays whole and the remove can be retried.
-                try { if (movedProfile != null) Directory.Move(movedProfile, dir); } catch (Exception) { }
-                throw new ClauderooException(
-                    $"Couldn't move {name}'s isolated folder — close {name}'s Claude sessions and try again.");
+                if (movedProfile != null)
+                {
+                    try
+                    {
+                        Directory.Move(movedProfile, dir);
+                        try { File.Delete(Path.Combine(dir, EntryFileName)); } catch (Exception) { }
+                    }
+                    catch (Exception)
+                    {
+                        msg += $" {name}'s folder is now at {movedProfile}; move it back to {dir} before retrying.";
+                    }
+                }
+                throw new ClauderooException(msg);
             }
         }
-        if (movedProfile != null) ConfigStore.WriteEntry(Path.Combine(movedProfile, EntryFileName), entry);
         try { secrets.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);

@@ -8,6 +8,9 @@ public partial class ProfileManager
     /// <summary>Test hook: runs after the config is saved and the env var updated, before the re-sync.</summary>
     internal Action? AfterRenameCommit { get; set; }
 
+    /// <summary>Test hook: runs in Remove after the profile folder moved, before the isolated folder moves.</summary>
+    internal Action? BeforeIsolatedMove { get; set; }
+
     /// <summary>
     /// Renames a profile in place: folder, config key, default pointer, User CLAUDE_CONFIG_DIR and
     /// apiKeyHelper. All validation happens before any change; a failure after the folder move rolls back.
@@ -29,7 +32,8 @@ public partial class ProfileManager
 
         var oldIso = paths.IsolatedDir(oldName);
         var newIso = paths.IsolatedDir(newName);
-        if (Directory.Exists(oldIso) && Directory.Exists(newIso))
+        // Refused even when the old profile has no isolated folder: a stray one would silently become the new profile's.
+        if (Directory.Exists(newIso))
             throw new ClauderooException($"An isolated folder for '{newName}' already exists: {newIso}");
 
         var original = Config; // untouched copy for rollback
