@@ -160,7 +160,7 @@ public static class Commands
                 var force = pos.Remove("--force");
                 var a = Need(pos, 2, "clauderoo rename <old> <new> [--force]");
                 Print(pm.Rename(a[0], a[1], force), output, err);
-                output.WriteLine($"Renamed '{a[0]}' to '{a[1]}'.");
+                output.WriteLine($"Renamed '{a[0]}' to '{a[1]}'. Restart any open {a[0]} sessions with 'cr start {a[1]}'.");
                 return 0;
             }
             case "status":

@@ -30,7 +30,7 @@ public class CliRenameTests
         var (pm, h) = Make(); using var _h = h;
         var r = Run(pm, "rename", "work", "job");
         Assert.Equal(0, r.code);
-        Assert.Contains("Renamed 'work' to 'job'.", r.o);
+        Assert.Contains("Renamed 'work' to 'job'. Restart any open work sessions with 'cr start job'.", r.o);
         Assert.True(pm.Config.Profiles.ContainsKey("job"));
         Assert.False(pm.Config.Profiles.ContainsKey("work"));
     }

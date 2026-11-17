@@ -717,7 +717,8 @@ sealed class ProfilesForm : Form
     {
         if (_current == null || !ConfirmLeave()) return;
         var oldName = _current;
-        var input = InputDialog.Ask("Rename profile", $"New name for '{oldName}' (a-z, 0-9, -):", this, oldName)?.Trim();
+        var input = InputDialog.Ask("Rename profile",
+            $"New name for '{oldName}' (close all of {oldName}'s Claude sessions first):", this, oldName)?.Trim();
         // Unchanged, ignoring case (e.g. OK on a home label with capitals): nothing to do.
         if (string.IsNullOrEmpty(input) || string.Equals(input, oldName, StringComparison.OrdinalIgnoreCase)) return;
         var newName = input.ToLowerInvariant();
