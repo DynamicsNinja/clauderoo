@@ -219,7 +219,7 @@ public class ProfileProvidersTests
         ConfigStore.Save(h.Paths, cfg);
         Assert.Equal(new CheckResult(false, "No API key saved."), pm.Check("work"));
         pm.SetProvider("work", Providers.ApiKey, apiKey: "sk-1");
-        Assert.Equal(new CheckResult(true, "API key saved."), pm.Check("work"));
+        Assert.Equal(new CheckResult(true, "Key saved — not verified. Start a session to test it.", false), pm.Check("work"));
     }
 
     [Fact]

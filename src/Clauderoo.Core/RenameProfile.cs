@@ -19,6 +19,7 @@ public partial class ProfileManager
         var entry = Entry(cfg, oldName);
         ProfileName.Validate(newName);
         if (oldName == newName) return new SyncReport();
+        RefuseIfRunning(oldName, force);
         var oldDir = paths.ProfileDir(oldName);
         var newDir = paths.ProfileDir(newName);
         if (cfg.Profiles.ContainsKey(newName) || (!entry.Home && Directory.Exists(newDir)))

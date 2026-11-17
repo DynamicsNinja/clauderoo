@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace Clauderoo.Core;
 
-public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv);
+public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string WorkingDir, string? ConfigDirEnv, string? Profile = null);
 
 public static class Launcher
 {
@@ -24,12 +24,12 @@ public static class Launcher
         string[] args = wtAvailable
             ? ["-w", "0", "new-tab", "--title", title, "-d", dir, "cmd", "/k", cmdLine]
             : ["/c", "start", title, "/D", dir, "cmd", "/k", cmdLine];
-        return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir);
+        return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir, profile);
     }
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
         string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>
-        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile));
+        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile), profile);
 
     private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile)
     {
@@ -74,6 +74,18 @@ public static class Launcher
             catch (ArgumentException) { }
         }
         return false;
+    }
+
+    /// <summary>Starts the process and records it as a running session of <paramref name="spec"/>.Profile.</summary>
+    public static Process Start(LaunchSpec s, SessionTracker sessions)
+    {
+        var p = Start(s);
+        if (s.Profile != null)
+        {
+            try { sessions.Record(s.Profile, p); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* tracking is best effort */ }
+        }
+        return p;
     }
 
     public static Process Start(LaunchSpec s)

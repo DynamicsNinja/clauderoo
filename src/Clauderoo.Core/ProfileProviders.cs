@@ -1,6 +1,8 @@
 namespace Clauderoo.Core;
 
-public record CheckResult(bool Ok, string Message);
+/// <summary><see cref="Verified"/> is false when Ok only means "nothing is wrong that we can see" (e.g. a saved API key
+/// that was never tried); the UI shows such results neutrally instead of as a success.</summary>
+public record CheckResult(bool Ok, string Message, bool Verified = true);
 
 public partial class ProfileManager
 {
@@ -127,7 +129,7 @@ public partial class ProfileManager
                 return new CheckResult(false, $"Google sign-in failed: {line}");
             case Providers.ApiKey:
                 return secrets.Exists(dir)
-                    ? new CheckResult(true, "API key saved.")
+                    ? new CheckResult(true, "Key saved — not verified. Start a session to test it.", Verified: false)
                     : new CheckResult(false, "No API key saved.");
             default:
                 var json = entry.Home ? cfg.HomeJson : Path.Combine(dir, ".claude.json");

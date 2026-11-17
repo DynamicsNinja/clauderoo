@@ -86,6 +86,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
         if (cfg.DefaultProfile == name)
             throw new ClauderooException($"'{name}' is the default profile. Change the default first.");
 
+        RefuseIfRunning(name, force);
         var dir = paths.ProfileDir(name);
         RefuseIfPluginRecordsReference(cfg, name, dir, force, $"remove {name}");
 

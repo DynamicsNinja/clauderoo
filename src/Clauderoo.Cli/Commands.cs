@@ -16,6 +16,7 @@ public static class Commands
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
   remove <name> [--force]             remove a profile (its folder is moved, not deleted)
+  restore <name>                      bring back the most recently removed profile of that name
   rename <old> <new> [--force]   rename a profile
   provider <name> login               use the profile's own Claude login (default)
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
@@ -67,7 +68,7 @@ public static class Commands
         }
 
         var cmd = args[0];
-        string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "rename",
+        string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
@@ -155,6 +156,13 @@ public static class Commands
                 var name = Need(pos, 1, "clauderoo remove <name> [--force]")[0];
                 pm.Remove(name, force);
                 output.WriteLine($"Removed '{name}'. Its folder was moved to {pm.Paths.RemovedDir}.");
+                return 0;
+            }
+            case "restore":
+            {
+                var name = Need(pos, 1, "clauderoo restore <name>")[0];
+                Print(pm.Restore(name), output, err);
+                output.WriteLine($"Restored '{name}'. It uses its own Claude login; set its provider again if it used Vertex or an API key.");
                 return 0;
             }
             case "rename":

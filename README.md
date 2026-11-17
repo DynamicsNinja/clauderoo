@@ -26,8 +26,9 @@ publish\clauderoo.exe install
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
 | `own <name> <item>` | Keep a profile's own copy of a shared item |
 | `share <name> <item>` | Go back to sharing an item from the home profile |
-| `remove <name> [--force]` | Remove a profile (its folder is moved, not deleted) |
-| `rename <old> <new> [--force]` | Rename a profile (folder, config, secrets and env var move together; `--force` skips the shared-plugin-records check). Close the profile's Claude sessions first; restart any that were open with `cr start <new>` |
+| `remove <name> [--force]` | Remove a profile (its folder is moved, not deleted). Refuses while clauderoo-started sessions of it are running; `--force` overrides |
+| `restore <name>` | Bring back the most recently removed profile of that name (refuses if the name is taken; provider settings return as the Claude login) |
+| `rename <old> <new> [--force]` | Rename a profile (folder, config, secrets and env var move together; `--force` skips the shared-plugin-records and running-session checks; only sessions started by clauderoo are detected). Close the profile's Claude sessions first; restart any that were open with `cr start <new>` |
 | `provider <name> login\|vertex\|apikey` | Choose how a profile signs in (`vertex` takes `--project`, `--region`, optional `--sonnet`/`--opus`/`--haiku`; `apikey` prompts for the key) |
 | `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
 | `check <name>` | Check that the profile's sign-in works; for Vertex profiles, the full setup checklist (exit 1 if anything fails) |

@@ -9,6 +9,9 @@ public class SyncReport
 {
     public List<string> Notices { get; } = [];
     public List<string> Problems { get; } = [];
+
+    /// <summary>The same problems in plain language (the CLI keeps printing <see cref="Problems"/>).</summary>
+    public IReadOnlyList<Problem> ProblemItems => Problems.Select(ProblemTranslator.Translate).ToList();
 }
 
 public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> now)

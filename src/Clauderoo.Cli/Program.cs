@@ -9,12 +9,12 @@ var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
 return Commands.Run(args, Console.Out, Console.Error, pm,
     startNewWindow: spec =>
     {
-        using var p = Launcher.Start(spec); // new terminal window: don't wait
+        using var p = Launcher.Start(spec, pm.Sessions); // new terminal window: don't wait
         return 0;
     },
     runInPlace: spec =>
     {
-        using var p = Launcher.Start(spec);
+        using var p = Launcher.Start(spec, pm.Sessions);
         // Ctrl+C belongs to claude while it runs; don't let it kill the wrapper first.
         Console.CancelKeyPress += (_, e) => e.Cancel = true;
         p.WaitForExit();
