@@ -24,10 +24,19 @@ public static class DelegateEnv
     /// <see cref="Prefixes"/>. Case-insensitive, as Windows environment names are.
     /// </summary>
     public static bool Drops(string name, IReadOnlySet<string> profileEnvKeys) =>
-        ProviderOverlay.ReservedEnv.Contains(name)
+        !KeptNames.Contains(name) && (ProviderOverlay.ReservedEnv.Contains(name)
         || FixedNames.Contains(name)
         || profileEnvKeys.Contains(name)
-        || Prefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+        || Prefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// Machine settings that only look like Claude Code switches: they say where tools live, not which account or
+    /// provider to use, so a delegated run keeps them (without Git Bash's path claude can't run on Windows).
+    /// </summary>
+    public static IReadOnlySet<string> KeptNames { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "CLAUDE_CODE_GIT_BASH_PATH",
+    };
 
     /// <summary>The filter for <see cref="LaunchSpec.DropEnv"/>, with every profile's Env keys taken from <paramref name="cfg"/>.</summary>
     public static Func<string, bool> Filter(ClauderooConfig cfg)

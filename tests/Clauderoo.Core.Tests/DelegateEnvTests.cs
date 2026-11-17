@@ -34,6 +34,18 @@ public class DelegateEnvTests
     }
 
     [Fact]
+    public void Drops_KeepsGitBashPath_EvenThoughItHasTheClaudeCodePrefix()
+    {
+        var none = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Assert.False(DelegateEnv.Drops("CLAUDE_CODE_GIT_BASH_PATH", none));
+        Assert.False(DelegateEnv.Drops("claude_code_git_bash_path", none));
+        Assert.True(DelegateEnv.Drops("CLAUDE_CODE_ENTRYPOINT", none));
+        // A profile can't smuggle it back out either: it's a machine setting, never an account one.
+        Assert.False(DelegateEnv.Drops("CLAUDE_CODE_GIT_BASH_PATH",
+            new HashSet<string>(["CLAUDE_CODE_GIT_BASH_PATH"], StringComparer.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public void Filter_TakesEveryProfilesEnvKeys()
     {
         var cfg = new ClauderooConfig();
