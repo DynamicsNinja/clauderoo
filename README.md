@@ -170,6 +170,15 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | `check <name> [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
 | `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
 
+### Export and import
+
+| Command | What it does |
+| --- | --- |
+| `export <file> [names…] [--no-env] [--force]` | Save profile settings (provider, Vertex project and models, environment, owned items, start folder) and folder mappings to a file. Without names, every profile except home is exported. An existing file is only replaced with `--force` |
+| `import <file> [--force]` | Create the profiles in an export and add their folder mappings. Existing profiles are skipped and listed; `--force` updates them instead |
+
+Exports never contain API keys, tokens, logins or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`. This is the quickest way to onboard a colleague on a Vertex profile: export it, they import it, sign in to gcloud and run `cr check <name>`.
+
 ### Sharing
 
 | Command | What it does |
