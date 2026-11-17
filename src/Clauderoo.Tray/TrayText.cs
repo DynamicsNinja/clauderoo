@@ -186,6 +186,13 @@ internal static class TrayText
     public static string Notices(IReadOnlyList<string> notices) =>
         notices.Count == 1 ? Cut(notices[0], 250) : Cut($"{notices.Count} updates: " + string.Join(" · ", notices), 250);
 
+    /// <summary>The menu item that upgrades clauderoo ("Update to v1.2.0").</summary>
+    public static string UpdateItem(string version) => $"&Update to v{version}";
+
+    /// <summary>The once-per-release balloon about a newer version.</summary>
+    public static string UpdateBalloon(string version) =>
+        $"clauderoo v{version} is available. Open the tray menu and choose Update to v{version}.";
+
     /// <summary>The balloon for a set of problems that has new ones.</summary>
     public static string ProblemBalloon(IReadOnlyList<Problem> current) =>
         Cut((current.Count == 1 ? current[0].Title + "." : $"{Problems(current.Count)} need attention.")
