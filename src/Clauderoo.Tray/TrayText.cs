@@ -163,6 +163,9 @@ internal static class TrayText
 
     public const string SomethingWentWrong = "Something went wrong — see Problems for details.";
 
+    /// <summary>Another change to the profiles (a sync, an automatic switch…) is still being written.</summary>
+    public const string Busy = "clauderoo is updating your profiles right now. Try again in a moment.";
+
     /// <summary>
     /// Plain words for an error from something started in the tray. Core and the launcher speak to the command line
     /// ("use 'clauderoo run' instead"), so known errors are reworded; <c>Unknown</c> is true for text not meant for

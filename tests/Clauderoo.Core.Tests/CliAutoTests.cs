@@ -205,6 +205,34 @@ public class CliAutoTests
     }
 
     [Fact]
+    public void Default_Cli_NotesManualHold()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        Run(pm, Idle, "auto", "on");
+        Assert.Equal(0, Run(pm, Idle, "default", "work").code);
+        Assert.Equal("work", pm.AutoSwitchState.Load().ManualHold);
+        Assert.Equal(0, Run(pm, Idle, "default", "--clear").code);
+        Assert.Equal("personal", pm.AutoSwitchState.Load().ManualHold);
+
+        // The held default is over the threshold: --once leaves it alone.
+        var r = Run(pm, new Handler(95, 10), "auto", "--once");
+        Assert.Equal(2, r.code);
+        Assert.Equal("personal", pm.Config.DefaultProfile);
+    }
+
+    [Fact]
+    public void AutoOnce_DoesNotNoteManualHold()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        Run(pm, Idle, "auto", "on");
+        Assert.Equal(0, Run(pm, new Handler(95, 10), "auto", "--once").code);
+        Assert.Equal("work", pm.Config.DefaultProfile);
+        Assert.Null(pm.AutoSwitchState.Load().ManualHold);
+    }
+
+    [Fact]
     public void AutoOnce_Json_NoTarget()
     {
         var (pm, home) = Make();

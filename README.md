@@ -243,6 +243,7 @@ Auto-switch changes the default profile when the default reaches a share of its 
 - **Threshold and order:** set them in the **Auto-switch…** dialog, or with `cr auto --threshold 85 --order work,personal`. The threshold can be 6 to 100.
 - **Which profile it picks:** the first profile in the order whose last reading is under 15 minutes old and has both windows more than 5 points below the threshold. With no order set, every Claude-login profile is tried in list order. Vertex and API-key profiles have no limits to check, so they are used only when you list them in the order.
 - **No flip-flopping:** after a switch, nothing changes for 10 minutes. clauderoo never switches back on its own.
+- **Your choice wins:** when you set the default yourself (tray, profile manager or `cr default`), auto-switch leaves that profile alone, even if it is over the threshold, until it is back under the threshold. The next time it crosses, auto-switch acts again.
 - **What the tray tells you:** a balloon such as "personal is at 92% of its 5-hour limit. New terminals now use work." When no other profile has room, a balloon says so once each time the default crosses the threshold. When the profile it switched away from has room again, a balloon says "personal has room again". Click it to make that profile the default again.
 - **In the tray menu:** a usage window at or above the threshold is shown in amber, or red from 90%. While auto-switch is off, only windows at 90% or more are coloured.
 
@@ -251,11 +252,13 @@ The tray decides each time it checks usage, every 2 to 5 minutes. When the tray 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Switched the default |
-| 2 | Nothing to do (or auto-switch is off) |
+| 2 | Nothing to do (or auto-switch is off, or the default was chosen by hand) |
 | 3 | The default is at the threshold, but no other profile has room |
 | 1 | Error |
 
-`--json` prints `{"schemaVersion": 1, "action", "from", "to", "reason"}` instead of plain text. The switch state (last switch time and which profile it switched from) is kept in `%USERPROFILE%\.clauderoo\autoswitch.json`.
+Every clauderoo command, `cr auto --once` included, also exits with 2 on an unexpected error (a bug or an unforeseen failure), with the message on stderr. To tell that apart from "nothing to do", check that stderr is empty, or use `--json`: a real result is a JSON document on stdout with an `action` of `switched`, `none` or `noTarget`, and an error is `{"schemaVersion":1,"error":"…"}` on stderr.
+
+`--json` prints `{"schemaVersion": 1, "action", "from", "to", "reason"}` instead of plain text. The switch state (last switch time, which profile it switched from, and a profile chosen by hand) is kept in `%USERPROFILE%\.clauderoo\autoswitch.json`.
 
 ### Profiles that own their settings.json
 

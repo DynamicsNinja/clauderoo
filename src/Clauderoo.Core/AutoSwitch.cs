@@ -16,8 +16,11 @@ public class AutoSwitchSettings
 /// <summary>
 /// What the engine remembers between decisions, in %root%\autoswitch.json. The two Notified flags only apply while the
 /// default profile is <see cref="FlagsFor"/>; for any other default they read as false (see <see cref="AutoSwitch.Next"/>).
+/// <see cref="ManualHold"/> is the profile the user last made the default by hand: while it is the default, nothing
+/// switches away from it, until it is back under the threshold (it holds for the current crossing only).
 /// </summary>
-public record AutoSwitchState(DateTimeOffset? LastSwitch, string? SwitchedFrom, bool NoTargetNotified, bool RecoveredNotified, string? FlagsFor = null);
+public record AutoSwitchState(DateTimeOffset? LastSwitch, string? SwitchedFrom, bool NoTargetNotified, bool RecoveredNotified,
+    string? FlagsFor = null, string? ManualHold = null);
 
 public abstract record Decision
 {
@@ -46,6 +49,8 @@ public static class AutoSwitch
         var settings = cfg.AutoSwitch;
         var current = cfg.DefaultProfile;
         if (settings is not { Enabled: true } || string.IsNullOrEmpty(current)) return new Decision.NoAction();
+        // The user picked this default by hand: leave it alone until it is back under the threshold (see Next).
+        if (state.ManualHold == current) return new Decision.NoAction();
 
         var threshold = settings.Threshold;
         var margin = threshold - Hysteresis;
@@ -86,13 +91,20 @@ public static class AutoSwitch
     /// The state after a decision was acted on. Owns every flag transition: SwitchTo records LastSwitch/SwitchedFrom and
     /// clears both flags (now scoped to the new default); NoTarget and Recovered set their flag; a changed default clears
     /// both flags; NoTargetNotified clears once the default has a fresh reading back under the threshold, so the next
-    /// crossing notifies again. Callers save the result with <see cref="AutoSwitchStore.Save"/>.
+    /// crossing notifies again. ManualHold clears once the default changes or its fresh reading is back under the
+    /// threshold, so a manual choice holds for the current crossing only. Callers save the result with
+    /// <see cref="AutoSwitchStore.Save"/>.
     /// </summary>
     public static AutoSwitchState Next(AutoSwitchState s, Decision d, string? currentDefault,
         IReadOnlyDictionary<string, UsageReading> usage, DateTimeOffset now, AutoSwitchSettings? settings)
     {
         if (d is Decision.SwitchTo to)
             return new AutoSwitchState(now, currentDefault, false, false, to.Profile);
+
+        var threshold = settings?.Threshold ?? new AutoSwitchSettings().Threshold;
+        if (s.ManualHold != null && (s.ManualHold != currentDefault
+            || usage.TryGetValue(s.ManualHold, out var held) && IsFresh(held, now) && Over(held, threshold) == null))
+            s = s with { ManualHold = null };
 
         // Flags belong to the default they were raised for.
         if (s.FlagsFor != currentDefault)
@@ -147,22 +159,31 @@ public sealed class AutoSwitchStore(ClauderooPaths paths)
         return state;
     }
 
-    /// <summary>A renamed profile keeps being the one we switched from.</summary>
+    /// <summary>
+    /// The user made <paramref name="profile"/> the default by hand (tray, Profiles window, <c>cr default</c>): auto-switch
+    /// leaves it alone for the current crossing. Never called for an automatic switch.
+    /// </summary>
+    public void NoteManualDefault(string profile) =>
+        Update(s => s.ManualHold == profile ? s : s with { ManualHold = profile });
+
+    /// <summary>A renamed profile keeps being the one we switched from (and the one held).</summary>
     public void Rename(string oldName, string newName) =>
-        Update(s => s.SwitchedFrom != oldName && s.FlagsFor != oldName ? s : s with
+        Update(s => s.SwitchedFrom != oldName && s.FlagsFor != oldName && s.ManualHold != oldName ? s : s with
         {
             SwitchedFrom = s.SwitchedFrom == oldName ? newName : s.SwitchedFrom,
             FlagsFor = s.FlagsFor == oldName ? newName : s.FlagsFor,
+            ManualHold = s.ManualHold == oldName ? newName : s.ManualHold,
         });
 
-    /// <summary>A removed profile can no longer recover; its flags go with it.</summary>
+    /// <summary>A removed profile can no longer recover; its flags and hold go with it.</summary>
     public void Remove(string name) =>
-        Update(s => s.SwitchedFrom != name && s.FlagsFor != name ? s : s with
+        Update(s => s.SwitchedFrom != name && s.FlagsFor != name && s.ManualHold != name ? s : s with
         {
             SwitchedFrom = s.SwitchedFrom == name ? null : s.SwitchedFrom,
             NoTargetNotified = s.FlagsFor == name ? false : s.NoTargetNotified,
             RecoveredNotified = s.FlagsFor == name ? false : s.RecoveredNotified,
             FlagsFor = s.FlagsFor == name ? null : s.FlagsFor,
+            ManualHold = s.ManualHold == name ? null : s.ManualHold,
         });
 
     private void Update(Func<AutoSwitchState, AutoSwitchState> change) =>

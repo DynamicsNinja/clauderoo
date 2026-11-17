@@ -165,8 +165,8 @@ internal static class TrayMenu
         var label = head + string.Concat(parts.Select(x => x.Text));
         var nearLimit = parts.Any(x => x.Level != UsageLevel.Ok);
         List<(string Text, Color? Color)>? runs = null;
-        if (signedOut)
-            runs = [(Esc(head[..^TrayText.NotSignedIn.Length]), null), (Esc(TrayText.NotSignedIn), StatusColors.Muted)];
+        if (signedOut && head.EndsWith(TrayText.NotSignedIn, StringComparison.Ordinal))
+            runs =[(Esc(head[..^TrayText.NotSignedIn.Length]), null), (Esc(TrayText.NotSignedIn), StatusColors.Muted)];
         else if (nearLimit)
             runs = [(Esc(head), null), .. parts.Select(x => (Esc(x.Text), x.Level switch
             {

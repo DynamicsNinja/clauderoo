@@ -39,9 +39,9 @@ sealed class TrayContext : ApplicationContext
     private IReadOnlyDictionary<string, int> _running = new Dictionary<string, int>();
     private ConfigError? _configError;
     private bool _seeded;        // the first sync's problems are already known (no balloon for them)
-    private bool _fixing;        // a Fix runs on a worker thread: full syncs wait
+    private readonly WriteGate _gate = new(); // one default/config writer at a time (pass, Set default, Fix, syncs…)
     private bool _countingRunning;
-    private bool _autoSwitching;   // an auto-switch pass runs on a worker thread: full syncs wait, passes don't overlap
+    private bool _autoSwitching;   // an auto-switch pass is queued or running: passes don't overlap
     private bool _autoSwitchAgain; // new readings arrived during a pass: run another one after it
     private string? _autoSwitchError; // the last pass's failure, shown once
 
@@ -119,8 +119,7 @@ sealed class TrayContext : ApplicationContext
         _debounce.Tick += (_, _) =>
         {
             _debounce.Stop();
-            if (_fixing || _autoSwitching) { _debounce.Start(); return; }
-            Guard(FullSync);
+            Guard(FullSyncGated);
         };
         _runningTimer.Tick += async (_, _) => await RefreshRunningInBackground();
         _runningTimer.Start();
@@ -135,7 +134,7 @@ sealed class TrayContext : ApplicationContext
 
         // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
         // The first sync also hands the poller its profiles; it starts polling after that.
-        Post(() => Guard(FullSync));
+        Post(() => Guard(FullSyncGated));
         Post(() => Guard(_poller.Start));
     }
 
@@ -176,12 +175,28 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
-    /// <summary>Syncs every profile and replaces the problem list with what it found.</summary>
+    /// <summary>
+    /// <see cref="FullSync"/> when no other write is running (the gate is only tried, never waited on: the UI thread
+    /// never blocks); otherwise it is retried after the debounce delay.
+    /// </summary>
+    private void FullSyncGated()
+    {
+        using var held = _gate.TryEnter();
+        if (held == null) { Kick(); return; }
+        FullSync();
+    }
+
+    /// <summary>Syncs every profile and replaces the problem list with what it found. Callers hold the write gate.</summary>
     private void FullSync()
     {
         if (LoadConfig() is not { } cfg) return;
         EnsureWatchers(cfg);
-        var report = _pm.SyncAll();
+        ApplySync(_pm.SyncAll());
+    }
+
+    /// <summary>A full sync's result on the UI thread: profiles, problems and notices.</summary>
+    private void ApplySync(SyncReport report)
+    {
         var first = !_seeded;
         RefreshProfiles();
         SetProblems(report.ProblemItems);
@@ -298,21 +313,21 @@ sealed class TrayContext : ApplicationContext
         {
             Start = name => Guard(() => StartSession(name, null)),
             StartInFolder = name => Guard(() => StartInFolder(name)),
-            SetDefault = name => Guard(() => SetDefault(name)),
+            SetDefault = name => _ = SetDefaultAsync(name),
             ShowProblems = () => Guard(ShowProblems),
             ShowProfiles = () => Guard(ShowProfiles),
-            NewProfile = () => Guard(NewProfile),
+            NewProfile = () => _ = NewProfileAsync(),
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
             SetUp = () => Guard(SetUp),
-            Retry = () => Guard(FullSync),
+            Retry = () => Guard(FullSyncGated),
             CopyConfigDetails = () => Guard(() => Clipboard.SetText(
                 $"{_configError?.Headline}\r\n{_configError?.Message}\r\nSettings file: {_paths.ConfigFile}")),
             ShowConfigFile = () => Guard(ShowConfigFile),
             Exit = () => Guard(Exit),
             RefreshUsage = () => _ = RefreshUsageAsync(),
-            SetAutoSwitch = on => Guard(() => SetAutoSwitch(on)),
+            SetAutoSwitch = on => _ = SetAutoSwitchAsync(on),
         };
 
         var cfg = LoadConfig();
@@ -375,7 +390,8 @@ sealed class TrayContext : ApplicationContext
             return;
         }
         if (RequireConfig() == null) return;
-        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems), _usage);
+        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems), _usage, _gate,
+            autoSwitchChanged: () => _ = AutoSwitchAsync());
         form.FormClosed += (_, _) =>
         {
             if (_profilesForm == form) _profilesForm = null;
@@ -403,25 +419,31 @@ sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>
-    /// Runs the fix on a worker thread, then re-checks every profile. A fix that worked is reported as fixed even if
-    /// the follow-up sync fails; that is said separately.
+    /// Runs the fix and then a re-check of every profile on a worker thread, both inside the write gate. A fix that
+    /// worked is reported as fixed even if the follow-up sync fails; that is said separately.
     /// </summary>
     private async Task<FixOutcome> FixAsync(Problem p)
     {
-        SyncReport report;
-        _fixing = true;
-        try { report = await Task.Run(() => _pm.Fix(p)); } // throws with a message the window shows
-        finally { _fixing = false; }
+        var (report, after) = await _gate.RunAsync(() =>
+        {
+            var fixReport = _pm.Fix(p); // throws with a message the window shows
+            SyncReport? sync = null;
+            try { sync = _pm.SyncAll(); }
+            catch (Exception) { /* said below */ }
+            return (fixReport, sync);
+        });
 
         QueueNotices(report.Notices, now: true);
+        const string NotRechecked =
+            "Fixed. clauderoo couldn't re-check your profiles just now; it will try again the next time Claude's settings change.";
+        if (after == null) return new FixOutcome(true, NotRechecked);
         try
         {
-            FullSync();
+            ApplySync(after);
         }
         catch (Exception)
         {
-            return new FixOutcome(true,
-                "Fixed. clauderoo couldn't re-check your profiles just now; it will try again the next time Claude's settings change.");
+            return new FixOutcome(true, NotRechecked);
         }
         return _problems.Any(q => TrayText.Key(q) == TrayText.Key(p))
             ? new FixOutcome(false, "clauderoo tried, but the problem is still there. Copy the details and send them to whoever helps you with clauderoo.")
@@ -463,12 +485,21 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
-    private void SetDefault(string name)
+    /// <summary>
+    /// A default chosen by hand, inside the write gate on a worker thread (SetDefault syncs). Notes a manual hold, so
+    /// auto-switch doesn't move straight off a profile picked while it is over the threshold.
+    /// </summary>
+    private async Task SetDefaultAsync(string name)
     {
-        var report = _pm.SetDefault(name);
-        RefreshProfiles();
-        QueueNotices([$"Default is now {name}. New terminals will use it.", .. report.Notices], now: true);
-        Kick();
+        try
+        {
+            var report = await _gate.RunAsync(() => _pm.SetDefaultByUser(name));
+            RefreshProfiles();
+            if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
+            QueueNotices([$"Default is now {name}. New terminals will use it.", .. report.Notices], now: true);
+            Kick();
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
     // ---------- auto-switch ----------
@@ -492,7 +523,7 @@ sealed class TrayContext : ApplicationContext
                 if (_configError != null) return;
                 var readings = _usage.Readings; // replaced, never changed, by UsageView: safe to hand over
                 AutoSwitchOutcome? outcome;
-                try { outcome = await Task.Run(() => AutoSwitchPass(readings)); } // resumes on the UI thread
+                try { outcome = await _gate.RunAsync(() => AutoSwitchPass(readings)); } // resumes on the UI thread
                 catch (Exception e)
                 {
                     // The switch failed; nothing was saved, so the next readings try again. The same failure again
@@ -511,9 +542,10 @@ sealed class TrayContext : ApplicationContext
     }
 
     /// <summary>
-    /// Worker thread: loads the config and the auto-switch state, decides, applies a switch (SetDefault syncs, which
-    /// can take a moment), then saves the next state. Null when the config or state can't be read right now: that
-    /// is shown elsewhere, and the next readings try again.
+    /// Worker thread, inside the write gate, so no other tray write (manual Set default, settings, syncs) interleaves:
+    /// loads the config and the auto-switch state, decides, applies a switch (SetDefault syncs, which can take a
+    /// moment), then saves the next state. Null when the config or state can't be read right now: that is shown
+    /// elsewhere, and the next readings try again.
     /// </summary>
     private AutoSwitchOutcome? AutoSwitchPass(IReadOnlyDictionary<string, UsageReading> readings)
     {
@@ -529,7 +561,25 @@ sealed class TrayContext : ApplicationContext
         var now = DateTimeOffset.UtcNow;
         var from = cfg.DefaultProfile;
         var decision = AutoSwitch.Decide(cfg, readings, now, state);
-        var report = decision is Decision.SwitchTo to ? _pm.SetDefault(to.Profile) : null; // throws: reported, nothing saved
+        SyncReport? report = null;
+        if (decision is Decision.SwitchTo to)
+        {
+            // Re-check right before switching: `cr default` in another process may have changed the default (and
+            // noted a manual hold) since it was read. Then the decision is dropped and Next sees the actual default.
+            try
+            {
+                var current = _pm.Config.DefaultProfile;
+                if (current != from)
+                {
+                    decision = new Decision.NoAction();
+                    from = current;
+                    state = _pm.AutoSwitchState.Load();
+                }
+            }
+            catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return null; }
+            if (decision is Decision.SwitchTo apply)
+                report = _pm.SetDefault(apply.Profile); // throws: reported, nothing saved. Not a manual choice: no hold.
+        }
 
         var next = AutoSwitch.Next(state, decision, from, readings, now, cfg.AutoSwitch);
         if (next != state)
@@ -558,34 +608,50 @@ sealed class TrayContext : ApplicationContext
                 var name = rec.Profile;
                 Balloon(TrayText.RecoveredBalloon(name), ToolTipIcon.Info, onClick: () =>
                 {
-                    if (RequireConfig() is { } cfg && cfg.DefaultProfile != name) SetDefault(name);
+                    if (RequireConfig() is { } cfg && cfg.DefaultProfile != name) _ = SetDefaultAsync(name);
                 });
                 break;
         }
     }
 
-    /// <summary>The Advanced menu's checkbox. Turning it on decides right away with the readings already known.</summary>
-    private void SetAutoSwitch(bool on)
+    /// <summary>
+    /// The Advanced menu's checkbox, saved inside the write gate (read, change and save in one go, so a running switch
+    /// can't put back the old value). Turning it on decides right away with the readings already known.
+    /// </summary>
+    private async Task SetAutoSwitchAsync(bool on)
     {
-        if (RequireConfig() is not { } cfg) return;
-        var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
-        s.Enabled = on;
-        ConfigStore.Save(_paths, cfg);
-        QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
-        if (on) _ = AutoSwitchAsync();
+        try
+        {
+            if (RequireConfig() == null) return;
+            var s = await _gate.RunAsync(() =>
+            {
+                var cfg = _pm.Config;
+                var settings = cfg.AutoSwitch ??= new AutoSwitchSettings();
+                settings.Enabled = on;
+                ConfigStore.Save(_paths, cfg);
+                return settings;
+            });
+            QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
+            if (on) _ = AutoSwitchAsync();
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
-    private void NewProfile()
+    private async Task NewProfileAsync()
     {
-        if (RequireConfig() is not { } cfg) return;
-        var name = InputDialog.Ask("New profile", "Profile name:", null, null,
-            InputDialog.ProfileNameRule(cfg.Profiles.Keys), InputDialog.ProfileNameHint, lowercase: true);
-        if (string.IsNullOrEmpty(name)) return;
-        var report = _pm.Add(name);
-        if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
-        RefreshProfiles();
-        QueueNotices([$"Profile '{name}' created. Start a session in it to sign in.", .. report.Notices], now: true);
-        Kick();
+        try
+        {
+            if (RequireConfig() is not { } cfg) return;
+            var name = InputDialog.Ask("New profile", "Profile name:", null, null,
+                InputDialog.ProfileNameRule(cfg.Profiles.Keys), InputDialog.ProfileNameHint, lowercase: true);
+            if (string.IsNullOrEmpty(name)) return;
+            var report = await _gate.RunAsync(() => _pm.Add(name));
+            if (_profilesForm is { IsDisposed: false } f) f.RefreshList();
+            RefreshProfiles();
+            QueueNotices([$"Profile '{name}' created. Start a session in it to sign in.", .. report.Notices], now: true);
+            Kick();
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
     private void OpenProfilesFolder()
@@ -602,6 +668,12 @@ sealed class TrayContext : ApplicationContext
 
     private void SetUp()
     {
+        using var held = _gate.TryEnter();
+        if (held == null)
+        {
+            Balloon(TrayText.Busy, ToolTipIcon.Info);
+            return;
+        }
         try
         {
             _pm.Init();

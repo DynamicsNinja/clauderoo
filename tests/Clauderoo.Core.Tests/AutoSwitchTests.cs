@@ -298,6 +298,63 @@ public class AutoSwitchTests
     }
 
     [Fact]
+    public void Decide_ManualHold_NoSwitchUntilBackUnder()
+    {
+        var cfg = TwoLogin();
+        var usage = U(R("personal", 95, 10), R("work", 1, 1));
+        var held = Fresh with { ManualHold = "personal" };
+        // The user chose personal while it was over: no switch, no NoTarget, for this crossing.
+        Assert.IsType<Decision.NoAction>(AutoSwitch.Decide(cfg, usage, Now, held));
+
+        // Back under the threshold: Next drops the hold, so the next crossing switches again.
+        var n = AutoSwitch.Next(held, new Decision.NoAction(), "personal", U(R("personal", 50, 10), R("work", 1, 1)), Now, cfg.AutoSwitch);
+        Assert.Null(n.ManualHold);
+        Assert.IsType<Decision.SwitchTo>(AutoSwitch.Decide(cfg, usage, Now, n));
+
+        // A hold for another profile doesn't stop the default from switching.
+        Assert.IsType<Decision.SwitchTo>(AutoSwitch.Decide(cfg, usage, Now, Fresh with { ManualHold = "work" }));
+    }
+
+    [Fact]
+    public void Next_ManualHold_ClearedWhenUnderOrChanged()
+    {
+        var held = Fresh with { ManualHold = "personal" };
+        // Still over, or no fresh reading: kept.
+        Assert.Equal("personal", Next(held, new Decision.NoAction(), "personal", [R("personal", 95, 10)]).ManualHold);
+        Assert.Equal("personal", Next(held, new Decision.NoAction(), "personal", [R("personal", 10, 10, ageMin: 30)]).ManualHold);
+        Assert.Equal("personal", Next(held, new Decision.NoAction(), "personal", []).ManualHold);
+        // Fresh reading back under: cleared.
+        Assert.Null(Next(held, new Decision.NoAction(), "personal", [R("personal", 89, 10)]).ManualHold);
+        // The default changed: cleared.
+        Assert.Null(Next(held, new Decision.NoAction(), "work", [R("work", 95, 10)]).ManualHold);
+        // An automatic switch: cleared.
+        Assert.Null(Next(held, new Decision.SwitchTo("work", "r"), "personal", [R("personal", 95, 10)]).ManualHold);
+    }
+
+    [Fact]
+    public void Store_NoteManualDefault_SetsHoldAndKeepsTheRest()
+    {
+        using var h = new TempHome();
+        var store = new AutoSwitchStore(h.Paths);
+        store.Save(new AutoSwitchState(Now, "work", true, false, "personal"));
+        store.NoteManualDefault("personal");
+        Assert.Equal(new AutoSwitchState(Now, "work", true, false, "personal", "personal"), store.Load());
+
+        // An old file without the field still loads.
+        File.WriteAllText(Path.Combine(h.Paths.Root, "autoswitch.json"),
+            """{ "lastSwitch": null, "switchedFrom": "work", "noTargetNotified": false, "recoveredNotified": false }""");
+        Assert.Null(store.Load().ManualHold);
+        Assert.Equal("work", store.Load().SwitchedFrom);
+
+        // Rename and remove carry the hold along.
+        store.NoteManualDefault("work");
+        store.Rename("work", "job");
+        Assert.Equal("job", store.Load().ManualHold);
+        store.Remove("job");
+        Assert.Null(store.Load().ManualHold);
+    }
+
+    [Fact]
     public void Decide_StaleFlagFromOtherDefault_DoesNotSuppress()
     {
         var cfg = Cfg("personal", true, null, ("personal", null));

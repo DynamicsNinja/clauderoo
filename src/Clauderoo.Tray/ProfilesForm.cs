@@ -29,6 +29,8 @@ sealed class ProfilesForm : Form
     private readonly ProfileManager _pm;
     private readonly Action<string> _startSession;
     private readonly Action? _showProblems;
+    private readonly WriteGate? _gate;
+    private readonly Action? _autoSwitchChanged;
     private Action? _resultLink;   // what the link at the end of the result line does (Undo, Open Problems…)
     private readonly Gcloud _gcloud = new();
     private readonly ToolTip _tips = new();
@@ -166,12 +168,17 @@ sealed class ProfilesForm : Form
 
     /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
     /// <param name="usage">The tray's usage readings and Refresh; without it the Usage group says nothing is known yet.</param>
-    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null, UsageView? usage = null)
+    /// <param name="gate">The tray's write gate: the window's writes take turns with the tray's (syncs, auto-switch).</param>
+    /// <param name="autoSwitchChanged">Called after the Auto-switch settings were saved (the tray decides again).</param>
+    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null, UsageView? usage = null,
+        WriteGate? gate = null, Action? autoSwitchChanged = null)
     {
         _pm = pm;
         _startSession = startSession;
         _showProblems = showProblems;
         _usageView = usage;
+        _gate = gate;
+        _autoSwitchChanged = autoSwitchChanged;
 
         Text = BaseTitle;
         StartPosition = FormStartPosition.CenterScreen;
@@ -367,7 +374,7 @@ sealed class ProfilesForm : Form
         _new.Click += (_, _) => Guard(NewProfile);
         _rename.Click += (_, _) => Guard(RenameProfile);
         _remove.Click += (_, _) => Guard(RemoveProfile);
-        _autoSwitch.Click += (_, _) => Guard(EditAutoSwitch);
+        _autoSwitch.Click += async (_, _) => await EditAutoSwitchAsync();
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey })
             rb.CheckedChanged += (_, _) =>
             {
@@ -389,7 +396,7 @@ sealed class ProfilesForm : Form
         _copy.Click += (_, _) => CopyResults();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
-        _setDefault.Click += (_, _) => Guard(SetDefault);
+        _setDefault.Click += async (_, _) => await SetDefaultAsync();
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
         _runningTimer.Tick += (_, _) => RefreshRunning();
@@ -1029,9 +1036,12 @@ sealed class ProfilesForm : Form
                 }
                 : null;
             var apiKey = provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(_apiKey.Text) ? _apiKey.Text.Trim() : null;
-            Collect(_pm.SetProvider(name, provider, vertex, apiKey), notices, problems);
-            providerSaved = true;
-            Collect(_pm.ReplaceEnv(name, env), notices, problems);
+            Write(() =>
+            {
+                Collect(_pm.SetProvider(name, provider, vertex, apiKey), notices, problems);
+                providerSaved = true;
+                Collect(_pm.ReplaceEnv(name, env), notices, problems);
+            });
         }
         catch (Exception e) // file/sync errors too, not only ClauderooException: never let them reach the tray
         {
@@ -1371,7 +1381,7 @@ sealed class ProfilesForm : Form
         var name = InputDialog.Ask("New profile", "Profile name:", this, null,
             InputDialog.ProfileNameRule(ProfileNames()), InputDialog.ProfileNameHint, lowercase: true);
         if (string.IsNullOrEmpty(name)) return;
-        var report = _pm.Add(name);
+        var report = Write(() => _pm.Add(name));
         Reload(name);
         ShowResult(report, $"Profile '{name}' created. Start a session in it to sign in.");
     }
@@ -1390,7 +1400,7 @@ sealed class ProfilesForm : Form
         SyncReport report;
         try
         {
-            report = _pm.Rename(oldName, newName);
+            report = Write(() => _pm.Rename(oldName, newName));
         }
         catch (SessionsRunningException e)
         {
@@ -1402,7 +1412,7 @@ sealed class ProfilesForm : Form
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Rename anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             if (BlockIfRunning(oldName, "renamed")) return; // force skips Core's session check: check again
-            report = _pm.Rename(oldName, newName, force: true);
+            report = Write(() => _pm.Rename(oldName, newName, force: true));
         }
         if (LastChecks.Remove(oldName, out var rec)) LastChecks[newName] = rec;
         _loadedState = State(); // the editor's profile is gone under its old name: nothing left to save
@@ -1423,7 +1433,7 @@ sealed class ProfilesForm : Form
         StopCheckAndWait(name);
         try
         {
-            _pm.Remove(name);
+            Write(() => _pm.Remove(name));
         }
         catch (SessionsRunningException e)
         {
@@ -1435,7 +1445,7 @@ sealed class ProfilesForm : Form
             if (MessageBox.Show(this, WithoutCli(e.Message) + Environment.NewLine + Environment.NewLine + "Remove anyway?", "clauderoo",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             if (BlockIfRunning(name, "removed")) return; // force skips Core's session check: check again
-            _pm.Remove(name, force: true);
+            Write(() => _pm.Remove(name, force: true));
         }
         LastChecks.Remove(name);
         _loadedState = State(); // removed: nothing left to save
@@ -1451,7 +1461,7 @@ sealed class ProfilesForm : Form
         var name = _undoName;
         if (name == null || !ConfirmLeave()) return;
         ClearResult();
-        var report = _pm.Restore(name);
+        var report = Write(() => _pm.Restore(name));
         Reload(name);
         ShowResult(report, $"Restored {name}.");
     }
@@ -1497,28 +1507,72 @@ sealed class ProfilesForm : Form
         _startSession(_current);
     }
 
-    private void SetDefault()
+    /// <summary>
+    /// A default chosen by hand: on a worker thread inside the tray's write gate (SetDefault syncs), and noted as a
+    /// manual hold so auto-switch doesn't move straight off it.
+    /// </summary>
+    private async Task SetDefaultAsync()
     {
         if (_current == null || _currentIsDefault || !ConfirmLeave()) return;
         ClearResult();
         var name = _current;
-        var report = _pm.SetDefault(name);
-        Reload(name);
-        ShowResult(report, $"Default is now {name}. New terminals will use it.");
+        try
+        {
+            var report = await RunWriteAsync(() => _pm.SetDefaultByUser(name));
+            if (IsDisposed) return;
+            if (!IsDirty) Reload(name);
+            ShowResult(report, $"Default is now {name}. New terminals will use it.");
+        }
+        catch (Exception e)
+        {
+            if (!IsDisposed) ShowError(e.Message);
+        }
     }
 
-    /// <summary>The Auto-switch dialog. Saved straight to the config: it doesn't touch the profile being edited.</summary>
-    private void EditAutoSwitch()
+    /// <summary>
+    /// The Auto-switch dialog. Saved straight to the config inside the write gate (read, change and save in one go):
+    /// it doesn't touch the profile being edited. The tray then decides again with the new settings.
+    /// </summary>
+    private async Task EditAutoSwitchAsync()
     {
-        ClearResult();
-        var cfg = _pm.Config;
-        var profiles = cfg.Profiles.Select(kv => (kv.Key, Providers.Of(kv.Value))).ToList();
-        if (AutoSwitchDialog.Edit(this, cfg.AutoSwitch ?? new AutoSwitchSettings(), profiles) is not { } edited) return;
-        cfg = _pm.Config; // read again: the tray may have changed the default while the dialog was open
-        cfg.AutoSwitch = edited;
-        ConfigStore.Save(_pm.Paths, cfg);
-        SetResult(TrayText.AutoSwitchSummary(edited), SystemColors.ControlText);
+        try
+        {
+            ClearResult();
+            var cfg = _pm.Config;
+            var profiles = cfg.Profiles.Select(kv => (kv.Key, Providers.Of(kv.Value))).ToList();
+            if (AutoSwitchDialog.Edit(this, cfg.AutoSwitch ?? new AutoSwitchSettings(), profiles) is not { } edited) return;
+            await RunWriteAsync(() =>
+            {
+                var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
+                fresh.AutoSwitch = edited;
+                ConfigStore.Save(_pm.Paths, fresh);
+                return true;
+            });
+            if (IsDisposed) return;
+            SetResult(TrayText.AutoSwitchSummary(edited), SystemColors.ControlText);
+            _autoSwitchChanged?.Invoke();
+        }
+        catch (Exception e)
+        {
+            if (!IsDisposed) ShowError(e.Message);
+        }
     }
+
+    /// <summary>A write on a worker thread, waiting its turn in the tray's write gate (the window never blocks).</summary>
+    private Task<T> RunWriteAsync<T>(Func<T> write) => _gate != null ? _gate.RunAsync(write) : Task.Run(write);
+
+    /// <summary>
+    /// A write on the UI thread, as before, inside the tray's write gate. The gate is only tried, never waited on:
+    /// while another write runs (a sync, an automatic switch) this throws <see cref="TrayText.Busy"/>, shown as a message.
+    /// </summary>
+    private T Write<T>(Func<T> write)
+    {
+        if (_gate == null) return write();
+        using var held = _gate.TryEnter() ?? throw new ClauderooException(TrayText.Busy);
+        return write();
+    }
+
+    private void Write(Action write) => Write(() => { write(); return true; });
 
     private void ShowResult(SyncReport report, string message) =>
         ShowReport([message, .. report.Notices], report.Problems);

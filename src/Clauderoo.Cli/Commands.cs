@@ -139,12 +139,12 @@ public static class Commands
             {
                 if (pos.Count == 1 && pos[0] == "--clear")
                 {
-                    Print(pm.SetDefault(null), output, err);
+                    Print(pm.SetDefaultByUser(null), output, err);
                     output.WriteLine($"Default cleared ({pm.Config.DefaultProfile} is the default). Open a new terminal for plain 'claude' to use it.");
                 }
                 else
                 {
-                    Print(pm.SetDefault(Need(pos, 1, "clauderoo default <name> | --clear")[0]), output, err);
+                    Print(pm.SetDefaultByUser(Need(pos, 1, "clauderoo default <name> | --clear")[0]), output, err);
                     output.WriteLine($"Default is now {pm.Config.DefaultProfile}. Open a new terminal for plain 'claude' to use it.");
                 }
                 return 0;
