@@ -432,31 +432,48 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
     /// <summary>
     /// The folder a delegated run may work in. Reading files in the working folder needs no approval, so it must not
     /// be (or be under) clauderoo's folder (profiles, isolated dirs, saved keys) or the home Claude folder, nor be the
-    /// user-profile folder itself (~/.claude.json). Compared after normalising, case-insensitively, and again after
-    /// resolving links.
+    /// user-profile folder itself (~/.claude.json). Compared after normalising, case-insensitively, by name and by real
+    /// path (links resolved on both sides). It fails closed: a UNC or network folder (which could loop back onto any
+    /// of these) and a folder whose real path can't be resolved are refused.
     /// </summary>
     private string SafeCwd(ClauderooConfig cfg, string requested)
     {
         var dir = Path.GetFullPath(requested);
+        if (IsUnc(dir)) throw CantRunIn(dir, "network (UNC) folders aren't allowed");
         if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
+        var final = FinalPath(dir) ?? throw CantRunIn(dir, "its real location couldn't be resolved");
+        if (IsUnc(final)) throw CantRunIn(dir, "it's on a network (UNC) folder");
 
-        string[] under = [pm.Paths.Root, pm.Paths.DefaultHomeDir, cfg.HomeDir];
-        string?[] exact = [pm.Paths.UserProfile, Path.GetDirectoryName(cfg.HomeJson),
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)];
-        foreach (var candidate in new[] { dir, FinalPath(dir) })
+        // Each protected folder by its name and, when it exists, by its real path (it may be a junction elsewhere).
+        static IEnumerable<string> Forms(string? p)
         {
-            if (candidate == null) continue;
-            var c = Norm(candidate);
-            if (under.Where(u => !string.IsNullOrEmpty(u)).Select(Norm)
-                    .Any(u => c.Equals(u, StringComparison.OrdinalIgnoreCase)
-                              || c.StartsWith(u + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                || exact.Where(e => !string.IsNullOrEmpty(e)).Select(e => Norm(e!))
-                    .Any(e => c.Equals(e, StringComparison.OrdinalIgnoreCase)))
-                throw new ClauderooException(
-                    $"Delegate can't run in {dir}: it holds Claude or clauderoo settings and sign-ins. Pick a project folder.");
+            if (string.IsNullOrEmpty(p)) yield break;
+            yield return Norm(p);
+            if (Directory.Exists(p) && FinalPath(p) is { } f) yield return Norm(f);
+        }
+        // The profile and isolated folders are listed one by one too: any of them may be a junction to another drive.
+        var under = new[] { pm.Paths.Root, pm.Paths.DefaultHomeDir, cfg.HomeDir, pm.Paths.ProfilesDir,
+                Path.Combine(pm.Paths.Root, "isolated") }
+            .Concat(cfg.Profiles.Keys.SelectMany(n => new[] { pm.Paths.ProfileDir(n), pm.Paths.IsolatedDir(n) }))
+            .SelectMany(Forms).ToList();
+        var exact = new[] { pm.Paths.UserProfile, Path.GetDirectoryName(cfg.HomeJson),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) }.SelectMany(Forms).ToList();
+
+        foreach (var c in new[] { Norm(dir), Norm(final) })
+        {
+            if (under.Any(u => c.Equals(u, StringComparison.OrdinalIgnoreCase)
+                               || c.StartsWith(u + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                || exact.Any(e => c.Equals(e, StringComparison.OrdinalIgnoreCase)))
+                throw CantRunIn(dir, "it holds Claude or clauderoo settings and sign-ins");
         }
         return dir;
     }
+
+    private static ClauderooException CantRunIn(string dir, string why) =>
+        new($"Delegate can't run in {dir}: {why}. Pick a local project folder.");
+
+    // \\server\share, \\?\…, \\.\… — anything that isn't a plain drive path.
+    private static bool IsUnc(string p) => p.StartsWith(@"\\", StringComparison.Ordinal) || p.StartsWith("//", StringComparison.Ordinal);
 
     private static string Norm(string p) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p));
 
@@ -473,10 +490,11 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
             var n = GetFinalPathNameByHandle(h, sb, (uint)sb.Capacity, 0);
             if (n == 0 || n >= sb.Capacity) return null;
             var s = sb.ToString();
-            if (s.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + s[8..];
-            return s.StartsWith(@"\\?\", StringComparison.Ordinal) ? s[4..] : s;
+            if (s.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + s[8..]; // stays UNC: refused
+            if (s.StartsWith(@"\\?\", StringComparison.Ordinal) && s.Length > 6 && s[5] == ':') return s[4..]; // \\?\C:\…
+            return s; // \\?\Volume{…} or anything else unexpected: kept as is, which reads as UNC and is refused
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
     }
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
@@ -569,10 +587,12 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 await p.StandardInput.WriteAsync(stdin.AsMemory(), linked.Token).ConfigureAwait(false);
                 await p.StandardInput.FlushAsync(linked.Token).ConfigureAwait(false);
             }
-            catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException) { }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException
+                                          or InvalidOperationException) { }
             finally
             {
-                try { p.StandardInput.Close(); } catch (Exception e) when (e is IOException or ObjectDisposedException) { }
+                try { p.StandardInput.Close(); }
+                catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException) { }
             }
         }, CancellationToken.None);
         try
@@ -586,6 +606,13 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
         catch (OperationCanceledException)
         {
             try { p.Kill(entireProcessTree: true); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            // Observe the stdin writer (and the readers) before `p` is disposed, so none is left as a faulted task.
+            foreach (var t in new Task[] { inTask, outTask, errTask })
+            {
+                try { await t.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+                catch (Exception e) when (e is InvalidOperationException or IOException or ObjectDisposedException
+                                              or OperationCanceledException or TimeoutException) { }
+            }
             if (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested) throw new TimeoutException();
             throw;
         }

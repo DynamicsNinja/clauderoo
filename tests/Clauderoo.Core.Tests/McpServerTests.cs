@@ -312,11 +312,94 @@ public class McpServerTests
         {
             var r = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd });
             Assert.True(IsError(r), cwd);
+            Assert.Contains("can't run in", Text(r));
         }
         Assert.Equal(0, f.Runner.Calls);
 
         var ok = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd = f.Proj });
         Assert.False(IsError(ok));
+    }
+
+    private static async Task AssertCwdRefused(Fixture f, string cwd)
+    {
+        var calls = f.Runner.Calls;
+        var r = await CallOne(f, "delegate", new { profile = "work", prompt = "x", cwd });
+        Assert.True(IsError(r), cwd);
+        Assert.Contains("can't run in", Text(r));
+        Assert.Equal(calls, f.Runner.Calls);
+    }
+
+    // A network folder can be anything (including a loopback admin share onto ~/.clauderoo), so it's never allowed.
+    [Fact]
+    public async Task Delegate_CwdUnc_Refused()
+    {
+        using var f = new Fixture();
+        var drive = f.Proj[0];
+        var rest = f.Proj[3..];
+        await AssertCwdRefused(f, $@"\\localhost\{drive}$\{rest}");
+        await AssertCwdRefused(f, $@"\\127.0.0.1\{char.ToLowerInvariant(drive)}$\{rest}");
+        await AssertCwdRefused(f, $@"\\localhost\{drive}$\{f.Home.Paths.ProfileDir("work")[3..]}");
+        await AssertCwdRefused(f, @"\\?\" + f.Proj);
+    }
+
+    // A folder whose real path can't be worked out (here a dangling junction) is refused, not checked by its name only.
+    [Fact]
+    public async Task Delegate_CwdUnresolvable_Refused()
+    {
+        using var f = new Fixture();
+        var gone = Directory.CreateDirectory(Path.Combine(f.Home.Dir, "gone")).FullName;
+        var link = Path.Combine(f.Proj, "dangling");
+        Junction.Create(link, gone);
+        Directory.Delete(gone);
+        Assert.True(Directory.Exists(link)); // still looks like a folder
+        await AssertCwdRefused(f, link);
+    }
+
+    // A profile folder that is itself a junction elsewhere (another drive, say) is protected at its real location too.
+    [Fact]
+    public async Task Delegate_ProtectedRootIsJunction_StillProtected()
+    {
+        using var f = new Fixture();
+        var real = Directory.CreateDirectory(Path.Combine(f.Home.Dir, "otherdrive", "work")).FullName;
+        Directory.CreateDirectory(Path.Combine(real, "sub"));
+        var profileDir = f.Home.Paths.ProfileDir("work");
+        Directory.Move(profileDir, profileDir + ".moved");
+        Junction.Create(profileDir, real);
+        try
+        {
+            await AssertCwdRefused(f, real);
+            await AssertCwdRefused(f, Path.Combine(real, "sub"));
+        }
+        finally { Directory.Delete(profileDir); } // the junction only
+    }
+
+    // A run that is stopped while its stdin write is still blocked leaves no faulted task behind.
+    [Fact]
+    public async Task ProcessRunner_TimeoutWhileWritingStdin_NoUnobservedFault()
+    {
+        using var home = new TempHome();
+        var faults = new List<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> h = (_, e) =>
+        {
+            if (e.Exception.ToString().Contains("McpServer")) lock (faults) faults.Add(e.Exception);
+        };
+        TaskScheduler.UnobservedTaskException += h;
+        try
+        {
+            var runner = McpServer.ProcessRunner(new SessionTracker(home.Paths));
+            var ping = Path.Combine(Environment.SystemDirectory, "ping.exe"); // never reads its stdin
+            await Assert.ThrowsAsync<TimeoutException>(() =>
+                runner(new LaunchSpec(ping, ["-n", "60", "127.0.0.1"], home.Dir, null), new string('x', 2_000_000),
+                    TimeSpan.FromSeconds(1), CancellationToken.None));
+            for (var i = 0; i < 3; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                await Task.Delay(50);
+            }
+        }
+        finally { TaskScheduler.UnobservedTaskException -= h; }
+        Assert.Empty(faults);
     }
 
     [Fact]
