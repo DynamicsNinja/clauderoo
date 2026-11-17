@@ -36,6 +36,24 @@ public class FolderMapTests
     }
 
     [Fact]
+    public void Resolve_DriveRootMapping()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        pm.Map("work", @"C:\");
+        var r = FolderMap.Resolve(pm.Config, @"C:\src\app");
+        Assert.Equal("work", r!.Value.Profile);
+        Assert.Equal(@"C:\", r.Value.MappedDir);
+    }
+
+    [Fact]
+    public void Resolve_NullFolders_NoMatch()
+    {
+        var cfg = new ClauderooConfig { Folders = null! };
+        Assert.Null(FolderMap.Resolve(cfg, @"C:\src"));
+    }
+
+    [Fact]
     public void Resolve_SegmentBoundary()
     {
         var (pm, home) = Make();
