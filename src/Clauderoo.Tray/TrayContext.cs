@@ -41,6 +41,8 @@ sealed class TrayContext : ApplicationContext
     private (AppIconState State, bool HighContrast, Size Size)? _trayIconKey;
 
     private readonly List<string> _pendingNotices = [];
+    private readonly List<string> _recent = []; // for the Problems window's "Recent changes", handed over once
+    private const int RecentMax = 20;
     private DateTime _lastBalloon = DateTime.MinValue;
     private bool _balloonOpensProblems;
     private Point _clickPos;
@@ -148,9 +150,27 @@ sealed class TrayContext : ApplicationContext
         if (LoadConfig() is not { } cfg) return;
         EnsureWatchers(cfg);
         var report = _pm.SyncAll();
+        var first = !_seeded;
         RefreshProfiles();
         SetProblems(report.ProblemItems);
-        QueueNotices(report.Notices);
+        // The first sync's notices are what changed while the tray wasn't running: no balloon at startup, but kept
+        // for the Problems window's "Recent changes".
+        if (first) AddRecent(report.Notices);
+        else QueueNotices(report.Notices);
+    }
+
+    /// <summary>Shown in the Problems window right away when it's open; otherwise kept until it's next opened.</summary>
+    private void AddRecent(IEnumerable<string> lines)
+    {
+        var list = lines.ToList();
+        if (list.Count == 0) return;
+        if (_problemsForm is { IsDisposed: false, Visible: true } form)
+        {
+            form.AddRecent(list);
+            return;
+        }
+        _recent.AddRange(list);
+        if (_recent.Count > RecentMax) _recent.RemoveRange(0, _recent.Count - RecentMax);
     }
 
     private void SetProblems(IReadOnlyList<Problem> problems)
@@ -249,7 +269,7 @@ sealed class TrayContext : ApplicationContext
             CopyConfigDetails = () => Guard(() => Clipboard.SetText(
                 $"{_configError?.Headline}\r\n{_configError?.Message}\r\nSettings file: {_paths.ConfigFile}")),
             ShowConfigFile = () => Guard(ShowConfigFile),
-            Exit = ExitThread,
+            Exit = () => Guard(Exit),
         };
 
         if (LoadConfig() is { } cfg)
@@ -265,7 +285,22 @@ sealed class TrayContext : ApplicationContext
 
         var autoOn = false;
         try { autoOn = AutoStart.IsOn(); } catch (Exception) { }
-        TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn), actions);
+        TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count), actions);
+    }
+
+    /// <summary>
+    /// Closes the windows first, so the Profiles window asks about unsaved changes (ExitThread alone would skip its
+    /// FormClosing). Cancel there keeps the tray running.
+    /// </summary>
+    private void Exit()
+    {
+        _problemsForm?.Close();
+        if (_profilesForm is { IsDisposed: false } profiles)
+        {
+            profiles.Close();
+            if (!profiles.IsDisposed && profiles.Visible) return;
+        }
+        ExitThread();
     }
 
     // ---------- actions ----------
@@ -288,7 +323,7 @@ sealed class TrayContext : ApplicationContext
             return;
         }
         if (RequireConfig() == null) return;
-        var form = new ProfilesForm(_pm, name => StartSession(name, null));
+        var form = new ProfilesForm(_pm, StartFromProfiles, () => Guard(ShowProblems));
         form.FormClosed += (_, _) =>
         {
             if (_profilesForm == form) _profilesForm = null;
@@ -310,6 +345,8 @@ sealed class TrayContext : ApplicationContext
         }
         if (_configError is { } err) form.ShowConfigError(err.Headline);
         else form.SetProblems(_problems);
+        form.AddRecent(_recent);
+        _recent.Clear(); // seen: the window keeps them while it's open
         form.ShowAndActivate();
     }
 
@@ -360,6 +397,18 @@ sealed class TrayContext : ApplicationContext
         dir ??= _pm.Get(name).StartDir
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable()));
+    }
+
+    // The Profiles window shows a failed start in a message box: give it the plain words too.
+    private void StartFromProfiles(string name)
+    {
+        try { StartSession(name, null); }
+        catch (Exception e)
+        {
+            var (text, unknown) = TrayText.PlainError(e);
+            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+            throw new ClauderooException(text);
+        }
     }
 
     private void SetDefault(string name)
@@ -507,7 +556,14 @@ sealed class TrayContext : ApplicationContext
     private void Guard(Action action)
     {
         try { action(); }
-        catch (Exception e) { Balloon(e.Message, ToolTipIcon.Warning); }
+        catch (Exception e)
+        {
+            // Core and the launcher speak to the command line: known errors get plain words, the rest a short
+            // balloon that opens the Problems window, where the original text is listed under Recent changes.
+            var (text, unknown) = TrayText.PlainError(e);
+            if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
+            Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
+        }
     }
 
     // Every balloon decides for itself whether clicking it opens the Problems window.

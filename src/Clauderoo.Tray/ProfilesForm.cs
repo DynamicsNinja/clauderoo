@@ -28,6 +28,8 @@ sealed class ProfilesForm : Form
 
     private readonly ProfileManager _pm;
     private readonly Action<string> _startSession;
+    private readonly Action? _showProblems;
+    private Action? _resultLink;   // what the link at the end of the result line does (Undo, Open Problems…)
     private readonly Gcloud _gcloud = new();
     private readonly ToolTip _tips = new();
 
@@ -48,9 +50,9 @@ sealed class ProfilesForm : Form
     private readonly GlyphLabel _homeAccount = new() { Margin = new Padding(0, 0, 0, 8) };
 
     private readonly TableLayoutPanel _providerRow;
-    private readonly RadioButton _rbLogin = Radio("Claude &login");
-    private readonly RadioButton _rbVertex = Radio("Google Verte&x AI");
-    private readonly RadioButton _rbApiKey = Radio("&API key");
+    private readonly RadioButton _rbLogin = Radio(TrayText.AccessKey(TrayText.ClaudeLogin, "login"));
+    private readonly RadioButton _rbVertex = Radio(TrayText.AccessKey(TrayText.Vertex, "x AI"));
+    private readonly RadioButton _rbApiKey = Radio(TrayText.AccessKey(TrayText.ApiKey, "API"));
 
     private readonly TableLayoutPanel _vertexPanel = FieldGrid();
     private readonly TextBox _project = Field("e.g. my-gcp-project");
@@ -147,10 +149,12 @@ sealed class ProfilesForm : Form
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
     private int _baseMinHeight;    // minimum window height for the content measured at startup
 
-    public ProfilesForm(ProfileManager pm, Action<string> startSession)
+    /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
+    public ProfilesForm(ProfileManager pm, Action<string> startSession, Action? showProblems = null)
     {
         _pm = pm;
         _startSession = startSession;
+        _showProblems = showProblems;
 
         Text = BaseTitle;
         StartPosition = FormStartPosition.CenterScreen;
@@ -313,7 +317,7 @@ sealed class ProfilesForm : Form
             EnsureFits();
         };
         _result.SizeChanged += (_, _) => EnsureFits();
-        _result.LinkClicked += (_, _) => Guard(UndoRemove);
+        _result.LinkClicked += (_, _) => { if (_resultLink is { } link) Guard(link); };
         _whatsShared.LinkClicked += (_, _) =>
             MessageBox.Show(this, WhatsSharedText, "What's shared?", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
@@ -863,19 +867,13 @@ sealed class ProfilesForm : Form
             _env.Rows.Clear();
             foreach (var (n, v) in unsaved) _env.Rows.Add(n, v);
             var message = $"Provider saved, but environment variables failed: {e.Message}";
-            var failLines = new List<string> { message };
-            failLines.AddRange(notices.Distinct());
-            failLines.AddRange(problems.Distinct());
-            SetResult(string.Join(Environment.NewLine, failLines), StatusColors.Fail);
+            ShowReport([message, .. notices.Distinct()], problems, failed: true);
             ShowError(message);
             return false;
         }
 
         Reload(name);
-        var lines = new List<string> { problems.Count > 0 ? "Saved, with problems:" : "Saved." };
-        lines.AddRange(notices.Distinct());
-        lines.AddRange(problems.Distinct());
-        SetResult(string.Join(Environment.NewLine, lines), problems.Count > 0 ? StatusColors.Fail : SystemColors.ControlText);
+        ShowReport([problems.Count > 0 ? "Saved, with problems:" : "Saved.", .. notices.Distinct()], problems);
         _showRestart = true;
         UpdateRestartNote();
         return true;
@@ -1236,6 +1234,7 @@ sealed class ProfilesForm : Form
         Reload(null);
         _undoName = name;
         _result.Show($"Removed {name}.", SystemColors.ControlText, "Undo");
+        _resultLink = UndoRemove;
     }
 
     private void UndoRemove()
@@ -1299,17 +1298,40 @@ sealed class ProfilesForm : Form
         ShowResult(report, $"Default is now {name}. New terminals will use it.");
     }
 
-    private void ShowResult(SyncReport report, string message)
+    private void ShowResult(SyncReport report, string message) =>
+        ShowReport([message, .. report.Notices], report.Problems);
+
+    /// <summary>
+    /// The result line: <paramref name="lines"/> (plain sentences), then each problem's plain title (never the raw
+    /// text, which speaks to the command line). The details and fixes are in the tray's Problems window, linked when
+    /// there is one.
+    /// </summary>
+    private void ShowReport(IEnumerable<string> lines, IEnumerable<string> problems, bool failed = false)
     {
-        var lines = new List<string> { message };
-        lines.AddRange(report.Notices);
-        lines.AddRange(report.Problems);
-        SetResult(string.Join(Environment.NewLine, lines), report.Problems.Count > 0 ? StatusColors.Fail : SystemColors.ControlText);
+        var titles = ProblemTitles(problems);
+        var text = string.Join(Environment.NewLine, lines.Concat(titles));
+        var color = failed || titles.Count > 0 ? StatusColors.Fail : SystemColors.ControlText;
+        _undoName = null;
+        if (titles.Count > 0 && _showProblems != null)
+        {
+            _result.Show(text, color, "Open Problems…", Environment.NewLine);
+            _resultLink = _showProblems;
+        }
+        else
+        {
+            _result.Show(text, color);
+            _resultLink = null;
+        }
     }
+
+    /// <summary>The plain titles of raw sync problems, each once.</summary>
+    internal static List<string> ProblemTitles(IEnumerable<string> problems) =>
+        problems.Select(p => ProblemTranslator.Translate(p).Title).Distinct().ToList();
 
     private void SetResult(string text, Color color)
     {
         _undoName = null;
+        _resultLink = null;
         _result.Show(text, color);
     }
 

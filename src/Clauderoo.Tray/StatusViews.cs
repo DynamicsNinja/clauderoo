@@ -105,18 +105,24 @@ internal sealed class WrapLinkLabel : LinkLabel, IWrapping
         LinkArea = new LinkArea(0, 0);
     }
 
-    /// <summary>Shows <paramref name="text"/>, followed by <paramref name="link"/> as a link when given.</summary>
-    public void Show(string text, Color color, string? link = null)
+    /// <summary>
+    /// Shows <paramref name="text"/>, followed by <paramref name="link"/> as a link when given (after
+    /// <paramref name="separator"/>: two spaces, or a new line).
+    /// </summary>
+    public void Show(string text, Color color, string? link = null, string separator = "  ")
     {
         LinkArea = new LinkArea(0, 0);
         ForeColor = color;
+        // LinkLabel's link positions count "\r\n" as one character: use "\n" so the indices below match.
+        text = text.Replace("\r\n", "\n");
+        separator = separator.Replace("\r\n", "\n");
         if (link == null || text.Length == 0)
         {
             Text = text;
             return;
         }
-        Text = text + "  " + link;
-        LinkArea = new LinkArea(text.Length + 2, link.Length);
+        Text = text + separator + link;
+        LinkArea = new LinkArea(text.Length + separator.Length, link.Length);
         Size = GetPreferredSize(Size.Empty); // the link changes the measured height
     }
 

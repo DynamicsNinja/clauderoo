@@ -151,4 +151,56 @@ public class TrayTextTests
             TrayText.SetUpFailed("CLAUDE_CONFIG_DIR is set to 'x'. Clear it, or run 'clauderoo init --home <path>'."));
         Assert.StartsWith("Claude hasn't been used on this PC yet", TrayText.SetUpFailed(@"Home folder not found: C:\u\.claude"));
     }
+
+    // ---- final review fixes ----
+
+    [Fact]
+    public void AccessKey_RadioLabels_UseTrayTerms()
+    {
+        Assert.Equal("Claude &login", TrayText.AccessKey(TrayText.ClaudeLogin, "login"));
+        Assert.Equal("Google Verte&x AI", TrayText.AccessKey(TrayText.Vertex, "x AI"));
+        Assert.Equal("&API key", TrayText.AccessKey(TrayText.ApiKey, "API"));
+        Assert.Equal("abc", TrayText.AccessKey("abc", "z"));
+    }
+
+    [Fact]
+    public void PlainError_LauncherRefusal_NoCliHint()
+    {
+        var (text, unknown) = TrayText.PlainError(new ClauderooException(
+            "Path 'C:\\a%b' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead."));
+        Assert.False(unknown);
+        Assert.DoesNotContain("clauderoo run", text);
+        Assert.StartsWith("This session can't be opened in a new tab", text);
+    }
+
+    [Fact]
+    public void PlainError_UnknownProfile_Plain() =>
+        Assert.Equal(("That profile doesn't exist any more.", false),
+            TrayText.PlainError(new ClauderooException("Unknown profile 'x'.")));
+
+    [Fact]
+    public void PlainError_PlainCoreMessage_Kept() =>
+        Assert.Equal(("clauderoo isn't installed properly — reinstall it.", false),
+            TrayText.PlainError(new ClauderooException("clauderoo isn't installed properly — reinstall it.")));
+
+    [Theory]
+    [InlineData("Refused: run 'clauderoo remove x --force'.")]
+    [InlineData("x is busy; use 'cr start x' instead.")]
+    public void PlainError_CliWording_IsUnknown(string message) =>
+        Assert.Equal((TrayText.SomethingWentWrong, true), TrayText.PlainError(new ClauderooException(message)));
+
+    [Fact]
+    public void PlainError_OtherException_IsUnknown() =>
+        Assert.Equal((TrayText.SomethingWentWrong, true),
+            TrayText.PlainError(new System.ComponentModel.Win32Exception("The system cannot find the file specified")));
+
+    [Fact]
+    public void ProfilesForm_ProblemTitles_PlainAndDistinct()
+    {
+        var titles = ProfilesForm.ProblemTitles([
+            "work: skills is a real folder, not shared (run 'clauderoo share work skills')",
+            "work: skills is a real folder, not shared (run 'clauderoo share work skills')",
+        ]);
+        Assert.Equal(["work keeps its own copy of skills, so it isn't shared"], titles);
+    }
 }

@@ -42,12 +42,15 @@ internal sealed class ProblemsForm : Form
         Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill,
         MinimumSize = new Size(0, 72), Margin = new Padding(0), Visible = false,
     };
+    readonly Label _recentHeading = new() { Text = "Recent changes", AutoSize = true, Margin = new Padding(0, 12, 0, 4), Visible = false };
+    readonly Label _recentText = new() { AutoSize = true, Margin = new Padding(0), Visible = false, UseMnemonic = false };
     readonly LinkLabel _manage = new() { Text = "Open Manage profiles", AutoSize = true, Anchor = AnchorStyles.Left };
     readonly Button _close = new() { Text = "Close", AutoSize = true, Anchor = AnchorStyles.Right, DialogResult = DialogResult.Cancel };
     readonly Panel _actions;
     readonly RowStyle _detailsRow = new(SizeType.AutoSize);
 
     IReadOnlyList<Problem> _problems = [];
+    readonly List<string> _recent = [];
     bool _showTechnical;
     bool _updating;
     bool _busy;
@@ -106,7 +109,7 @@ internal sealed class ProblemsForm : Form
         listHost.Controls.Add(_list);
         listHost.Controls.Add(_empty);
 
-        Control[] rows = [_summary, listHost, _explain, actionRow, _status, _detailsHeading, _details, bottom];
+        Control[] rows = [_summary, listHost, _explain, actionRow, _status, _detailsHeading, _details, _recentHeading, _recentText, bottom];
         var root = new TableLayoutPanel { ColumnCount = 1, RowCount = rows.Length, Dock = DockStyle.Fill, Margin = new Padding(0) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < rows.Length; i++)
@@ -121,7 +124,7 @@ internal sealed class ProblemsForm : Form
 
         // Literals above are logical (96 DPI) units.
         ScaleLiterals(this);
-        _detailsHeading.Font = _bold = new Font(Font, FontStyle.Bold);
+        _detailsHeading.Font = _recentHeading.Font = _bold = new Font(Font, FontStyle.Bold);
 
         var images = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = LogicalToDeviceUnits(new Size(GlyphSize, GlyphSize)) };
         images.Images.Add(Glyphs.Get(Glyph.Warning, GlyphSize, DeviceDpi, StatusColors.Warn)); // copied into the list
@@ -172,6 +175,20 @@ internal sealed class ProblemsForm : Form
         finally { _updating = false; }
         ShowSelected();
         FitColumns();
+    }
+
+    const int RecentMax = 8;
+
+    /// <summary>
+    /// Adds to the "Recent changes" list: what clauderoo did or noticed without a balloon (at startup, or an error the
+    /// balloon only summarised). The tray hands each line over once; the list lasts while the window is open.
+    /// </summary>
+    public void AddRecent(IEnumerable<string> lines)
+    {
+        _recent.AddRange(lines);
+        if (_recent.Count > RecentMax) _recent.RemoveRange(0, _recent.Count - RecentMax);
+        _recentHeading.Visible = _recentText.Visible = _recent.Count > 0;
+        _recentText.Text = string.Join(Environment.NewLine, _recent.Select(l => "• " + l));
     }
 
     /// <summary>The settings can't be loaded, so there's nothing to list: say so instead of "No problems".</summary>
@@ -264,7 +281,7 @@ internal sealed class ProblemsForm : Form
     void WrapLabels()
     {
         var width = Math.Max(1, ClientSize.Width - Padding.Horizontal);
-        foreach (var l in new[] { _summary, _explain, _status }) l.MaximumSize = new Size(width, 0);
+        foreach (var l in new[] { _summary, _explain, _status, _recentText }) l.MaximumSize = new Size(width, 0);
         _emptyText.MaximumSize = new Size(Math.Max(1, width - LogicalToDeviceUnits(48)), 0);
     }
 

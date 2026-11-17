@@ -7,7 +7,8 @@ internal sealed record TrayMenuState(
     IReadOnlyList<ProfileInfo> Profiles,
     IReadOnlyList<Problem> Problems,
     IReadOnlyDictionary<string, int> Running,
-    bool AutoStartOn)
+    bool AutoStartOn,
+    int RecentCount = 0)
 {
     public int RunningTotal => Running.Values.Sum();
     public ProfileInfo? Default => Profiles.FirstOrDefault(p => p.IsDefault) ?? Profiles.FirstOrDefault(p => p.IsHome);
@@ -72,6 +73,8 @@ internal static class TrayMenu
             header.Image = Glyphs.Get(Glyph.Ok, GlyphSize, dpi, StatusColors.Ok);
             header.Tag = new ColourGlyph();
             items.Add(header);
+            // Without problems the Problems window is reached here, for what changed without a balloon.
+            if (s.RecentCount > 0) items.Add(Item("Recent &changes…", null, a.ShowProblems));
         }
         items.Add(new ToolStripSeparator());
 

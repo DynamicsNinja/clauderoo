@@ -150,6 +150,38 @@ internal static class TrayText
 
     public static string Cut(string s, int max = TooltipMax) => s.Length <= max ? s : s[..(max - 1)] + "…";
 
+    /// <summary><paramref name="text"/> with a mnemonic (&amp;) before the first <paramref name="at"/>: ("Claude login", "login") → "Claude &amp;login".</summary>
+    public static string AccessKey(string text, string at)
+    {
+        var i = text.IndexOf(at, StringComparison.Ordinal);
+        return i < 0 ? text : text[..i] + "&" + text[i..];
+    }
+
+    public const string SomethingWentWrong = "Something went wrong — see Problems for details.";
+
+    /// <summary>
+    /// Plain words for an error from something started in the tray. Core and the launcher speak to the command line
+    /// ("use 'clauderoo run' instead"), so known errors are reworded; <c>Unknown</c> is true for text not meant for
+    /// people, which is replaced by <see cref="SomethingWentWrong"/> (the raw text goes to the Problems window).
+    /// </summary>
+    public static (string Text, bool Unknown) PlainError(Exception e)
+    {
+        var m = e.Message;
+        if (m.Contains("can't be passed through a new terminal window"))
+            return ("This session can't be opened in a new tab: a folder it uses has characters like % ; or ! in its name. Choose a different start folder.", false);
+        if (m.StartsWith("Unknown profile '", StringComparison.Ordinal))
+            return ("That profile doesn't exist any more.", false);
+        if (e is ClauderooException && !LooksLikeCli(m))
+            return (m, false);
+        return (SomethingWentWrong, true);
+    }
+
+    static bool LooksLikeCli(string m) =>
+        m.Contains("'clauderoo ") || m.Contains("'cr ") || m.Contains("--") || m.Contains("clauderoo.exe");
+
+    /// <summary>A line for the Problems window's "Recent changes" list about an error the balloon only summarised.</summary>
+    public static string RecentError(string raw) => "Something went wrong: " + raw;
+
     /// <summary>One balloon for a sync's notices.</summary>
     public static string Notices(IReadOnlyList<string> notices) =>
         notices.Count == 1 ? Cut(notices[0], 250) : Cut($"{notices.Count} updates: " + string.Join(" · ", notices), 250);
