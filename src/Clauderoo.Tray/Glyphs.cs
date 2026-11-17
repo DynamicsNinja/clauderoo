@@ -73,37 +73,57 @@ internal static class Glyphs
         _ => throw new ArgumentOutOfRangeException(nameof(glyph), glyph, null),
     };
 
-    // Used only when neither icon font is installed (pre-Windows 10).
+    // Used only when neither icon font is installed (pre-Windows 10): ASCII or WGL4 characters every Windows font has.
     static string FallbackText(Glyph glyph) => glyph switch
     {
-        Glyph.Play => "▶",
-        Glyph.FolderOpen or Glyph.Folder => "□",
-        Glyph.Star => "★",
-        Glyph.StarOutline => "☆",
+        Glyph.Play => "►",
+        Glyph.FolderOpen => "□",
+        Glyph.Folder => "■",
+        Glyph.Star => "♦",
+        Glyph.StarOutline => "◊",
         Glyph.Home => "⌂",
         Glyph.Person => "☺",
-        Glyph.Cloud => "☁",
-        Glyph.Key => "•",
-        Glyph.Settings => "⚙",
+        Glyph.Cloud => "○",
+        Glyph.Key => "K",
+        Glyph.Settings => "*",
         Glyph.Add => "+",
-        Glyph.Rename => "✎",
+        Glyph.Rename => "≡",
         Glyph.Delete => "×",
         Glyph.Warning => "!",
-        Glyph.Error => "✖",
-        Glyph.Ok or Glyph.Check => "✓",
+        Glyph.Error => "X",
+        Glyph.Ok => "√",
+        Glyph.Check => "v",
+        Glyph.Diagnostic => "?",
         Glyph.Info => "i",
-        Glyph.Exit => "⏻",
-        Glyph.Refresh => "↻",
-        Glyph.Undo => "↶",
-        Glyph.Diagnostic => "✓",
-        Glyph.Remove => "–",
+        Glyph.Exit => "x",
+        Glyph.Refresh => "↕",
+        Glyph.Undo => "←",
+        Glyph.Remove => "-",
         Glyph.Save => "↓",
         _ => "?",
     };
 
+    static readonly Dictionary<(Glyph, int, int, int), Bitmap> Cache = [];
+
+    /// <summary>
+    /// Like <see cref="Render"/>, but returns a <b>shared, cached</b> bitmap (one per glyph, size, DPI and colour).
+    /// Callers must not dispose or modify it. Use this for menu items and buttons; use <see cref="Render"/> when
+    /// you need a bitmap you own.
+    /// </summary>
+    public static Bitmap Get(Glyph glyph, int logicalSize, int dpi, Color? color = null)
+    {
+        var ink = color ?? SystemColors.ControlText;
+        var key = (glyph, logicalSize, dpi, ink.ToArgb());
+        lock (Cache)
+        {
+            if (!Cache.TryGetValue(key, out var bmp)) Cache[key] = bmp = Render(glyph, logicalSize, dpi, ink);
+            return bmp;
+        }
+    }
     /// <summary>
     /// A square bitmap of <paramref name="logicalSize"/> × <paramref name="dpi"/>/96 pixels (16 logical at 144 DPI → 24 px)
-    /// with the glyph drawn in <paramref name="color"/> (default <see cref="SystemColors.ControlText"/>). The caller owns it.
+    /// with the glyph drawn in <paramref name="color"/> (default <see cref="SystemColors.ControlText"/>). A new bitmap that
+    /// the caller owns and disposes; see <see cref="Get"/> for the cached, shared variant.
     /// </summary>
     public static Bitmap Render(Glyph glyph, int logicalSize, int dpi, Color? color = null)
     {
@@ -121,7 +141,7 @@ internal static class Glyphs
             var ascent = px * family.GetCellAscent(FontStyle.Regular) / (float)family.GetEmHeight(FontStyle.Regular);
             using var format = (StringFormat)StringFormat.GenericTypographic.Clone();
             format.FormatFlags |= StringFormatFlags.NoClip | StringFormatFlags.NoWrap;
-            g.DrawString(CodePoint(glyph).ToString(), font, brush, 0, px - ascent, format);
+            g.DrawString(CodePoint(glyph).ToString(), font, brush, 0, MathF.Round(px - ascent), format);
         }
         else
         {
@@ -140,8 +160,9 @@ internal static class Glyphs
 }
 
 /// <summary>
-/// Fluent status colours (about 4.5:1 or better on the Control background). In High Contrast they become
-/// <see cref="SystemColors.WindowText"/> / <see cref="SystemColors.GrayText"/>: the glyph's shape carries the meaning.
+/// Fluent status colours (about 4.5:1 or better on the Control background). In High Contrast Ok, Warn, Fail and Accent
+/// become <see cref="SystemColors.WindowText"/>: the glyph's shape carries the meaning. Muted is always
+/// <see cref="SystemColors.GrayText"/>, which follows the theme on its own.
 /// </summary>
 internal static class StatusColors
 {

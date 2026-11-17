@@ -27,7 +27,7 @@ sealed class TrayContext : ApplicationContext
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         _ui = SynchronizationContext.Current!;
         _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now);
-        _appIcon = AppIcons.Load(AppIconState.Normal, SystemInformation.SmallIconSize);
+        _appIcon = AppIcons.Load(AppIconState.Normal, SystemInformation.SmallIconSize, SystemInformation.HighContrast);
 
         _menu.Opening += (_, _) => RebuildMenu();
         _icon = new NotifyIcon { Icon = _appIcon, Text = "clauderoo", ContextMenuStrip = _menu, Visible = true };

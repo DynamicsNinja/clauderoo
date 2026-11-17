@@ -21,7 +21,7 @@ static class Program
     static readonly Color BackFill = Hex("#F0B8A2");
     static readonly Color Rim = Hex("#8F3F25");
     static readonly Color Ink = Color.White;
-    static readonly Color Mono = Color.Black;   // app-hc.ico; the app tints it to SystemColors.WindowText
+    static readonly Color Mono = Color.Black;   // app-hc*.ico; the app tints them to SystemColors.WindowText
 
     static readonly Color ErrorFill = Hex("#C42B1C");
     static readonly Color WarnFill = Hex("#F7C300");
@@ -29,29 +29,33 @@ static class Program
     static readonly Color RunFill = Hex("#107C10");
     static readonly Color BadgeRing = Color.White;
 
-    enum Variant { Normal, Warning, Error, Running, HighContrast }
+
 
     static int Main(string[] args)
     {
         var outDir = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(FindRepoRoot(), "src", "Clauderoo.Tray", "Icons");
         Directory.CreateDirectory(outDir);
 
-        var files = new (Variant Variant, string Name)[]
+        // Colour set plus a monochrome (High Contrast) set; each with no badge and the three state badges.
+        var files = new (Badge? Badge, bool Mono, string Name)[]
         {
-            (Variant.Normal, "app.ico"),
-            (Variant.Warning, "state-warning.ico"),
-            (Variant.Error, "state-error.ico"),
-            (Variant.Running, "state-running.ico"),
-            (Variant.HighContrast, "app-hc.ico"),
+            (null, false, "app.ico"),
+            (Badge.Warning, false, "state-warning.ico"),
+            (Badge.Error, false, "state-error.ico"),
+            (Badge.Running, false, "state-running.ico"),
+            (null, true, "app-hc.ico"),
+            (Badge.Warning, true, "app-hc-warning.ico"),
+            (Badge.Error, true, "app-hc-error.ico"),
+            (Badge.Running, true, "app-hc-running.ico"),
         };
 
         var failures = 0;
-        foreach (var (variant, name) in files)
+        foreach (var (badge, mono, name) in files)
         {
             var frames = new List<IcoFile.Frame>();
             foreach (var size in Sizes)
             {
-                using var bmp = Draw(variant, size);
+                using var bmp = Draw(badge, mono, size);
                 using var ms = new MemoryStream();
                 bmp.Save(ms, ImageFormat.Png);
                 frames.Add(new IcoFile.Frame(size, size, ms.ToArray()));
@@ -127,14 +131,14 @@ static class Program
 
     // ---------------------------------------------------------------- drawing
 
-    static Bitmap Draw(Variant v, int s)
+    static Bitmap Draw(Badge? badge, bool mono, int s)
     {
         var bmp = new Bitmap(s, s, PixelFormat.Format32bppArgb);
         var l = LayoutFor(s);
 
         using (var g = NewGraphics(bmp))
         {
-            if (v == Variant.HighContrast)
+            if (mono)
             {
                 var stroke = Math.Max(1, (int)Math.Round(s / 24.0));
                 if (l.Back is { } back)
@@ -156,14 +160,8 @@ static class Program
             }
         }
 
-        DrawC(bmp, l.Front, v == Variant.HighContrast ? Mono : Ink);
-
-        switch (v)
-        {
-            case Variant.Warning: DrawBadge(bmp, s, Badge.Warning); break;
-            case Variant.Error: DrawBadge(bmp, s, Badge.Error); break;
-            case Variant.Running: DrawBadge(bmp, s, Badge.Running); break;
-        }
+        DrawC(bmp, l.Front, mono ? Mono : Ink);
+        if (badge is { } kind) DrawBadge(bmp, s, kind, mono);
         return bmp;
     }
 
@@ -274,49 +272,50 @@ static class Program
         _ => (int)Math.Round(14.0 * s / 32),
     };
 
+    // Symbol masks for the small badges, hand-drawn on the pixel grid (the 9 px × has 2 px arms).
     static readonly Dictionary<(Badge, int), string[]> BadgeMasks = new()
     {
         [(Badge.Error, 7)] =
         [
             ".......",
-            ".#...#.",
+            ".:...:.",
             "..#.#..",
             "...#...",
             "..#.#..",
-            ".#...#.",
+            ".:...:.",
             ".......",
         ],
         [(Badge.Error, 9)] =
         [
             ".........",
             ".........",
-            "..#...#..",
-            "...#.#...",
+            "..##.##..",
+            "...###...",
             "....#....",
-            "...#.#...",
-            "..#...#..",
+            "...###...",
+            "..##.##..",
             ".........",
             ".........",
         ],
         [(Badge.Running, 7)] =
         [
             ".......",
-            "..#....",
-            "..##...",
-            "..###..",
-            "..##...",
-            "..#....",
+            "..#+...",
+            "..##o..",
+            "..####.",
+            "..##o..",
+            "..#+...",
             ".......",
         ],
         [(Badge.Running, 9)] =
         [
             ".........",
             ".........",
-            "...#.....",
-            "...##....",
-            "...###...",
-            "...##....",
-            "...#.....",
+            "...#+....",
+            "...##o...",
+            "...####..",
+            "...##o...",
+            "...#+....",
             ".........",
             ".........",
         ],
@@ -344,21 +343,31 @@ static class Program
         ],
     };
 
-    static void DrawBadge(Bitmap bmp, int s, Badge kind)
+    // Shapes differ so the state reads without colour: error = circle with ×, warning = triangle with !,
+    // running = rounded square with ▶. In the monochrome set the ring and the symbol are knocked out (transparent).
+    static void DrawBadge(Bitmap bmp, int s, Badge kind, bool mono)
     {
         var b = BadgeSize(s);
         var x = s - b;
         var y = s - b;
         var ring = Math.Max(1f, (float)Math.Round(b / 14.0));
 
-        using (var g = NewGraphics(bmp))
         using (var shape = BadgeShape(kind, x, y, b))
         {
-            using (var ringPen = new Pen(BadgeRing, 2 * ring) { LineJoin = LineJoin.Round })
-                g.DrawPath(ringPen, shape);
-            using (var fill = new SolidBrush(kind switch { Badge.Error => ErrorFill, Badge.Warning => WarnFill, _ => RunFill }))
+            using (var ringMask = Mask(s, g =>
+            {
+                using var pen = new Pen(Color.White, 2 * ring) { LineJoin = LineJoin.Round };
+                g.DrawPath(pen, shape);
+                g.FillPath(Brushes.White, shape);
+            }))
+            {
+                if (mono) Erase(bmp, ringMask); else Composite(bmp, ringMask, BadgeRing);
+            }
+
+            using var g = NewGraphics(bmp);
+            using (var fill = new SolidBrush(mono ? Mono : kind switch { Badge.Error => ErrorFill, Badge.Warning => WarnFill, _ => RunFill }))
                 g.FillPath(fill, shape);
-            if (kind == Badge.Warning && b >= 11)   // too small for an outline below 11 px; the ring separates it
+            if (!mono && kind == Badge.Warning && b >= 11)   // too small for an outline below 11 px; the ring separates it
             {
                 using var inset = BadgeShape(kind, x, y, b, inset: 1);
                 using var outline = new Pen(WarnOutline, 1f) { LineJoin = LineJoin.Round };
@@ -366,68 +375,110 @@ static class Program
             }
         }
 
-        var symbol = kind == Badge.Warning ? Color.Black : Color.White;
+        using var symbol = SymbolMask(kind, s, x, y, b);
+        if (mono) Erase(bmp, symbol);
+        else Composite(bmp, symbol, kind == Badge.Warning ? Color.Black : Color.White);
+    }
+
+    static Bitmap SymbolMask(Badge kind, int s, int x, int y, int b)
+    {
         if (BadgeMasks.TryGetValue((kind, b), out var mask))
         {
-            Stamp(bmp, mask, x, y, symbol);
-            return;
+            var m = new Bitmap(s, s, PixelFormat.Format32bppArgb);
+            Stamp(m, mask, x, y, Color.White);
+            return m;
         }
 
-        using var g2 = NewGraphics(bmp);
-        var w = Math.Max(1.5f, b * 0.14f);
-        switch (kind)
+        return Mask(s, g =>
         {
-            case Badge.Error:
+            var w = Math.Max(1.5f, b * 0.14f);
+            switch (kind)
             {
-                var c = new PointF(x + b / 2f, y + b / 2f);
-                var k = b * 0.2f;
-                using var pen = new Pen(symbol, w) { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
-                g2.DrawLine(pen, c.X - k, c.Y - k, c.X + k, c.Y + k);
-                g2.DrawLine(pen, c.X - k, c.Y + k, c.X + k, c.Y - k);
-                break;
-            }
-            case Badge.Running:
-            {
-                using var brush = new SolidBrush(symbol);
-                g2.FillPolygon(brush, new[]
+                case Badge.Error:
                 {
-                    new PointF(x + b * 0.38f, y + b * 0.27f),
-                    new PointF(x + b * 0.38f, y + b * 0.73f),
-                    new PointF(x + b * 0.76f, y + b * 0.50f),
-                });
-                break;
+                    var c = new PointF(x + b / 2f, y + b / 2f);
+                    var k = b * 0.2f;
+                    using var pen = new Pen(Color.White, w) { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
+                    g.DrawLine(pen, c.X - k, c.Y - k, c.X + k, c.Y + k);
+                    g.DrawLine(pen, c.X - k, c.Y + k, c.X + k, c.Y - k);
+                    break;
+                }
+                case Badge.Running:
+                    g.FillPolygon(Brushes.White, new[]
+                    {
+                        new PointF(x + b * 0.34f, y + b * 0.24f),
+                        new PointF(x + b * 0.34f, y + b * 0.76f),
+                        new PointF(x + b * 0.78f, y + b * 0.50f),
+                    });
+                    break;
+                case Badge.Warning:
+                {
+                    var cx = x + b / 2f;
+                    g.FillRectangle(Brushes.White, cx - w / 2, y + b * 0.34f, w, b * 0.34f);
+                    g.FillRectangle(Brushes.White, cx - w / 2, y + b * 0.74f, w, w);
+                    break;
+                }
             }
-            case Badge.Warning:
-            {
-                using var brush = new SolidBrush(symbol);
-                var cx = x + b / 2f;
-                g2.FillRectangle(brush, cx - w / 2, y + b * 0.34f, w, b * 0.34f);
-                g2.FillRectangle(brush, cx - w / 2, y + b * 0.74f, w, w);
-                break;
-            }
-        }
+        });
     }
 
     static GraphicsPath BadgeShape(Badge kind, float x, float y, float b, float inset = 0)
     {
         var p = new GraphicsPath();
-        if (kind == Badge.Warning)
+        switch (kind)
         {
-            p.AddPolygon(new[]
-            {
-                new PointF(x + b / 2f, y + inset),
-                new PointF(x + b - inset, y + b - inset),
-                new PointF(x + inset, y + b - inset),
-            });
-        }
-        else
-        {
-            p.AddEllipse(x + inset, y + inset, b - 2 * inset, b - 2 * inset);
+            case Badge.Warning:
+                p.AddPolygon(new[]
+                {
+                    new PointF(x + b / 2f, y + inset),
+                    new PointF(x + b - inset, y + b - inset),
+                    new PointF(x + inset, y + b - inset),
+                });
+                break;
+            case Badge.Running:
+                p.Dispose();
+                return RoundedRect(new RectangleF(x + inset, y + inset, b - 2 * inset, b - 2 * inset), Math.Max(1f, b * 0.22f));
+            default:
+                p.AddEllipse(x + inset, y + inset, b - 2 * inset, b - 2 * inset);
+                break;
         }
         return p;
     }
 
     // ---------------------------------------------------------------- helpers
+
+    // A white-on-transparent coverage mask, drawn anti-aliased.
+    static Bitmap Mask(int s, Action<Graphics> draw)
+    {
+        var m = new Bitmap(s, s, PixelFormat.Format32bppArgb);
+        using var g = NewGraphics(m);
+        draw(g);
+        return m;
+    }
+
+    // Paints color over the bitmap with the mask's alpha as coverage.
+    static void Composite(Bitmap bmp, Bitmap mask, Color color)
+    {
+        for (var y = 0; y < bmp.Height; y++)
+        for (var x = 0; x < bmp.Width; x++)
+        {
+            var a = mask.GetPixel(x, y).A / 255f;
+            if (a > 0) Blend(bmp, x, y, color, a);
+        }
+    }
+
+    // Removes coverage: alpha *= (1 - mask alpha).
+    static void Erase(Bitmap bmp, Bitmap mask)
+    {
+        for (var y = 0; y < bmp.Height; y++)
+        for (var x = 0; x < bmp.Width; x++)
+        {
+            var a = mask.GetPixel(x, y).A / 255f;
+            if (a <= 0) continue;
+            var d = bmp.GetPixel(x, y);
+            bmp.SetPixel(x, y, Color.FromArgb((int)Math.Round(d.A * (1 - a)), d.R, d.G, d.B));
+        }
+    }
 
     // Source-over blend of a pixel mask onto the bitmap.
     static void Stamp(Bitmap bmp, string[] mask, int x0, int y0, Color color)
@@ -436,16 +487,20 @@ static class Program
         for (var x = 0; x < mask[y].Length; x++)
         {
             var a = mask[y][x] switch { '#' => 1f, 'o' => 0.8f, '+' => 0.55f, ':' => 0.3f, _ => 0f };
-            if (a <= 0) continue;
             var px = x0 + x;
             var py = y0 + y;
-            if (px < 0 || py < 0 || px >= bmp.Width || py >= bmp.Height) continue;
-            var d = bmp.GetPixel(px, py);
-            var da = d.A / 255f;
-            var oa = a + da * (1 - a);
-            int Mix(int src, int dst) => (int)Math.Round((src * a + dst * da * (1 - a)) / oa);
-            bmp.SetPixel(px, py, Color.FromArgb((int)Math.Round(oa * 255), Mix(color.R, d.R), Mix(color.G, d.G), Mix(color.B, d.B)));
+            if (a <= 0 || px < 0 || py < 0 || px >= bmp.Width || py >= bmp.Height) continue;
+            Blend(bmp, px, py, color, a);
         }
+    }
+
+    static void Blend(Bitmap bmp, int px, int py, Color color, float a)
+    {
+        var d = bmp.GetPixel(px, py);
+        var da = d.A / 255f;
+        var oa = a + da * (1 - a);
+        int Mix(int src, int dst) => (int)Math.Round((src * a + dst * da * (1 - a)) / oa);
+        bmp.SetPixel(px, py, Color.FromArgb((int)Math.Round(oa * 255), Mix(color.R, d.R), Mix(color.G, d.G), Mix(color.B, d.B)));
     }
 
     static Color Hex(string hex) => ColorTranslator.FromHtml(hex);
