@@ -14,6 +14,6 @@ Dependencies:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/DynamicsNinja/clauderoo/releases/download/v0.1.0/clauderoo-0.1.0-win-x64.zip
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 9B6227E68C7E08A930F9422AE6FC0BDA5BB770831FA60796A3782DECBFDB6A68
 ManifestType: installer
 ManifestVersion: 1.6.0
