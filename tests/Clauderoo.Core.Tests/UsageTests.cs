@@ -113,6 +113,15 @@ public class UsageTests
     // --- UsageClient ---
 
     [Fact]
+    public void CreateHandler_NoCookiesNoRedirects()
+    {
+        // One account's cookies must never ride along with another account's request; the token never follows a redirect.
+        using var handler = UsageClient.CreateHandler();
+        Assert.False(handler.UseCookies);
+        Assert.False(handler.AllowAutoRedirect);
+    }
+
+    [Fact]
     public async Task Fetch_Vertex_NotTracked_NoHttp()
     {
         using var h = new TempHome();

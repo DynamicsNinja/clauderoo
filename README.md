@@ -49,7 +49,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
 - **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
-- **Safe by design.** Removed profiles are moved, never deleted. Sign-in tokens are only read in memory to fetch usage, and are never written, copied, logged or shown.
+- **Safe by design.** Removed profiles are moved, never deleted. To fetch usage it reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only; the token is never written, copied, logged or shown.
 
 ## Screenshots
 
@@ -268,7 +268,7 @@ If you edit a copied file inside a profile, the next sync replaces it with home'
 ### Safety guarantees
 
 - clauderoo never writes inside `~/.claude` or `~/.claude.json`.
-- clauderoo reads each Claude-login profile's access token from `.credentials.json` only in memory, to fetch usage, and never writes, copies, logs or shows it. Tokens are never refreshed by clauderoo.
+- From each Claude-login profile's `.credentials.json`, clauderoo reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only, to fetch usage. It never writes, copies, logs or shows the token, and never refreshes it.
 - Tokens and API keys are never printed or logged, and API keys are stored only in encrypted form.
 - Removed profiles are moved, never deleted, and junctions are unlinked before a move.
 

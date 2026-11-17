@@ -127,6 +127,78 @@ public class UsagePollerTests
     }
 
     [Fact]
+    public async Task Poller_ProfileRemovedDuringFetch_NoCacheEntry()
+    {
+        using var home = new TempHome();
+        var now = new DateTimeOffset(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
+        var cache = new UsageCache(home.Paths);
+        UsagePoller? poller = null;
+        using var p = poller = new UsagePoller((t, _) =>
+        {
+            poller!.SetTargets([]); // the profile is removed while its fetch is in flight
+            return Task.FromResult<UsageResult>(new UsageResult.Ok(Reading(t.Name, now, 42)));
+        }, cache, () => now);
+        poller.SetTargets([new PollTarget("gone", "d", new ProfileEntry(), false)]);
+        IReadOnlyDictionary<string, UsageResult>? seen = null;
+        poller.Updated += r => seen = r;
+
+        await poller.RefreshNowAsync();
+
+        Assert.False(cache.Load().ContainsKey("gone"));
+        Assert.False(seen?.ContainsKey("gone") ?? false);
+    }
+
+    [Theory]
+    [InlineData("expired")]
+    [InlineData("notTracked")]
+    [InlineData("notSignedIn")]
+    public async Task Poller_ExpiredDoesNotBackOff(string kind)
+    {
+        using var home = new TempHome();
+        var now = new DateTimeOffset(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
+        var calls = 0;
+        UsageResult result = kind switch
+        {
+            "expired" => new UsageResult.Expired(),
+            "notTracked" => new UsageResult.NotTracked(Providers.Vertex),
+            _ => new UsageResult.NotSignedIn(),
+        };
+        using var poller = new UsagePoller((_, _) => { calls++; return Task.FromResult(result); },
+            new UsageCache(home.Paths), () => now);
+        poller.SetTargets([new PollTarget("work", "d", new ProfileEntry(), false)]);
+
+        // Many passes in a row, each 5 minutes apart: never stretched past the normal interval.
+        for (var i = 1; i <= 6; i++)
+        {
+            await poller.PollDueAsync(CancellationToken.None);
+            Assert.Equal(i, calls);
+            now = now.AddMinutes(5);
+        }
+    }
+
+    [Fact]
+    public async Task Poller_FailuresBackOff_SessionStartResets()
+    {
+        using var home = new TempHome();
+        var now = new DateTimeOffset(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
+        var calls = 0;
+        using var poller = new UsagePoller((_, _) => { calls++; return Task.FromResult<UsageResult>(new UsageResult.Failed("down")); },
+            new UsageCache(home.Paths), () => now);
+        poller.SetTargets([new PollTarget("work", "d", new ProfileEntry(), false)]);
+
+        for (var i = 0; i < 5; i++) await poller.RefreshNowAsync(); // 5 straight failures: 30 min back-off
+        Assert.Equal(5, calls);
+        now = now.AddMinutes(5);
+        await poller.PollDueAsync(CancellationToken.None);
+        Assert.Equal(5, calls); // backed off
+
+        // a session starts: the slate is clean, so it's due at the 2-minute active interval
+        poller.SetTargets([new PollTarget("work", "d", new ProfileEntry(), true)]);
+        await poller.PollDueAsync(CancellationToken.None);
+        Assert.Equal(6, calls);
+    }
+
+    [Fact]
     public void UsageView_KeepsLastReadingWhenFetchFails()
     {
         var at = new DateTimeOffset(2026, 11, 17, 9, 0, 0, TimeSpan.Zero);

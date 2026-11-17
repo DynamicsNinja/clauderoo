@@ -127,7 +127,58 @@ public class CliUsageTests
         Assert.Equal("5h", w[0].GetProperty("name").GetString());
         Assert.Equal(42, w[0].GetProperty("percent").GetDouble());
         Assert.Equal("2026-11-17T15:40:00Z", w[0].GetProperty("resetsAt").GetString());
+        Assert.Equal(JsonValueKind.Null, p.GetProperty("message").ValueKind); // only failed and unavailable rows say why
         Assert.DoesNotContain(Token, r.o);
+    }
+
+    [Fact]
+    public void Usage_Json_Failed_HasScrubbedMessage()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var r = Run(pm, new Handler(() => Resp(HttpStatusCode.InternalServerError, $"echo {Token}")), "usage", "work", "--json");
+        Assert.Equal(1, r.code);
+        using var doc = JsonDocument.Parse(r.o);
+        var p = Assert.Single(doc.RootElement.GetProperty("profiles").EnumerateArray());
+        Assert.Equal("failed", p.GetProperty("status").GetString());
+        var message = p.GetProperty("message").GetString();
+        Assert.Contains("HTTP 500", message);
+        Assert.DoesNotContain(Token, message);
+        Assert.DoesNotContain(Token, r.o + r.e);
+    }
+
+    [Fact]
+    public void Usage_Unavailable_FallsBackToCache_JsonHasMessage()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var fetched = new DateTimeOffset(2026, 11, 17, 9, 30, 0, TimeSpan.Zero);
+        new UsageCache(home.Paths).Put(new UsageReading("work", fetched, "Max", [new UsageWindow("5h", 33, null)]));
+        var h = new Handler(() => Resp(HttpStatusCode.OK, "[]")); // not the expected object: Unavailable
+
+        var text = Run(pm, h, "usage", "work");
+        Assert.Equal(0, text.code);
+        Assert.Contains("33%", text.o);
+        Assert.Contains($"as of {fetched.ToLocalTime():HH:mm}", text.o);
+
+        var r = Run(pm, h, "usage", "work", "--json");
+        Assert.Equal(0, r.code);
+        using var doc = JsonDocument.Parse(r.o);
+        var p = Assert.Single(doc.RootElement.GetProperty("profiles").EnumerateArray());
+        Assert.Equal("unavailable", p.GetProperty("status").GetString());
+        Assert.Equal(33, p.GetProperty("windows")[0].GetProperty("percent").GetDouble());
+        Assert.Equal("2026-11-17T09:30:00Z", p.GetProperty("fetchedAt").GetString());
+        Assert.Contains("unexpected", p.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public void Usage_Unavailable_NoCache_Exit1()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var r = Run(pm, new Handler(() => Resp(HttpStatusCode.OK, "[]")), "usage", "work");
+        Assert.Equal(1, r.code);
+        Assert.Contains("unexpected", r.o);
     }
 
     [Fact]
@@ -191,8 +242,10 @@ public class CliUsageTests
         using var _h = home;
         new UsageCache(home.Paths).Put(new UsageReading("work", Now, "Pro",
             [new UsageWindow("5h", 42, null), new UsageWindow("7d", 63, null)]));
-        var r = Run(pm, new Handler(() => throw new InvalidOperationException("no http")), "list");
+        var h = new Handler(() => throw new InvalidOperationException("no http"));
+        var r = Run(pm, h, "list");
         Assert.Equal(0, r.code);
+        Assert.Equal(0, h.Calls); // list reads the cache only
         var work = r.o.Split('\n').Single(l => l.Contains("work"));
         Assert.Contains("42%/63%", work);
         var personal = r.o.Split('\n').Single(l => l.Contains("personal"));
@@ -204,7 +257,9 @@ public class CliUsageTests
     {
         var (pm, home) = Make();
         using var _h = home;
-        var r = Run(pm, new Handler(() => throw new InvalidOperationException("no http")), "list");
+        var h = new Handler(() => throw new InvalidOperationException("no http"));
+        var r = Run(pm, h, "list");
         Assert.DoesNotContain("%", r.o);
+        Assert.Equal(0, h.Calls);
     }
 }

@@ -25,7 +25,7 @@ sealed class TrayContext : ApplicationContext
     private readonly ProblemTracker _alerted = new();
     private readonly EventWaitHandle _manageSignal;
     // Usage: one long-lived client (and its handler) for the life of the tray, polled on a background task.
-    private readonly HttpClientHandler _usageHandler = new();
+    private readonly HttpClientHandler _usageHandler = UsageClient.CreateHandler();
     private readonly UsageClient _usageClient;
     private readonly UsagePoller _poller;
     private readonly UsageView _usage = new();
@@ -66,7 +66,7 @@ sealed class TrayContext : ApplicationContext
         _usageClient = new UsageClient(_usageHandler, () => DateTimeOffset.UtcNow, version);
         var cache = new UsageCache(_paths);
         _poller = new UsagePoller((t, ct) => _usageClient.FetchAsync(t.Name, t.ConfigDir, t.Entry, ct), cache, () => DateTimeOffset.UtcNow);
-        _poller.Updated += results => Post(() => _usage.Apply(results)); // raised on a worker thread
+        _poller.Updated += results => Post(() => Guard(() => _usage.Apply(results))); // raised on a worker thread
         _usage.Refresh = _poller.RefreshNowAsync;
         // Last known readings first (the cache's lock can take a moment: off the UI thread), then live ones.
         Task.Run(() =>
@@ -74,7 +74,7 @@ sealed class TrayContext : ApplicationContext
             try
             {
                 var cached = cache.Load();
-                Post(() => _usage.Seed(cached));
+                Post(() => Guard(() => _usage.Seed(cached)));
             }
             catch (Exception) { /* no cache yet, or locked: the first poll fills it */ }
         });
@@ -128,7 +128,7 @@ sealed class TrayContext : ApplicationContext
         // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
         // The first sync also hands the poller its profiles; it starts polling after that.
         Post(() => Guard(FullSync));
-        Post(_poller.Start);
+        Post(() => Guard(_poller.Start));
     }
 
     // ---------- state ----------

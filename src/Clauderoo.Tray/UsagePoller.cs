@@ -63,13 +63,21 @@ internal sealed class UsagePoller(
 
     public event Action<IReadOnlyDictionary<string, UsageResult>>? Updated;
 
-    /// <summary>The profiles to poll (Claude-login ones). Profiles no longer listed are forgotten.</summary>
+    /// <summary>
+    /// The profiles to poll (Claude-login ones). Profiles no longer listed are forgotten. A profile whose session just
+    /// started gets a clean slate: its failures no longer stretch the interval.
+    /// </summary>
     public void SetTargets(IEnumerable<PollTarget> targets)
     {
         lock (_lock)
         {
+            var before = new Dictionary<string, bool>(StringComparer.Ordinal);
+            foreach (var t in _targets) before[t.Name] = t.HasSession;
             _targets = targets.ToList();
             foreach (var gone in _state.Keys.Where(k => _targets.All(t => t.Name != k)).ToList()) _state.Remove(gone);
+            foreach (var t in _targets)
+                if (t.HasSession && before.TryGetValue(t.Name, out var had) && !had && _state.TryGetValue(t.Name, out var s))
+                    s.Failures = 0;
         }
     }
 
@@ -112,7 +120,10 @@ internal sealed class UsagePoller(
                 // The exception text is dropped: it isn't plain words, and nothing may carry a token to the UI.
                 catch (Exception) { r = new UsageResult.Failed("Couldn't check usage just now."); }
 
-                if (r is UsageResult.Ok ok)
+                bool stillTarget;
+                lock (_lock) stillTarget = _targets.Any(x => x.Name == t.Name);
+                // A profile removed while it was being fetched leaves no cache entry behind.
+                if (r is UsageResult.Ok ok && stillTarget)
                 {
                     try { cache.Put(ok.Reading); }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* shown live; cached next time */ }
@@ -145,7 +156,11 @@ internal sealed class UsagePoller(
             s.LastAttempt = now();
             s.Last = r;
             s.RetryAfter = r is UsageResult.RateLimited rl ? rl.RetryAfter : null;
-            s.Failures = r is UsageResult.Ok or UsageResult.NotSignedIn ? 0 : s.Failures + 1;
+            // Only a fetch that went wrong backs off. Expired, NotSignedIn and NotTracked are known states found
+            // without (or despite) a working call: the profile is checked again at the normal interval.
+            s.Failures = r is UsageResult.Ok or UsageResult.NotSignedIn or UsageResult.Expired or UsageResult.NotTracked
+                ? 0
+                : s.Failures + 1;
         }
     }
 

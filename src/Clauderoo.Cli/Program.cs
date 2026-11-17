@@ -7,7 +7,8 @@ var paths = ClauderooPaths.ForCurrentUser();
 var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
 
 var version = typeof(Commands).Assembly.GetName().Version?.ToString(3) ?? "0";
-using var usage = new UsageClient(new HttpClientHandler(), () => DateTimeOffset.UtcNow, version);
+using var usageHandler = UsageClient.CreateHandler();
+using var usage = new UsageClient(usageHandler, () => DateTimeOffset.UtcNow, version);
 
 return Commands.Run(args, Console.Out, Console.Error, pm,
     startNewWindow: spec =>

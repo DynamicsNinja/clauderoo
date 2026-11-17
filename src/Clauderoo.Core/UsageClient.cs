@@ -41,6 +41,12 @@ public sealed class UsageClient(HttpMessageHandler handler, Func<DateTimeOffset>
 
     private readonly HttpClient _http = new(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(20) };
 
+    /// <summary>
+    /// The handler every real usage client uses: no cookies (so one account's cookies never ride along with another
+    /// account's request) and no redirects (so the bearer token never follows one). The caller owns and disposes it.
+    /// </summary>
+    public static HttpClientHandler CreateHandler() => new() { UseCookies = false, AllowAutoRedirect = false };
+
     /// <summary>Disposes the HttpClient only; the handler belongs to the caller.</summary>
     public void Dispose() => _http.Dispose();
 

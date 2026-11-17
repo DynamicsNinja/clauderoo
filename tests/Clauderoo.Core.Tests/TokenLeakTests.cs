@@ -11,7 +11,9 @@ namespace Clauderoo.Core.Tests;
 /// </summary>
 public class TokenLeakTests
 {
+    // Two accounts, two distinct canaries: a profile's and the home profile's.
     private const string Token = "sk-ant-oat01-LEAKCANARY-7f3e9a1b2c4d5e6f8a9b";
+    private const string HomeToken = "sk-ant-oat01-HOMECANARY-1a2b3c4d5e6f7a8b9c0d";
     private static readonly DateTime Clock = new(2026, 11, 17, 12, 0, 0);
     private static readonly DateTimeOffset Now = new(2026, 11, 17, 12, 0, 0, TimeSpan.Zero);
 
@@ -20,8 +22,11 @@ public class TokenLeakTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) => Task.FromResult(f(r));
     }
 
+    // The service echoes back the token the request carried (the account's own one).
+    private static string Tok(HttpRequestMessage r) => r.Headers.Authorization?.Parameter ?? "";
+
     private static string Echo(HttpRequestMessage r) =>
-        $"{{\"error\":\"bad token\",\"auth\":\"{r.Headers.Authorization}\",\"token\":\"{Token}\"}}";
+        $"{{\"error\":\"bad token\",\"auth\":\"{r.Headers.Authorization}\",\"token\":\"{Tok(r)}\"}}";
 
     private static IEnumerable<(string Name, Handler Handler)> Answers()
     {
@@ -30,14 +35,27 @@ public class TokenLeakTests
             Content = new StringContent($$"""
                 { "five_hour": { "utilization": 42, "resets_at": "2026-11-17T15:40:00Z" },
                   "seven_day": { "utilization": 63, "resets_at": "2026-11-20T09:00:00Z" },
-                  "limits": [ { "kind": "model", "scope": { "model": { "display_name": "Opus {{Token}}" } }, "percent": 71 } ],
-                  "echo": "{{r.Headers.Authorization}}", "token": "{{Token}}" }
+                  "limits": [ { "kind": "model", "scope": { "model": { "display_name": "Opus {{Tok(r)}}" } }, "percent": 71 } ],
+                  "echo": "{{r.Headers.Authorization}}", "token": "{{Tok(r)}}" }
                 """),
         }));
         yield return ("401", new Handler(r => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent(Echo(r)) }));
         yield return ("429", new Handler(r => new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent(Echo(r)) }));
         yield return ("500", new Handler(r => new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent(Echo(r)) }));
-        yield return ("throws", new Handler(r => throw new HttpRequestException($"connection reset while sending {r.Headers.Authorization} ({Token})")));
+        yield return ("throws", new Handler(r => throw new HttpRequestException($"connection reset while sending {r.Headers.Authorization} ({Tok(r)})")));
+    }
+
+    private static string PlantCredential(string dir, string token)
+    {
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, ".credentials.json");
+        File.WriteAllText(file,
+            $$"""
+            { "claudeAiOauth": { "accessToken": "{{token}}", "refreshToken": "refresh-{{token}}",
+              "expiresAt": {{Now.AddHours(2).ToUnixTimeMilliseconds()}}, "subscriptionType": "max",
+              "rateLimitTier": "default_claude_max_5x" } }
+            """);
+        return Path.GetFullPath(file);
     }
 
     private sealed class NoopDisposable : IDisposable
@@ -52,14 +70,13 @@ public class TokenLeakTests
         var pm = new ProfileManager(home.Paths, new FakeEnv(), () => Clock);
         pm.Init();
         pm.Add("work");
-        var dir = pm.ConfigDirOf("work");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, ".credentials.json"),
-            $$"""
-            { "claudeAiOauth": { "accessToken": "{{Token}}", "refreshToken": "refresh-{{Token}}",
-              "expiresAt": {{Now.AddHours(2).ToUnixTimeMilliseconds()}}, "subscriptionType": "max",
-              "rateLimitTier": "default_claude_max_5x" } }
-            """);
+        var homeName = pm.Config.HomeProfileName!;
+        var planted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            PlantCredential(pm.ConfigDirOf("work"), Token),
+            PlantCredential(pm.ConfigDirOf(homeName), HomeToken),
+        };
+        string[] profiles = ["work", homeName];
 
         var seen = new StringBuilder();
         void Capture(string what, Func<string> run)
@@ -72,29 +89,32 @@ public class TokenLeakTests
         {
             using var client = new UsageClient(handler, () => Now, "1.0");
 
-            // the client itself
-            Capture($"[{name}] client", () => client.FetchAsync("work", dir, pm.Get("work"), CancellationToken.None)
-                .GetAwaiter().GetResult().ToString());
+            foreach (var p in profiles)
+            {
+                // the client itself
+                Capture($"[{name}] client {p}", () => client.FetchAsync(p, pm.ConfigDirOf(p), pm.Get(p), CancellationToken.None)
+                    .GetAwaiter().GetResult().ToString());
+
+                // the tray's words for what the poller found
+                var view = new UsageView();
+                Capture($"[{name}] tray {p}", () =>
+                {
+                    var r = client.FetchAsync(p, pm.ConfigDirOf(p), pm.Get(p), CancellationToken.None).GetAwaiter().GetResult();
+                    view.Apply(new Dictionary<string, UsageResult> { [p] = r });
+                    var reading = view.Readings.GetValueOrDefault(p);
+                    return TrayText.UsageSuffix(reading) + "\n" + string.Join("\n", TrayText.UsageRows(reading, r, Now));
+                });
+            }
 
             // the tray poller, writing to the cache
             using (var poller = new UsagePoller(
                        (t, ct) => client.FetchAsync(t.Name, t.ConfigDir, t.Entry, ct), new UsageCache(home.Paths), () => Now))
             {
-                poller.SetTargets([new PollTarget("work", dir, pm.Get("work"), false)]);
+                poller.SetTargets(profiles.Select(p => new PollTarget(p, pm.ConfigDirOf(p), pm.Get(p), false)));
                 poller.Updated += r => seen.AppendLine(string.Join("\n", r.Select(kv => kv.Key + "=" + kv.Value)));
                 try { await poller.RefreshNowAsync(); }
                 catch (Exception e) { seen.AppendLine(e.ToString()); }
             }
-
-            // the tray's words for what the poller found
-            var view = new UsageView();
-            Capture($"[{name}] tray", () =>
-            {
-                var r = client.FetchAsync("work", dir, pm.Get("work"), CancellationToken.None).GetAwaiter().GetResult();
-                view.Apply(new Dictionary<string, UsageResult> { ["work"] = r });
-                var reading = view.Readings.GetValueOrDefault("work");
-                return TrayText.UsageSuffix(reading) + "\n" + string.Join("\n", TrayText.UsageRows(reading, r, Now));
-            });
 
             // the CLI
             foreach (var args in new[] { new[] { "usage" }, ["usage", "work"], ["usage", "--json"], ["usage", "work", "--json"], ["list"] })
@@ -112,14 +132,22 @@ public class TokenLeakTests
         Assert.Contains("42%", text); // the 200 answer was read and shown
         Assert.Contains("expired", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(Token, text);
+        Assert.DoesNotContain(HomeToken, text);
         Assert.DoesNotContain("LEAKCANARY", text);
+        Assert.DoesNotContain("HOMECANARY", text);
 
-        // nothing under the user's folder holds it, except the planted credential itself
+        // nothing under the user's folder holds either token, except the two planted credential files themselves
+        // (any other .credentials.json, say a copy, is checked like every other file)
         Assert.True(File.Exists(Path.Combine(home.Paths.Root, "usage.json")));
+        var checkedFiles = 0;
         foreach (var file in Directory.EnumerateFiles(home.Dir, "*", SearchOption.AllDirectories))
         {
-            if (Path.GetFileName(file) == ".credentials.json") continue;
-            Assert.DoesNotContain("LEAKCANARY", File.ReadAllText(file));
+            if (planted.Contains(Path.GetFullPath(file))) continue;
+            var content = File.ReadAllText(file);
+            Assert.DoesNotContain("LEAKCANARY", content);
+            Assert.DoesNotContain("HOMECANARY", content);
+            checkedFiles++;
         }
+        Assert.True(checkedFiles > 0);
     }
 }

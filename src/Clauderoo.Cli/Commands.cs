@@ -446,42 +446,37 @@ public static class Commands
             ? PickOne(pm, pos[0])
             : pm.Config.Profiles.Keys.ToList();
 
-        var client = injected ?? new UsageClient(new HttpClientHandler(), () => DateTimeOffset.UtcNow, "cr");
-        try
+        // Program.cs owns the one client (built on UsageClient.CreateHandler) and disposes it; tests inject a fake.
+        var client = injected ?? throw new InvalidOperationException("No usage client was given.");
+        var cache = new UsageCache(pm.Paths);
+        var rows = new List<UsageRow>();
+        using var cts = new CancellationTokenSource();
+        using (hookCancel(cts))
         {
-            var cache = new UsageCache(pm.Paths);
-            var rows = new List<UsageRow>();
-            using var cts = new CancellationTokenSource();
-            using (hookCancel(cts))
+            foreach (var name in names)
             {
-                foreach (var name in names)
+                UsageResult r;
+                try
                 {
-                    UsageResult r;
-                    try
-                    {
-                        r = client.FetchAsync(name, pm.ConfigDirOf(name), pm.Get(name), cts.Token).GetAwaiter().GetResult();
-                    }
-                    catch (OperationCanceledException) when (cts.IsCancellationRequested)
-                    {
-                        if (json) WriteJsonError(err, "Cancelled.");
-                        else err.WriteLine("Cancelled.");
-                        return 1;
-                    }
-                    rows.Add(ToRow(name, r, cache, err));
+                    r = client.FetchAsync(name, pm.ConfigDirOf(name), pm.Get(name), cts.Token).GetAwaiter().GetResult();
                 }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    if (json) WriteJsonError(err, "Cancelled.");
+                    else err.WriteLine("Cancelled.");
+                    return 1;
+                }
+                rows.Add(ToRow(name, r, cache, err));
             }
+        }
 
-            if (json) WriteUsageJson(rows, output);
-            else foreach (var line in FormatUsage(rows)) output.WriteLine(line);
-            return rows.Any(r => r.Reading == null && r.Status is "failed" or "unavailable" or "rateLimited") ? 1 : 0;
-        }
-        finally
-        {
-            if (injected == null) client.Dispose();
-        }
+        if (json) WriteUsageJson(rows, output);
+        else foreach (var line in FormatUsage(rows)) output.WriteLine(line);
+        return rows.Any(r => r.Reading == null && r.Status is "failed" or "unavailable" or "rateLimited") ? 1 : 0;
     }
 
-    // Ok readings are cached; RateLimited and Failed fall back to the cached reading (flagged stale by the Note).
+    // Ok readings are cached; RateLimited, Failed and Unavailable fall back to the cached reading (flagged stale by
+    // the Note).
     private static UsageRow ToRow(string name, UsageResult r, UsageCache cache, TextWriter err)
     {
         switch (r)
@@ -490,10 +485,14 @@ public static class Commands
                 try { cache.Put(ok.Reading); }
                 catch (IOException e) { err.WriteLine($"warning: couldn't save usage: {e.Message}"); }
                 return new UsageRow(name, "ok", ok.Reading, null);
-            case UsageResult.RateLimited or UsageResult.Failed:
+            case UsageResult.RateLimited or UsageResult.Failed or UsageResult.Unavailable:
             {
-                var status = r is UsageResult.RateLimited ? "rateLimited" : "failed";
-                var why = r is UsageResult.Failed f ? f.Message : "The usage service is rate limiting requests.";
+                var (status, why) = r switch
+                {
+                    UsageResult.RateLimited => ("rateLimited", "The usage service is rate limiting requests."),
+                    UsageResult.Failed f => ("failed", f.Message), // already scrubbed of the token
+                    _ => ("unavailable", "The usage service answered with something unexpected."),
+                };
                 UsageReading? cached = null;
                 try { if (cache.Load().TryGetValue(name, out var c)) cached = c; } catch (IOException) { }
                 return new UsageRow(name, status, cached, why);
@@ -505,7 +504,7 @@ public static class Commands
             case UsageResult.NotTracked nt:
                 return new UsageRow(name, "notTracked", null, $"Not tracked ({nt.Provider} has no subscription limits).");
             default:
-                return new UsageRow(name, "unavailable", null, "The usage service answered with something unexpected.");
+                throw new InvalidOperationException($"Unknown usage result {r.GetType().Name}.");
         }
     }
 
@@ -558,6 +557,8 @@ public static class Commands
                 plan = r.Reading?.Plan,
                 fetchedAt = Iso(r.Reading?.FetchedAt),
                 windows = (r.Reading?.Windows ?? []).Select(w => new { name = w.Name, percent = w.Percent, resetsAt = Iso(w.ResetsAt) }).ToList(),
+                // Additive: why a failed or unavailable row has no fresh reading (scrubbed of the token).
+                message = r.Status is "failed" or "unavailable" ? r.Note : null,
             }).ToList(),
         };
         output.WriteLine(System.Text.Json.JsonSerializer.Serialize(payload, new System.Text.Json.JsonSerializerOptions
