@@ -62,7 +62,8 @@ public partial class ProfileManager
 
     /// <summary>
     /// Moves the newest removed copy of <paramref name="name"/> back and re-adds it. Never overwrites: refuses when a
-    /// profile (or folder) with that name exists. Provider settings are not kept by Remove and come back as "login".
+    /// profile (or folder) with that name exists. The settings Remove saved (provider included) come back; an API key
+    /// was deleted by Remove and must be entered again (a notice says so).
     /// </summary>
     public SyncReport Restore(string name)
     {

@@ -125,6 +125,7 @@ sealed class InputDialog : Form
         {
             if (current != null && string.Equals(text, current, StringComparison.OrdinalIgnoreCase)) return "";
             if (text.StartsWith('_')) return "Names starting with _ are reserved.";
+            if (text.StartsWith('-')) return "Names can't start with -.";
             try { ProfileName.Validate(text); }
             catch (ClauderooException) { return "Use only lowercase letters, digits and - (no spaces)."; }
             if (names.Contains(text)) return $"There is already a profile named '{text}'.";

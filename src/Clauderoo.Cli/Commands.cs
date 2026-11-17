@@ -167,7 +167,7 @@ public static class Commands
             {
                 var name = Need(pos, 1, "clauderoo restore <name>")[0];
                 Print(pm.Restore(name), output, err);
-                output.WriteLine($"Restored '{name}'. It uses its own Claude login; set its provider again if it used Vertex or an API key.");
+                output.WriteLine($"Restored '{name}' with its settings and provider.");
                 return 0;
             }
             case "rename":

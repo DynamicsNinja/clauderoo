@@ -273,8 +273,9 @@ public partial class ProfileManager
         else
         {
             var line = Scrub(LineOf(stderr, first: true), stdout.Trim());
-            items.Add(new(CheckStatus.Fail, line.Length > 0 ? $"{SignInLabel}: {line}" : SignInLabel,
-                "Run: gcloud auth application-default login (tick every box on the consent page)."));
+            items.Add(new(CheckStatus.Fail, SignInLabel,
+                "Run: gcloud auth application-default login (tick every box on the consent page).",
+                line.Length > 0 ? line : null));
         }
 
         items.Add(CheckGac());
@@ -289,7 +290,11 @@ public partial class ProfileManager
                 items.Add(new(CheckStatus.Fail, iamLabel,
                     $"Ask your GCP admin for Vertex AI User (roles/aiplatform.user) on {v.Project}."));
             else
-                items.Add(new(CheckStatus.Warn, Scrub($"Could not check Vertex AI permission: {error}", token), null));
+            {
+                var raw = Scrub(error ?? "", token);
+                items.Add(new(CheckStatus.Warn, "Couldn't check the Vertex AI permission", null,
+                    raw.Length > 0 ? raw : null));
+            }
         }
 
         var leftovers = new List<string>();

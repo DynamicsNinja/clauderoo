@@ -97,7 +97,8 @@ public class SetupCheckTests
         c.Gcloud.Result = (1, "", "ERROR: not logged in\nmore");
         var r = await c.Pm.CheckSetupAsync("work");
         Assert.Equal(CheckStatus.Fail, r[1].Status);
-        Assert.Equal("Google sign-in for Claude: ERROR: not logged in", r[1].Label);
+        Assert.Equal("Google sign-in for Claude", r[1].Label);
+        Assert.Equal("ERROR: not logged in", r[1].Detail);
         Assert.Equal(CheckStatus.Skipped, r[3].Status);
         Assert.Equal(CheckStatus.Ok, r[5].Status);
         Assert.Equal(CheckStatus.Skipped, r[6].Status);
@@ -189,7 +190,8 @@ public class SetupCheckTests
         c.Iam.Result = (null, "HTTP 503 Service Unavailable");
         var r = await c.Pm.CheckSetupAsync("work");
         Assert.Equal(CheckStatus.Warn, r[3].Status);
-        Assert.Equal("Could not check Vertex AI permission: HTTP 503 Service Unavailable", r[3].Label);
+        Assert.Equal("Couldn't check the Vertex AI permission", r[3].Label);
+        Assert.Equal("HTTP 503 Service Unavailable", r[3].Detail);
     }
 
     [Fact]
@@ -203,6 +205,7 @@ public class SetupCheckTests
         {
             Assert.DoesNotContain("ya29.SECRET-TOKEN", i.Label);
             Assert.DoesNotContain("ya29.SECRET-TOKEN", i.Hint ?? "");
+            Assert.DoesNotContain("ya29.SECRET-TOKEN", i.Detail ?? "");
         });
     }
 

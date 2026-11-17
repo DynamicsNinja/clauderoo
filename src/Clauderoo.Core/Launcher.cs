@@ -11,7 +11,7 @@ public static class Launcher
     {
         // The new terminal runs `clauderoo run <profile>` rather than claude itself, so that process records the
         // claude session it starts (the terminal host's own pid says nothing about claude).
-        clauderooExe ??= HelperExePath.Resolve();
+        clauderooExe ??= RequireHelper(HelperExePath.Resolve());
         var configDir = ConfigDirFor(cfg, paths, profile);
         foreach (var a in claudeArgs)
             // Without wt, the command line is re-parsed by `cmd /c start`, which mangles the quotes
@@ -37,6 +37,10 @@ public static class Launcher
                 .. (claudeArgs.Count > 0 ? new[] { "--" }.Concat(claudeArgs) : [])];
         return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir);
     }
+
+    /// <summary>The helper the new terminal runs must exist, or the tab would just show "not recognized".</summary>
+    internal static string RequireHelper(string exe) =>
+        File.Exists(exe) ? exe : throw new ClauderooException("clauderoo isn't installed properly — reinstall it.");
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
         string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>

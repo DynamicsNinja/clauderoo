@@ -5,6 +5,7 @@ public class ProfileNameTests
     [Theory]
     [InlineData("work")]
     [InlineData("my-work2")]
+    [InlineData("work-")]
     public void Validate_Accepts(string name) => ProfileName.Validate(name);
 
     [Theory]
@@ -26,4 +27,16 @@ public class ProfileNameStrictTests
     [Fact]
     public void Validate_RejectsNull() =>
         Assert.Throws<ClauderooException>(() => ProfileName.Validate(null!));
+}
+
+public class ProfileNameDashTests
+{
+    [Fact]
+    public void Validate_LeadingDash_PlainMessage() =>
+        Assert.Equal("Names can't start with -.",
+            Assert.Throws<ClauderooException>(() => ProfileName.Validate("-x")).Message);
+
+    [Fact]
+    public void InputDialogRule_LeadingDash() =>
+        Assert.Equal("Names can't start with -.", Clauderoo.Tray.InputDialog.ProfileNameRule([])("-x"));
 }

@@ -527,7 +527,8 @@ public class TrayCoreTests
         var o = new StringWriter(); var e = new StringWriter();
         var code = Clauderoo.Cli.Commands.Run(["restore", "work"], o, e, pm, _ => 0);
         Assert.Equal(0, code);
-        Assert.Contains("Restored 'work'", o.ToString());
+        Assert.Contains("Restored 'work' with its settings and provider.", o.ToString());
+        Assert.DoesNotContain("set its provider again", o.ToString());
         Assert.True(pm.Config.Profiles.ContainsKey("work"));
     }
 

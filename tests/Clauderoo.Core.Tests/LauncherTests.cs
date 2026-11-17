@@ -129,4 +129,20 @@ public class LauncherTests
         Assert.Equal(exe, Launcher.ResolveClaude(bin, ".EXE;.CMD"), ignoreCase: true);
         Assert.Throws<ClauderooException>(() => Launcher.ResolveClaude(Path.Combine(home.Dir, "empty"), ".EXE;.CMD"));
     }
+
+    [Fact]
+    public void RequireHelper_Missing_ThrowsPlainMessage()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "clauderoo-missing-" + Guid.NewGuid().ToString("N"), "clauderoo.exe");
+        var e = Assert.Throws<ClauderooException>(() => Launcher.RequireHelper(missing));
+        Assert.Equal("clauderoo isn't installed properly — reinstall it.", e.Message);
+    }
+
+    [Fact]
+    public void RequireHelper_Present_ReturnsPath()
+    {
+        var f = Path.GetTempFileName();
+        try { Assert.Equal(f, Launcher.RequireHelper(f)); }
+        finally { File.Delete(f); }
+    }
 }
