@@ -52,20 +52,26 @@ public static class Commands
         }
         catch (SessionsRunningException e)
         {
-            err.WriteLine($"{e.Message} (use --force to do it anyway)");
+            var msg = $"{e.Message} (use --force to do it anyway)";
+            if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 1;
         }
         catch (ClauderooException e)
         {
-            err.WriteLine(e.Message);
+            if (WantsJson(args)) JsonOut.Error(err, e.Message); else err.WriteLine(e.Message);
             return 1;
         }
         catch (Exception e)
         {
-            err.WriteLine($"Unexpected error: {e.Message}");
+            var msg = $"Unexpected error: {e.Message}";
+            if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 2;
         }
     }
+
+    // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
+    private static bool WantsJson(string[] args) =>
+        args.TakeWhile(a => a != "--").Skip(1).Contains("--json");
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath, Func<string?> readSecret,
@@ -83,15 +89,17 @@ public static class Commands
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
+        var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
+        var json = pos.RemoveAll(a => a == "--json") > 0;
+
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"))
         {
-            try { Print(pm.SyncAll(), output, err, "warning: "); }
+            // With --json stdout carries only the payload, so sync notices go to stderr.
+            try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
             catch (Exception e) { err.WriteLine($"warning: sync failed: {e.Message}"); }
         }
-
-        var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
 
         switch (cmd)
         {
@@ -117,6 +125,20 @@ public static class Commands
                 return 0;
             }
             case "list":
+                if (json)
+                {
+                    JsonOut.Write(output, new
+                    {
+                        Profiles = pm.List().Select(i => new
+                        {
+                            i.Name, i.IsHome, i.IsDefault, i.Provider,
+                            Account = i.Email,
+                            Detail = i.ProviderDetail,
+                            i.Overrides,
+                        }),
+                    });
+                    return 0;
+                }
                 foreach (var line in FormatList(pm.List())) output.WriteLine(line);
                 return 0;
             case "start":
@@ -176,6 +198,11 @@ public static class Commands
             case "maps":
             {
                 var maps = pm.Maps();
+                if (json)
+                {
+                    JsonOut.Write(output, new { Folders = maps.Select(m => new { m.Dir, m.Profile }) });
+                    return 0;
+                }
                 if (maps.Count == 0) output.WriteLine("No folder mappings. Add one with 'clauderoo map <profile> [dir]'.");
                 foreach (var m in maps) output.WriteLine($"{m.Dir}  ->  {m.Profile}");
                 return 0;
@@ -183,8 +210,9 @@ public static class Commands
             case "which":
             {
                 if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo which");
-                output.WriteLine(WhichProfile.Describe(
-                    WhichProfile.Resolve(pm.Config, pm.Paths, Environment.GetEnvironmentVariable, pm.Env)));
+                var which = WhichProfile.Resolve(pm.Config, pm.Paths, Environment.GetEnvironmentVariable, pm.Env);
+                if (json) JsonOut.Write(output, new { which.Profile, which.Source, which.Isolated });
+                else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
             case "default":
@@ -241,6 +269,17 @@ public static class Commands
             case "status":
             {
                 var s = pm.Status();
+                if (json)
+                {
+                    JsonOut.Write(output, new
+                    {
+                        s.DefaultProfile,
+                        UserEnv = s.UserEnvValue,
+                        s.EnvMatchesDefault,
+                        s.Problems,
+                    });
+                    return 0;
+                }
                 output.WriteLine($"Default profile: {s.DefaultProfile ?? "(none)"}");
                 output.WriteLine($"CLAUDE_CONFIG_DIR (user): {(string.IsNullOrEmpty(s.UserEnvValue) ? "(not set)" : s.UserEnvValue)}");
                 output.WriteLine(s.EnvMatchesDefault
@@ -271,11 +310,12 @@ public static class Commands
                 if (pm.Get(name).Provider != Providers.Vertex)
                 {
                     var r = pm.Check(name);
-                    output.WriteLine(r.Message);
+                    if (json) JsonOut.Write(output, new { r.Ok, r.Message });
+                    else output.WriteLine(r.Message);
                     return r.Ok ? 0 : 1;
                 }
                 // The model probes run inside CheckSetupAsync, so announce them first.
-                output.WriteLine("Testing models (this sends a tiny prompt per model)…");
+                if (!json) output.WriteLine("Testing models (this sends a tiny prompt per model)…");
                 // Ctrl+C stops the check (and kills a running `claude -p`) instead of the process.
                 using var cts = new CancellationTokenSource();
                 IReadOnlyList<CheckItem> items;
@@ -284,7 +324,7 @@ public static class Commands
                     try
                     {
                         // Lines appear as each check finishes, not at the end.
-                        items = pm.CheckSetupAsync(name, cts.Token, new LineProgress(output)).GetAwaiter().GetResult();
+                        items = pm.CheckSetupAsync(name, cts.Token, json ? null : new LineProgress(output)).GetAwaiter().GetResult();
                     }
                     catch (OperationCanceledException) when (cts.IsCancellationRequested)
                     {
@@ -292,7 +332,17 @@ public static class Commands
                         return 1;
                     }
                 }
-                return items.Any(i => i.Status == CheckStatus.Fail) ? 1 : 0;
+                var failed = items.Any(i => i.Status == CheckStatus.Fail);
+                if (json)
+                    JsonOut.Write(output, new
+                    {
+                        Ok = !failed,
+                        Items = items.Where(i => i.Status is not (CheckStatus.Pending or CheckStatus.Running)).Select(i => new
+                        {
+                            i.Key, i.Label, Status = i.Status.ToString().ToLowerInvariant(), i.Hint,
+                        }),
+                    });
+                return failed ? 1 : 0;
             }
             case "apikey":
             {
