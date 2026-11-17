@@ -78,11 +78,13 @@ sealed class ProfilesForm : Form
     {
         AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 0, 3),
     };
+    private readonly Button _setDefault = Btn("Set as default");
     private readonly Button _start = Btn("Start session");
     private readonly Button _save = Btn("Save");
 
     private string? _current;      // profile shown in the editor
     private bool _currentIsHome;
+    private bool _currentIsDefault;
     private string _loadedState = "";
     private bool _loading;         // suppresses change handlers while filling controls
     private bool _switching;       // suppresses re-entrant selection changes
@@ -173,7 +175,7 @@ sealed class ProfilesForm : Form
         };
         var bottomButtons = Flow(FlowDirection.LeftToRight);
         bottomButtons.Anchor = AnchorStyles.Right;
-        bottomButtons.Controls.AddRange([_start, _save]);
+        bottomButtons.Controls.AddRange([_setDefault, _start, _save]);
         var bottom = Table(2);
         bottom.Dock = DockStyle.Fill;
         bottom.Margin = new Padding(0, 8, 0, 0);
@@ -239,6 +241,7 @@ sealed class ProfilesForm : Form
         _check.Click += (_, _) => RunCheck();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
+        _setDefault.Click += (_, _) => Guard(SetDefault);
         _start.Click += (_, _) => Guard(StartSession);
         _save.Click += (_, _) => Save();
 
@@ -296,7 +299,13 @@ sealed class ProfilesForm : Form
 
     private sealed record ListItem(ProfileInfo Info)
     {
-        public override string ToString() => Info.IsHome ? $"{Info.Name} (home)" : Info.Name;
+        public override string ToString() => (Info.IsHome, Info.IsDefault) switch
+        {
+            (true, true) => $"{Info.Name} (home, default)",
+            (true, false) => $"{Info.Name} (home)",
+            (false, true) => $"{Info.Name} (default)",
+            _ => Info.Name,
+        };
     }
 
     // ---------- editor ----------
@@ -309,6 +318,7 @@ sealed class ProfilesForm : Form
             CancelCheck();
             _current = info?.Name;
             _currentIsHome = info?.IsHome ?? false;
+            _currentIsDefault = info?.IsDefault ?? false;
             _project.Text = _region.Text = _sonnet.Text = _opus.Text = _haiku.Text = _apiKey.Text = "";
             _apiKey.PlaceholderText = "";
             _env.Rows.Clear();
@@ -355,6 +365,7 @@ sealed class ProfilesForm : Form
             _remove.Enabled = editable;
             UpdateRenameEnabled(); // the home profile can be relabelled too
             _start.Enabled = info != null;
+            _setDefault.Enabled = info != null && !info.IsDefault;
             UpdateProviderPanels();
         }
         catch (Exception e)
@@ -759,6 +770,15 @@ sealed class ProfilesForm : Form
     {
         if (_current == null || !ConfirmLeave()) return;
         _startSession(_current);
+    }
+
+    private void SetDefault()
+    {
+        if (_current == null || _currentIsDefault || !ConfirmLeave()) return;
+        var name = _current;
+        var report = _pm.SetDefault(name);
+        Reload(name);
+        ShowResult(report, $"Default is now {name}. New terminals will use it.");
     }
 
     private void ShowResult(SyncReport report, string message)
