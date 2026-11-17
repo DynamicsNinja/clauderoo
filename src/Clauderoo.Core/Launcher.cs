@@ -8,12 +8,13 @@ public record LaunchSpec(string FileName, IReadOnlyList<string> Args, string Wor
 public static class Launcher
 {
     public static LaunchSpec NewWindow(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable, string? clauderooExe = null)
+        string dir, IReadOnlyList<string> claudeArgs, bool wtAvailable, string? clauderooExe = null, bool isolated = false)
     {
         // The new terminal runs `clauderoo run <profile>` rather than claude itself, so that process records the
         // claude session it starts (the terminal host's own pid says nothing about claude).
         clauderooExe ??= RequireHelper(HelperExePath.Resolve());
-        var configDir = ConfigDirFor(cfg, paths, profile);
+        var configDir = ConfigDirFor(cfg, paths, profile, isolated);
+        var isoFlag = isolated ? " --isolated" : "";
         foreach (var a in claudeArgs)
             // Without wt, the command line is re-parsed by `cmd /c start`, which mangles the quotes
             // .NET adds around the inner command, so args needing quotes can't be passed reliably.
@@ -22,7 +23,7 @@ public static class Launcher
         foreach (var p in new[] { configDir, dir, clauderooExe })
             if (p is not null && p.IndexOfAny(BadPathChars) >= 0)
                 throw new ClauderooException($"Path '{p}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
-        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& \"{clauderooExe}\" run {profile}"
+        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& \"{clauderooExe}\" run {profile}{isoFlag}"
             + (claudeArgs.Count > 0 ? " --" : "")
             + string.Concat(claudeArgs.Select(a => " " + QuoteIfNeeded(a)));
         var title = $"Claude · {profile}";
@@ -35,6 +36,7 @@ public static class Launcher
         string[] args = wtAvailable
             ? ["-w", "0", "new-tab", "--title", title, "-d", dir, "cmd", "/k", cmdLine]
             : ["/c", "start", title, "/D", dir, "cmd", "/k", clauderooExe, "run", profile,
+                .. (isolated ? new[] { "--isolated" } : []),
                 .. (claudeArgs.Count > 0 ? new[] { "--" }.Concat(claudeArgs) : [])];
         return new LaunchSpec(wtAvailable ? "wt.exe" : "cmd.exe", args, dir, configDir);
     }
@@ -44,14 +46,20 @@ public static class Launcher
         File.Exists(exe) ? exe : throw new ClauderooException("clauderoo isn't installed properly — reinstall it.");
 
     public static LaunchSpec InPlace(ClauderooConfig cfg, ClauderooPaths paths, string profile,
-        string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null) =>
-        new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile), profile,
-            new Dictionary<string, string> { [WhichProfile.SessionVar] = profile });
+        string dir, IReadOnlyList<string> claudeArgs, string? claudePath = null, bool isolated = false)
+    {
+        var env = new Dictionary<string, string> { [WhichProfile.SessionVar] = profile };
+        if (isolated) env[IsolatedVar] = "1";
+        return new(claudePath ?? ResolveClaude(), claudeArgs, dir, ConfigDirFor(cfg, paths, profile, isolated), profile, env);
+    }
 
-    private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile)
+    public const string IsolatedVar = "CLAUDEROO_ISOLATED";
+
+    private static string? ConfigDirFor(ClauderooConfig cfg, ClauderooPaths paths, string profile, bool isolated = false)
     {
         if (!cfg.Profiles.TryGetValue(profile, out var entry))
             throw new ClauderooException($"Unknown profile '{profile}'.");
+        if (isolated) return paths.IsolatedDir(profile);
         return entry.Home ? null : paths.ProfileDir(profile);
     }
 

@@ -27,6 +27,11 @@ public partial class ProfileManager
         if (!entry.Home)
             RefuseIfPluginRecordsReference(cfg, oldName, oldDir, force, $"rename {oldName} {newName}");
 
+        var oldIso = paths.IsolatedDir(oldName);
+        var newIso = paths.IsolatedDir(newName);
+        if (Directory.Exists(oldIso) && Directory.Exists(newIso))
+            throw new ClauderooException($"An isolated folder for '{newName}' already exists: {newIso}");
+
         var original = Config; // untouched copy for rollback
         var oldEnv = env.GetUser(EnvVar);
 
@@ -43,8 +48,19 @@ public partial class ProfileManager
             moved = true;
         }
 
+        var isoMoved = false;
         try
         {
+            if (Directory.Exists(oldIso))
+            {
+                try { Directory.Move(oldIso, newIso); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    throw new ClauderooException(
+                        $"Couldn't rename {oldName}'s isolated folder — close {oldName}'s Claude sessions and try again.");
+                }
+                isoMoved = true;
+            }
             BeforeRenameCommit?.Invoke();
 
             // Rebuild the map so the entry keeps its position.
@@ -71,6 +87,7 @@ public partial class ProfileManager
         catch
         {
             // Best-effort rollback; the original exception is what the caller needs to see.
+            try { if (isoMoved) Directory.Move(newIso, oldIso); } catch { }
             try { if (moved) Directory.Move(newDir, oldDir); } catch { }
             try { ConfigStore.Save(paths, original); } catch { }
             try { if (envChanged) env.SetUser(EnvVar, oldEnv); } catch { }

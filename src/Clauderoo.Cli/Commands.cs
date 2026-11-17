@@ -13,6 +13,7 @@ public static class Commands
   start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
                                       no name: use the folder's mapping, else the default
   start [name] [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
+  start [name] [dir] --isolated       run with a separate config folder: no shared plugins, skills, hooks or MCP servers
   map <profile> [dir]                 use <profile> for dir (default: here) and everything below it
   unmap [dir]                         remove a folder mapping
   maps                                list folder mappings
@@ -146,7 +147,8 @@ public static class Commands
             {
                 // Runs Claude in this terminal; --tab opens a new Windows Terminal tab instead.
                 var tab = pos.Remove("--tab");
-                var startUsage = $"Usage: clauderoo {cmd} [name] [dir] [--tab] [-- args]";
+                var isolated = pos.Remove("--isolated");
+                var startUsage = $"Usage: clauderoo {cmd} [name] [dir] [--tab] [--isolated] [-- args]";
                 if (pos.Count > 2) throw new ClauderooException(startUsage);
                 var cfg = pm.Config;
                 string profile;
@@ -176,8 +178,13 @@ public static class Commands
                 var dir = Path.GetFullPath(folderArg);
                 if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
                 if (!tab)
-                    return runInPlace(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath));
-                startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable()));
+                {
+                    if (isolated && pm.PrepareIsolated(profile).FirstRun)
+                        output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
+                    return runInPlace(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath, isolated));
+                }
+                // The new tab runs `run <profile> --isolated`, which prepares the folder itself.
+                startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
                 return 0;
             }
             case "map":

@@ -93,6 +93,7 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
 
         // The API key is deleted only once the folder has moved, so a failed move keeps the profile working.
         var keyDir = dir;
+        string? movedProfile = null;
         if (Directory.Exists(dir))
         {
             var moved = Path.Combine(paths.RemovedDir, $"{name}-{Stamp}");
@@ -110,8 +111,27 @@ public partial class ProfileManager(ClauderooPaths paths, IEnvStore env, Func<Da
                     $"Couldn't move {name}'s folder — close {name}'s Claude sessions and try again.");
             }
             keyDir = moved;
-            ConfigStore.WriteEntry(Path.Combine(moved, EntryFileName), entry);
+            movedProfile = moved;
         }
+        // The isolated folder goes aside with its profile (it holds a login, so it is never deleted).
+        var isoDir = paths.IsolatedDir(name);
+        if (Directory.Exists(isoDir))
+        {
+            try
+            {
+                RemoveNestedLinks(isoDir);
+                Directory.CreateDirectory(paths.RemovedDir);
+                Directory.Move(isoDir, Path.Combine(paths.RemovedDir, $"{name}-{Stamp}-isolated"));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // Put the profile folder back so the profile stays whole and the remove can be retried.
+                try { if (movedProfile != null) Directory.Move(movedProfile, dir); } catch (Exception) { }
+                throw new ClauderooException(
+                    $"Couldn't move {name}'s isolated folder — close {name}'s Claude sessions and try again.");
+            }
+        }
+        if (movedProfile != null) ConfigStore.WriteEntry(Path.Combine(movedProfile, EntryFileName), entry);
         try { secrets.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         cfg.Profiles.Remove(name);
