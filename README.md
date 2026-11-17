@@ -315,7 +315,7 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 | --- | --- |
 | `list_profiles` | Each profile's name, provider, account or Vertex project, whether it's the default, its running sessions and its last saved usage. Uses no quota |
 | `usage {profile?}` | 5-hour and 7-day usage for one profile or all of them. Uses no quota. A reading under 2 minutes old is reused, each profile is checked at most once every 2 minutes, and a rate limit is waited out for at least 10 minutes |
-| `set_default {profile}` | Make a profile the default for new terminals |
+| `set_default {profile}` | Make a profile the default for new terminals. It counts as choosing the default yourself, so auto-switch leaves it alone |
 | `delegate {profile, prompt, cwd?}` | Run a one-shot `claude -p` under another profile and return its output |
 
 **Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or click **Use from Claude…** in the profile manager, and you get this command to run once in a terminal:
@@ -352,7 +352,7 @@ Auto-switch changes the default profile when the default reaches a share of its 
 - **Threshold and order:** set them in the **Auto-switch…** dialog, or with `cr auto --threshold 85 --order work,personal`. The threshold can be 6 to 100.
 - **Which profile it picks:** the first profile in the order whose last reading is under 15 minutes old and has both windows more than 5 points below the threshold. With no order set, every Claude-login profile is tried in list order. Vertex and API-key profiles have no limits to check, so they are used only when you list them in the order. Claude-token profiles are never auto-switch targets, because their usage isn't tracked, so `cr auto --order` refuses them.
 - **No flip-flopping:** after a switch, nothing changes for 10 minutes. clauderoo never switches back on its own.
-- **Your choice wins:** when you set the default yourself (tray, profile manager or `cr default`), auto-switch leaves that profile alone, even if it is over the threshold, until it is back under the threshold. The next time it crosses, auto-switch acts again.
+- **Your choice wins:** when you set the default yourself (tray, profile manager, `cr default` or the MCP `set_default` tool), auto-switch leaves that profile alone, even if it is over the threshold, until it is back under the threshold. The next time it crosses, auto-switch acts again.
 - **What the tray tells you:** a balloon such as "personal is at 92% of its 5-hour limit. New terminals now use work." When no other profile has room, a balloon says so once each time the default crosses the threshold. When the profile it switched away from has room again, a balloon says "personal has room again". Click it to make that profile the default again.
 - **In the tray menu:** a usage window at or above the threshold is shown in amber, or red from 90%. While auto-switch is off, only windows at 90% or more are coloured.
 

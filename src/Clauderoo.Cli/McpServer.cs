@@ -412,7 +412,8 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
 
     private ToolResult SetDefault(string profile)
     {
-        var report = pm.SetDefault(profile);
+        // The user's own choice, made through Claude: noted as a manual hold so auto-switch doesn't undo it at once.
+        var report = pm.SetDefaultByUser(profile);
         var sb = new StringBuilder($"Default is now {pm.Config.DefaultProfile}. New terminals use it; running sessions keep their profile.");
         foreach (var p in report.Problems) sb.Append("\nwarning: ").Append(p);
         return new ToolResult(sb.ToString(), false);

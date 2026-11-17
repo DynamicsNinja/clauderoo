@@ -213,6 +213,18 @@ public class McpServerTests
         Assert.Contains("nope", Text(bad));
     }
 
+    // A default chosen through the MCP tool is the user's choice, like the tray's or `cr default`: auto-switch holds it.
+    [Fact]
+    public async Task SetDefault_Mcp_NotesManualHold()
+    {
+        using var f = new Fixture();
+        Assert.Null(f.Pm.AutoSwitchState.Load().ManualHold);
+        var result = await CallOne(f, "set_default", new { profile = "work" });
+        Assert.False(IsError(result));
+        Assert.Equal("work", f.Pm.Config.DefaultProfile);
+        Assert.Equal("work", f.Pm.AutoSwitchState.Load().ManualHold);
+    }
+
     [Fact]
     public async Task Delegate_BuildsArgs_StrictMcp_NoSkipPermissions()
     {
