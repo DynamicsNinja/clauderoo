@@ -30,7 +30,9 @@ public static class Launcher
         foreach (var p in new[] { configDir, dir, clauderooExe })
             if (p is not null && p.IndexOfAny(BadPathChars) >= 0)
                 throw new ClauderooException($"Path '{p}' contains characters that can't be passed through a new terminal window; use 'clauderoo run' instead.");
-        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& \"{clauderooExe}\" run {profile}{isoFlag}"
+        // An existing Windows Terminal window may host the tab with its own environment, so the session markers a
+        // calling session carried are cleared in the tab's shell too (StartInfo strips them from wt/cmd itself).
+        var cmdLine = $"set CLAUDE_CONFIG_DIR={configDir}&& set {WhichProfile.SessionVar}=&& set {IsolatedVar}=&& \"{clauderooExe}\" run {profile}{isoFlag}"
             + (claudeArgs.Count > 0 ? " --" : "")
             + string.Concat(claudeArgs.Select(a => " " + QuoteIfNeeded(a)));
         var title = $"Claude · {profile}";
@@ -134,8 +136,11 @@ public static class Launcher
         if (s.ConfigDirEnv is null) psi.Environment.Remove("CLAUDE_CONFIG_DIR");
         else psi.Environment["CLAUDE_CONFIG_DIR"] = s.ConfigDirEnv;
         // A token inherited from the calling shell (e.g. cr run inside a token profile's session) would sign the
-        // new session in as that account; only the token the spec injects for its own profile may pass.
+        // new session in as that account; only the token the spec injects for its own profile may pass. The same goes
+        // for the session markers: a stale CLAUDEROO_PROFILE/CLAUDEROO_ISOLATED would make `which` name the caller.
         psi.Environment.Remove(ProfileManager.TokenEnvVar);
+        psi.Environment.Remove(WhichProfile.SessionVar);
+        psi.Environment.Remove(IsolatedVar);
         if (s.ExtraEnv is not null)
             foreach (var (k, v) in s.ExtraEnv) psi.Environment[k] = v;
         return psi;

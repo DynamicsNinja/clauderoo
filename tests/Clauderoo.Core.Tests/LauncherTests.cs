@@ -22,7 +22,7 @@ public class LauncherTests
         var s = Launcher.NewWindow(Cfg(), home.Paths, "work", dir, [], wtAvailable: true, clauderooExe: Exe);
         Assert.Equal("wt.exe", s.FileName);
         Assert.Equal(new[] { "-w", "0", "new-tab", "--title", "Claude · work", "-d", dir, "cmd", "/k",
-            $"set CLAUDE_CONFIG_DIR={workDir}&& \"{Exe}\" run work" }, s.Args);
+            $"set CLAUDE_CONFIG_DIR={workDir}&& set CLAUDEROO_PROFILE=&& set CLAUDEROO_ISOLATED=&& \"{Exe}\" run work" }, s.Args);
         Assert.Equal(workDir, s.ConfigDirEnv);
         Assert.Equal(dir, s.WorkingDir);
     }
@@ -40,7 +40,7 @@ public class LauncherTests
     {
         using var home = new TempHome();
         var s = Launcher.NewWindow(Cfg(), home.Paths, "personal", @"C:\proj", [], true, Exe);
-        Assert.StartsWith("set CLAUDE_CONFIG_DIR=&& \"" + Exe + "\" run personal", s.Args[^1]);
+        Assert.StartsWith("set CLAUDE_CONFIG_DIR=&& set CLAUDEROO_PROFILE=&& set CLAUDEROO_ISOLATED=&& \"" + Exe + "\" run personal", s.Args[^1]);
         Assert.Null(s.ConfigDirEnv);
     }
 

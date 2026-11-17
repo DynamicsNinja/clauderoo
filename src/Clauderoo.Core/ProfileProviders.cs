@@ -44,31 +44,19 @@ public partial class ProfileManager
                 throw new ClauderooException($"Unknown provider '{provider}'. Known: {KnownProviders}.");
         }
 
-        if (provider == Providers.ApiKey)
+        // Save the new secret before deleting the other one: if saving fails, the old secret is still there.
+        if (provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(apiKey))
         {
-            if (!string.IsNullOrWhiteSpace(apiKey))
-            {
-                Directory.CreateDirectory(dir);
-                secrets.Save(dir, apiKey);
-            }
+            Directory.CreateDirectory(dir);
+            secrets.Save(dir, apiKey);
         }
-        else
+        if (provider == Providers.Token && !string.IsNullOrEmpty(token))
         {
-            secrets.Delete(dir);
+            Directory.CreateDirectory(dir);
+            tokens.Save(dir, token);
         }
-
-        if (provider == Providers.Token)
-        {
-            if (!string.IsNullOrEmpty(token))
-            {
-                Directory.CreateDirectory(dir);
-                tokens.Save(dir, token);
-            }
-        }
-        else
-        {
-            tokens.Delete(dir);
-        }
+        if (provider != Providers.ApiKey) secrets.Delete(dir);
+        if (provider != Providers.Token) tokens.Delete(dir);
 
         entry.Provider = provider == Providers.Login ? null : provider;
         if (provider == Providers.Vertex)

@@ -114,7 +114,7 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which` and `check` take `--json` for scripts. The output starts with `"schemaVersion": 1`; an error goes to stderr as `{"schemaVersion":1,"error":"…"}` with exit code 1.
+`list`, `status`, `maps`, `which` and `check` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
@@ -125,7 +125,7 @@ All commands work with either `clauderoo` or `cr`.
 | `list [--json]` | List profiles and the account each one is logged in with |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
-| `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Provider settings come back as the Claude login |
+| `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
 
 ### Sessions
@@ -133,7 +133,7 @@ All commands work with either `clauderoo` or `cr`.
 | Command | What it does |
 | --- | --- |
 | `start [name] [dir] [-- args]` | Run Claude for a profile in this terminal (`run` does the same). Without a name, the folder's mapping picks the profile, or else the default |
-| `start <name> [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead. Prompts there can't contain `" % ! ;` |
+| `start [name] [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead. Prompts there can't contain `" % ! ;` |
 | `start [name] [dir] --isolated` | Run with a separate config folder: no shared plugins, skills, hooks or MCP servers. A Claude login profile needs its own `/login` there once; other providers work right away |
 | `which [--json]` | Show which profile this terminal is using, and why |
 

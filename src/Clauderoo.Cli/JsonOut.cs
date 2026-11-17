@@ -50,6 +50,6 @@ public static class JsonOut
             reader.GetDateTimeOffset();
 
         public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions o) =>
-            writer.WriteStringValue(value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"));
+            writer.WriteStringValue(value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
     }
 }

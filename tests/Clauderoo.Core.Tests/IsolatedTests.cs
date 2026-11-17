@@ -115,7 +115,7 @@ public class IsolatedTests
         var cfg = new ClauderooConfig { Profiles = new() { ["personal"] = new ProfileEntry { Home = true }, ["work"] = new ProfileEntry() } };
         var s = Launcher.NewWindow(cfg, home.Paths, "work", @"C:\proj", ["--model", "opus"], true, Exe, isolated: true);
         var iso = home.Paths.IsolatedDir("work");
-        Assert.Equal($"set CLAUDE_CONFIG_DIR={iso}&& \"{Exe}\" run work --isolated -- --model opus", s.Args[^1]);
+        Assert.Equal($"set CLAUDE_CONFIG_DIR={iso}&& set CLAUDEROO_PROFILE=&& set CLAUDEROO_ISOLATED=&& \"{Exe}\" run work --isolated -- --model opus", s.Args[^1]);
         Assert.Equal(iso, s.ConfigDirEnv);
         var plain = Launcher.NewWindow(cfg, home.Paths, "work", @"C:\proj", [], true, Exe);
         Assert.DoesNotContain("--isolated", plain.Args[^1]);

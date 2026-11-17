@@ -113,7 +113,7 @@ public partial class ProfileManager
         if (Providers.Of(entry) == Providers.ApiKey)
             report.Notices.Add($"{name} is back. Its API key was deleted when it was removed — enter it again in Manage profiles.");
         if (Providers.Of(entry) == Providers.Token)
-            report.Notices.Add($"{name} is back. Its Claude token was deleted when it was removed — set it again with 'cr provider {name} token'.");
+            report.Notices.Add($"{name} is back. Its Claude token was deleted when it was removed — set it again in Manage profiles or with 'cr provider {name} token'.");
         return report;
     }
 

@@ -116,7 +116,9 @@ public class CliJsonTests
         var r = Run(pm, "check", "work", "--json");
         using var doc = JsonDocument.Parse(r.o);
         Assert.True(doc.RootElement.TryGetProperty("ok", out _));
+        Assert.True(doc.RootElement.TryGetProperty("verified", out _));
         Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("message").GetString()));
+        Assert.Equal(0, doc.RootElement.GetProperty("items").GetArrayLength());
     }
 
     [Fact]
@@ -131,6 +133,8 @@ public class CliJsonTests
         Assert.True(items[0].TryGetProperty("status", out _));
         Assert.True(items[0].TryGetProperty("label", out _));
         Assert.True(doc.RootElement.TryGetProperty("ok", out _));
+        Assert.True(doc.RootElement.TryGetProperty("verified", out _));
+        Assert.True(doc.RootElement.TryGetProperty("message", out _));
     }
 
     [Fact]
@@ -157,5 +161,27 @@ public class CliJsonTests
         using var doc = JsonDocument.Parse(w.ToString());
         Assert.Equal(1, doc.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("at").GetString());
+    }
+
+    [Theory]
+    [InlineData("th-TH")] // Buddhist calendar: the year would print as 2569
+    [InlineData("fi-FI")] // '.' as the time separator
+    public void JsonOut_Dates_IgnoreCurrentCulture(string culture)
+    {
+        var saved = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo(culture);
+        try
+        {
+            var w = new StringWriter();
+            JsonOut.Write(w, new
+            {
+                At = new DateTimeOffset(2026, 11, 17, 12, 0, 0, TimeSpan.FromHours(2)),
+                When = new DateTime(2026, 11, 17, 10, 0, 0, DateTimeKind.Utc),
+            });
+            using var doc = JsonDocument.Parse(w.ToString());
+            Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("at").GetString());
+            Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("when").GetString());
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = saved; }
     }
 }

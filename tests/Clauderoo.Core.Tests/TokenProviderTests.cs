@@ -195,16 +195,34 @@ public class TokenProviderTests
     public void StartInfo_InheritedToken_Removed_UnlessInjected()
     {
         Environment.SetEnvironmentVariable(TokenVar, "sk-ant-oat01-inherited");
+        Environment.SetEnvironmentVariable(WhichProfile.SessionVar, "stale");
+        Environment.SetEnvironmentVariable(Launcher.IsolatedVar, "1");
         try
         {
             var plain = Launcher.StartInfo(new LaunchSpec("claude.cmd", [], @"C:\", null, "work",
                 new Dictionary<string, string>()));
             Assert.False(plain.Environment.ContainsKey(TokenVar));
+            Assert.False(plain.Environment.ContainsKey(WhichProfile.SessionVar));
+            Assert.False(plain.Environment.ContainsKey(Launcher.IsolatedVar));
             var injected = Launcher.StartInfo(new LaunchSpec("claude.cmd", [], @"C:\", null, "work",
-                new Dictionary<string, string> { [TokenVar] = Token }));
+                new Dictionary<string, string> { [TokenVar] = Token, [WhichProfile.SessionVar] = "work" }));
             Assert.Equal(Token, injected.Environment[TokenVar]);
+            Assert.Equal("work", injected.Environment[WhichProfile.SessionVar]);
+            Assert.False(injected.Environment.ContainsKey(Launcher.IsolatedVar));
+            // The new-tab launch (wt/cmd itself) carries no stale markers either, and its shell clears them.
+            var tab = Launcher.StartInfo(new LaunchSpec("wt.exe", ["-w", "0"], @"C:\", null));
+            Assert.False(tab.Environment.ContainsKey(WhichProfile.SessionVar));
+            Assert.False(tab.Environment.ContainsKey(Launcher.IsolatedVar));
+            var (pm, home, _, _) = Make(); using var _h = home;
+            var r = Run(pm, null, true, "start", "work", home.Dir, "--tab");
+            Assert.Contains("set CLAUDEROO_PROFILE=&& set CLAUDEROO_ISOLATED=&& ", r.tab!.Args[^1]);
         }
-        finally { Environment.SetEnvironmentVariable(TokenVar, null); }
+        finally
+        {
+            Environment.SetEnvironmentVariable(TokenVar, null);
+            Environment.SetEnvironmentVariable(WhichProfile.SessionVar, null);
+            Environment.SetEnvironmentVariable(Launcher.IsolatedVar, null);
+        }
     }
 
     [Fact]

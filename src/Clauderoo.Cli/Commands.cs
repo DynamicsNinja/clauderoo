@@ -33,6 +33,7 @@ public static class Commands
   check <name>                        check the profile's sign-in (Vertex: full setup checklist)
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   status                              show the default profile and any problems
+  --json                              list, status, maps, which and check: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -72,9 +73,12 @@ public static class Commands
         }
     }
 
+    /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check"];
+
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
-        args.TakeWhile(a => a != "--").Skip(1).Contains("--json");
+        args.Length > 0 && JsonCommands.Contains(args[0]) && args.TakeWhile(a => a != "--").Skip(1).Contains("--json");
 
     private static int Dispatch(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
         Func<LaunchSpec, int> startNewWindow, Func<LaunchSpec, int> runInPlace, bool? wtAvailable, string? claudePath,
@@ -94,6 +98,8 @@ public static class Commands
 
         var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
         var json = pos.RemoveAll(a => a == "--json") > 0;
+        if (json && !JsonCommands.Contains(cmd))
+            throw new ClauderooException($"'{cmd}' doesn't support --json.");
 
         // Commands that work without an initialised config skip the pre-sync.
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
@@ -322,7 +328,7 @@ public static class Commands
                 if (pm.Get(name).Provider != Providers.Vertex)
                 {
                     var r = pm.Check(name);
-                    if (json) JsonOut.Write(output, new { r.Ok, r.Message });
+                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, Items = Array.Empty<object>() });
                     else output.WriteLine(r.Message);
                     return r.Ok ? 0 : 1;
                 }
@@ -349,6 +355,10 @@ public static class Commands
                     JsonOut.Write(output, new
                     {
                         Ok = !failed,
+                        Verified = true,
+                        Message = failed
+                            ? $"{items.Count(i => i.Status == CheckStatus.Fail)} check(s) failed."
+                            : "All checks passed.",
                         Items = items.Where(i => i.Status is not (CheckStatus.Pending or CheckStatus.Running)).Select(i => new
                         {
                             i.Key, i.Label, Status = i.Status.ToString().ToLowerInvariant(), i.Hint,
