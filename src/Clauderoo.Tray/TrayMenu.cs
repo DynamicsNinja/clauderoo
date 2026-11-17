@@ -8,8 +8,14 @@ internal sealed record TrayMenuState(
     IReadOnlyList<Problem> Problems,
     IReadOnlyDictionary<string, int> Running,
     bool AutoStartOn,
-    int RecentCount = 0)
+    int RecentCount = 0,
+    IReadOnlyDictionary<string, UsageReading>? Usage = null,
+    IReadOnlyDictionary<string, UsageResult>? UsageResults = null,
+    DateTimeOffset Now = default)
 {
+    /// <summary>Profiles whose usage is tracked: Claude login, home included.</summary>
+    public static bool TracksUsage(ProfileInfo p) => p.IsHome || p.Provider == Providers.Login;
+
     public int RunningTotal => Running.Values.Sum();
     public ProfileInfo? Default => Profiles.FirstOrDefault(p => p.IsDefault) ?? Profiles.FirstOrDefault(p => p.IsHome);
 
@@ -33,6 +39,7 @@ internal sealed class TrayMenuActions
     public Action CopyConfigDetails { get; init; } = () => { };
     public Action ShowConfigFile { get; init; } = () => { };
     public Action Exit { get; init; } = () => { };
+    public Action RefreshUsage { get; init; } = () => { };
 }
 
 /// <summary>Builds the tray menu. The default profile is bold (double-click starts it) and marked with a star.</summary>
@@ -80,7 +87,13 @@ internal static class TrayMenu
 
         var troubled = s.Problems.Select(p => p.Profile).ToHashSet();
         foreach (var p in s.Profiles)
-            items.Add(ProfileItem(p, s.Running.GetValueOrDefault(p.Name), troubled.Contains(p.Name), menu, a, dpi));
+            items.Add(ProfileItem(p, s.Running.GetValueOrDefault(p.Name), troubled.Contains(p.Name), s, menu, a, dpi));
+        if (s.Profiles.Any(TrayMenuState.TracksUsage))
+        {
+            var refresh = Item("Refresh &usage", Neutral(Glyph.Refresh, dpi), a.RefreshUsage);
+            refresh.ToolTipText = "Check the usage limits of your Claude-login profiles now.";
+            items.Add(refresh);
+        }
 
         items.Add(new ToolStripSeparator());
         items.Add(Item("&Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
@@ -127,10 +140,15 @@ internal static class TrayMenu
         items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));
     }
 
-    static ToolStripMenuItem ProfileItem(ProfileInfo p, int running, bool hasProblems, ContextMenuStrip menu, TrayMenuActions a, int dpi)
+    static ToolStripMenuItem ProfileItem(ProfileInfo p, int running, bool hasProblems, TrayMenuState s,
+        ContextMenuStrip menu, TrayMenuActions a, int dpi)
     {
         var name = p.Name;
-        var label = TrayText.ProfileLabel(p);
+        var tracked = TrayMenuState.TracksUsage(p);
+        var reading = tracked ? s.Usage?.GetValueOrDefault(name) : null;
+        var lastFetch = tracked ? s.UsageResults?.GetValueOrDefault(name) : null;
+        // "not signed in" stays the muted end of the line: no usage after it.
+        var label = TrayText.ProfileLabel(p) + (TrayText.IsSignedOut(p) ? "" : TrayText.UsageSuffix(reading));
         var glyph = p.Provider switch
         {
             Providers.Vertex => Glyph.Cloud,
@@ -169,6 +187,13 @@ internal static class TrayMenu
         {
             item.DropDownItems.Add(new ToolStripSeparator());
             item.DropDownItems.Add(new ToolStripMenuItem("● " + TrayText.Running(running)) { Enabled = false });
+        }
+        IReadOnlyList<string> usageRows = TrayText.IsSignedOut(p) ? [] : TrayText.UsageRows(reading, lastFetch, s.Now);
+        if (usageRows.Count > 0)
+        {
+            item.DropDownItems.Add(new ToolStripSeparator());
+            foreach (var row in usageRows)
+                item.DropDownItems.Add(new ToolStripMenuItem(row.Replace("&", "&&")) { Enabled = false });
         }
         return item;
     }

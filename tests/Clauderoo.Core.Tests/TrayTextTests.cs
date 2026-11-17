@@ -203,4 +203,56 @@ public class TrayTextTests
         ]);
         Assert.Equal(["work keeps its own copy of skills, so it isn't shared"], titles);
     }
+
+    static UsageReading Usage(DateTimeOffset at, params UsageWindow[] w) => new("work", at, "Max 5x", w);
+
+    static UsageWindow W(string name, double percent, DateTimeOffset? resets = null) => new(name, percent, resets);
+
+    [Fact]
+    public void UsageSuffix_Format()
+    {
+        var at = DateTimeOffset.Now;
+        Assert.Equal(" · 5h 42% · 7d 63%", TrayText.UsageSuffix(Usage(at, W("5h", 42.4), W("7d", 62.5), W("Opus", 71))));
+        Assert.Equal(" · 7d 63%", TrayText.UsageSuffix(Usage(at, W("7d", 63))));
+        Assert.Equal("", TrayText.UsageSuffix(Usage(at, W("Opus", 71))));
+        Assert.Equal("", TrayText.UsageSuffix(null));
+    }
+
+    [Fact]
+    public void UsageRows_Format()
+    {
+        var now = new DateTimeOffset(DateTime.Today.AddHours(12));
+        var today = new DateTimeOffset(DateTime.Today.AddHours(15).AddMinutes(40));
+        var later = now.AddDays(3);
+        var r = Usage(now, W("5h", 42, today), W("7d", 63, later), W("Opus", 71));
+        Assert.Equal(
+        [
+            "5-hour: 42%, resets 15:40",
+            $"7-day: 63%, resets {later.LocalDateTime.ToString("d MMM HH:mm", System.Globalization.CultureInfo.InvariantCulture)}",
+            "Opus: 71%",
+        ], TrayText.UsageRows(r, new UsageResult.Ok(r), now));
+
+        // a stale reading kept after a failed fetch: "as of", then why
+        var old = Usage(now.AddMinutes(-40), W("5h", 42));
+        Assert.Equal(["5-hour: 42%", $"As of {now.AddMinutes(-40).LocalDateTime:HH:mm}", "Usage is rate limited; clauderoo will try again later."],
+            TrayText.UsageRows(old, new UsageResult.RateLimited(TimeSpan.FromMinutes(10)), now));
+
+        Assert.Equal(["Sign-in expired. Start a session of this profile to refresh it."],
+            TrayText.UsageRows(null, new UsageResult.Expired(), now));
+        Assert.Empty(TrayText.UsageRows(null, null, now));
+        Assert.Empty(TrayText.UsageRows(null, new UsageResult.NotSignedIn(), now));
+    }
+
+    [Fact]
+    public void UsageLevel_Thresholds()
+    {
+        Assert.Equal(UsageLevel.Ok, TrayText.UsageLevelOf(69.9));
+        Assert.Equal(UsageLevel.Warn, TrayText.UsageLevelOf(70));
+        Assert.Equal(UsageLevel.Warn, TrayText.UsageLevelOf(89.9));
+        Assert.Equal(UsageLevel.High, TrayText.UsageLevelOf(90));
+    }
+
+    [Fact]
+    public void UsageNotTracked_NamesProvider() =>
+        Assert.Equal("Usage isn't tracked for Google Vertex AI.", TrayText.UsageNotTracked(Providers.Vertex));
 }
