@@ -328,7 +328,7 @@ public static class Commands
                     }
                     catch (OperationCanceledException) when (cts.IsCancellationRequested)
                     {
-                        err.WriteLine("Cancelled.");
+                        if (json) JsonOut.Error(err, "Cancelled."); else err.WriteLine("Cancelled.");
                         return 1;
                     }
                 }

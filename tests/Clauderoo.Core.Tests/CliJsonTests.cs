@@ -134,6 +134,22 @@ public class CliJsonTests
     }
 
     [Fact]
+    public void Json_DateTime_SerializesUtcZ()
+    {
+        var w = new StringWriter();
+        JsonOut.Write(w, new
+        {
+            Utc = new DateTime(2026, 11, 17, 10, 0, 0, DateTimeKind.Utc),
+            Unspecified = new DateTime(2026, 11, 17, 10, 0, 0, DateTimeKind.Unspecified),
+            Local = new DateTime(2026, 11, 17, 10, 0, 0, DateTimeKind.Utc).ToLocalTime(),
+        });
+        using var doc = JsonDocument.Parse(w.ToString());
+        Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("utc").GetString());
+        Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("unspecified").GetString());
+        Assert.Equal("2026-11-17T10:00:00Z", doc.RootElement.GetProperty("local").GetString());
+    }
+
+    [Fact]
     public void JsonOut_Write_FormatsDatesAsUtcIso()
     {
         var w = new StringWriter();

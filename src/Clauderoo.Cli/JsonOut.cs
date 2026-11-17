@@ -13,7 +13,7 @@ public static class JsonOut
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new UtcDateTimeOffsetConverter() },
+        Converters = { new UtcDateTimeOffsetConverter(), new UtcDateTimeConverter() },
     };
 
     public static void Write(TextWriter w, object payload)
@@ -30,6 +30,19 @@ public static class JsonOut
 
     public static void Error(TextWriter err, string message) =>
         err.WriteLine(new JsonObject { ["schemaVersion"] = SchemaVersion, ["error"] = message }.ToJsonString());
+
+    /// <summary>Unspecified is treated as UTC; Local is converted.</summary>
+    private sealed class UtcDateTimeConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type t, JsonSerializerOptions o) =>
+            reader.GetDateTime();
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions o)
+        {
+            var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : value;
+            writer.WriteStringValue(utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
 
     private sealed class UtcDateTimeOffsetConverter : JsonConverter<DateTimeOffset>
     {
