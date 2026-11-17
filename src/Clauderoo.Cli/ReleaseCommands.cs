@@ -92,7 +92,7 @@ internal static class ReleaseCommands
             if (!File.Exists(exe)) throw new ClauderooException("The download didn't contain clauderoo.exe; nothing was changed.");
             output.WriteLine("Verified. Installing...");
             var code = (hooks?.RunInstall ?? RunInstallProcess)(exe);
-            if (code == 0) output.WriteLine($"Upgraded to {latest.Version}. Open a new terminal to use it.");
+            if (code == 0) output.WriteLine($"Upgraded to {latest.Version}. Open a new terminal to use it. If the tray app is running, exit it and start it again (cr tray).");
             else err.WriteLine("The installer didn't finish; the previous version is still in place.");
             return code;
         }
@@ -111,7 +111,7 @@ internal static class ReleaseCommands
         return p.ExitCode;
     }
 
-    public static int Uninstall(List<string> pos, TextWriter output, ClauderooPaths paths, ReleaseHooks? hooks)
+    public static int Uninstall(List<string> pos, TextWriter output, ClauderooPaths paths, SessionTracker sessions, ReleaseHooks? hooks)
     {
         var yes = pos.Remove("--yes");
         if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo uninstall [--yes]");
@@ -133,6 +133,8 @@ internal static class ReleaseCommands
 
         var data = hooks?.Uninstall?.DataDir ?? paths.Root;
         output.WriteLine($"Uninstalled: autostart is off, {installDir} is off your PATH and will be removed in a few seconds.");
+        if (sessions.Running().Count > 0)
+            output.WriteLine($"Close running Claude sessions started by clauderoo; if {installDir} is still there afterwards, delete it.");
         if (clearDefault) output.WriteLine("The default profile setting (CLAUDE_CONFIG_DIR) was cleared.");
         output.WriteLine($"Your profiles, logins and settings were kept in {data}.");
         output.WriteLine("Delete that folder only if you're done with clauderoo. Use Explorer or 'rd /s' on it, not PowerShell 5.1 'Remove-Item -Recurse', which can follow junctions into your shared Claude folders.");

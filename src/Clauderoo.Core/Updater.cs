@@ -67,7 +67,8 @@ public sealed class Updater(HttpMessageHandler h, string repo)
     {
         using var http = NewClient();
         using var resp = await http.GetAsync($"https://api.github.com/repos/{repo}/releases/latest", ct);
-        if (!resp.IsSuccessStatusCode) return new(null, false, null);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return new(null, false, null); // no release yet
+        if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"GitHub answered {(int)resp.StatusCode}.", null, resp.StatusCode);
         try
         {
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));

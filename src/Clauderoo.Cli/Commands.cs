@@ -267,7 +267,7 @@ public static class Commands
             case "upgrade":
                 return ReleaseCommands.Upgrade(pos, output, err, hooks);
             case "uninstall":
-                return ReleaseCommands.Uninstall(pos, output, pm.Paths, hooks);
+                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks);
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);

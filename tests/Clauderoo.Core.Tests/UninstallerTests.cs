@@ -186,6 +186,21 @@ public class UninstallerTests
     }
 
     [Fact]
+    public void UninstallCli_RunningSessions_AddsCloseAndDeleteHint()
+    {
+        using var rig = new Rig("");
+        using var home = new TempHome();
+        var pm = new ProfileManager(home.Paths, new FakeEnv(), () => new DateTime(2026, 11, 17));
+        var t0 = new DateTime(2026, 11, 17, 8, 0, 0, DateTimeKind.Utc);
+        pm.Sessions = new SessionTracker(home.Paths, pid => (true, t0));
+        pm.Sessions.Record("work", 7, t0);
+        var o = new StringWriter();
+        var hooks = new ReleaseHooks { Env = rig.Env, InstallDir = rig.Install, Uninstall = rig.Options, ReadLine = () => "n" };
+        Assert.Equal(0, Commands.Run(["uninstall", "--yes"], o, new StringWriter(), pm, _ => 0, _ => 0, hooks: hooks));
+        Assert.Contains("Close running Claude sessions started by clauderoo; if " + rig.Install + " is still there afterwards, delete it.", o.ToString());
+    }
+
+    [Fact]
     public void UninstallCli_AnswerNo_KeepsDefault()
     {
         using var rig = new Rig("");

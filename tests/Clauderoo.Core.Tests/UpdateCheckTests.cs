@@ -51,6 +51,25 @@ public class UpdateCheckTests
     }
 
     [Fact]
+    public async Task RunAsync_ServerError_KeepsKnownVersion()
+    {
+        var bad = new Updater(new Http(() => new(HttpStatusCode.InternalServerError)), "me/clauderoo");
+        var s = await UpdateCheck.RunAsync(new UpdateState { LatestVersion = "1.5.0", LatestTag = "v1.5.0" }, bad, T0, default);
+        Assert.Equal("1.5.0", s.LatestVersion);
+        Assert.Equal("v1.5.0", s.LatestTag);
+    }
+
+    [Fact]
+    public void UpdateCheck_Merge_KeepsUserToggleMadeDuringCheck()
+    {
+        var result = new UpdateState { LastCheckUtc = T0, LatestVersion = "2.0.0", CheckEnabled = true };
+        var live = new UpdateState { CheckEnabled = false };
+        var merged = UpdateCheck.Merge(result, live);
+        Assert.False(merged.CheckEnabled);
+        Assert.Equal("2.0.0", merged.LatestVersion);
+    }
+
+    [Fact]
     public async Task RunAsync_RecordsLatest_AndKeepsOldOnFailure()
     {
         const string json = "{\"tag_name\":\"v1.5.0\",\"assets\":["

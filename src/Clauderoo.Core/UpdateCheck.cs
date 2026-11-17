@@ -36,6 +36,20 @@ public static class UpdateCheck
         return cur != null && latest != null && latest > cur ? latest : null;
     }
 
+    /// <summary>Pure: a check result replaces the stored state, but a toggle the user flipped while it ran wins.</summary>
+    public static UpdateState Merge(UpdateState result, UpdateState live)
+    {
+        result.CheckEnabled = live.CheckEnabled;
+        return result;
+    }
+
+    /// <summary>A copy that is safe to serialize on another thread.</summary>
+    public static UpdateState Snapshot(UpdateState s) => new()
+    {
+        LastCheckUtc = s.LastCheckUtc, LatestVersion = s.LatestVersion, LatestTag = s.LatestTag,
+        NotifiedVersion = s.NotifiedVersion, CheckEnabled = s.CheckEnabled,
+    };
+
     /// <summary>Asks GitHub for the latest release and returns the updated state. A network failure keeps the old result and tries again tomorrow.</summary>
     public static async Task<UpdateState> RunAsync(UpdateState state, Updater updater, DateTime nowUtc, CancellationToken ct)
     {

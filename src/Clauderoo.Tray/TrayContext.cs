@@ -322,7 +322,6 @@ sealed class TrayContext : ApplicationContext
             {
                 using var handler = new SocketsHttpHandler();
                 result = await UpdateCheck.RunAsync(state, new Updater(handler, repo), DateTime.UtcNow, default);
-                _updateStore.Save(result);
             }
             catch (Exception) { /* offline or unwritable: try again at the next due check */ }
             Post(() => Guard(() => FinishUpdateCheck(result)));
@@ -334,19 +333,17 @@ sealed class TrayContext : ApplicationContext
         _updateChecking = false;
         if (result == null) return;
         // Keep a toggle the user flipped while the check ran.
-        result.CheckEnabled = _updateState.CheckEnabled;
-        _updateState = result;
-        if (UpdateCheck.NewerThan(result, AppVersion.Current) is { } newer && result.NotifiedVersion != newer.ToString())
-        {
-            result.NotifiedVersion = newer.ToString();
-            SaveUpdateState();
-            Balloon(TrayText.UpdateBalloon(newer.ToString()), ToolTipIcon.Info);
-        }
+        _updateState = UpdateCheck.Merge(result, _updateState);
+        var newer = UpdateCheck.NewerThan(result, AppVersion.Current);
+        var announce = newer != null && result.NotifiedVersion != newer.ToString();
+        if (announce) result.NotifiedVersion = newer!.ToString();
+        SaveUpdateState();
+        if (announce) Balloon(TrayText.UpdateBalloon(newer!.ToString()), ToolTipIcon.Info);
     }
 
     private void SaveUpdateState()
     {
-        var copy = _updateState;
+        var copy = UpdateCheck.Snapshot(_updateState); // taken on the UI thread; the write happens in the background
         _ = Task.Run(() => { try { _updateStore.Save(copy); } catch (Exception) { } });
     }
 

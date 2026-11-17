@@ -107,6 +107,7 @@ public static class Uninstaller
         Process.Start(new ProcessStartInfo("cmd.exe", arguments)
         {
             UseShellExecute = true,
+            WorkingDirectory = Path.GetTempPath(),
             WindowStyle = ProcessWindowStyle.Hidden,
         })?.Dispose();
     }

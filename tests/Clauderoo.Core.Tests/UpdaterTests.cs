@@ -73,6 +73,13 @@ public class UpdaterTests
     }
 
     [Fact]
+    public async Task Latest_403_Throws()
+    {
+        var http = new FakeHttp(_ => new HttpResponseMessage(HttpStatusCode.Forbidden));
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Updater(http, "me/clauderoo").LatestAsync(default));
+    }
+
+    [Fact]
     public async Task Latest_NoRelease_Null()
     {
         var http = new FakeHttp(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
