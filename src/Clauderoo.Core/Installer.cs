@@ -19,24 +19,17 @@ public static class Installer
         Directory.CreateDirectory(dest);
         var sameDir = string.Equals(Path.GetFullPath(sourceDir).TrimEnd('\\'), dest.TrimEnd('\\'),
             StringComparison.OrdinalIgnoreCase);
+        DeleteStaleOld(dest);
         foreach (var f in Files)
         {
             var src = Path.Combine(sourceDir, f);
             if (!File.Exists(src)) throw new ClauderooException($"{f} not found in {sourceDir}.");
             if (sameDir) continue;
-            try { File.Copy(src, Path.Combine(dest, f), overwrite: true); }
-            catch (IOException)
-            {
-                throw new ClauderooException($"Couldn't replace {f} — quit the clauderoo tray and try again.");
-            }
+            Replace(src, Path.Combine(dest, f));
         }
 
         // Short alias: a copy of the CLI named cr.exe (works in cmd, PowerShell and Git Bash).
-        try { File.Copy(Path.Combine(dest, "clauderoo.exe"), Path.Combine(dest, ShortAlias), overwrite: true); }
-        catch (IOException)
-        {
-            throw new ClauderooException($"Couldn't replace {ShortAlias} — close any running 'cr' command and try again.");
-        }
+        Replace(Path.Combine(dest, "clauderoo.exe"), Path.Combine(dest, ShortAlias));
 
         // Read/write the raw registry value so REG_EXPAND_SZ entries (%VAR%) are preserved.
         using var key = Registry.CurrentUser.OpenSubKey("Environment", writable: true)
@@ -49,6 +42,47 @@ public static class Installer
             BroadcastEnvironmentChange();
         }
         return dest;
+    }
+
+    /// <summary>
+    /// Copies <paramref name="src"/> over <paramref name="dest"/>. A running exe (e.g. the in-tab `clauderoo run`
+    /// wrapper of a session started from the tray) can't be overwritten but can be renamed, so an existing file is
+    /// first moved aside to "*.old" (deleted by a later install once nothing runs it).
+    /// </summary>
+    internal static void Replace(string src, string dest)
+    {
+        try
+        {
+            if (File.Exists(dest))
+            {
+                // A previous "*.old" can itself still be running: then use a unique name.
+                try { File.Move(dest, dest + ".old", overwrite: true); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    File.Move(dest, $"{dest}.{Guid.NewGuid():N}.old");
+                }
+            }
+            File.Copy(src, dest, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            throw new ClauderooException(
+                $"Couldn't replace {Path.GetFileName(dest)} — close clauderoo and any Claude sessions started from it, then try again.");
+        }
+    }
+
+    /// <summary>Best effort: removes "*.old" files left by earlier installs (ones still running stay).</summary>
+    internal static void DeleteStaleOld(string dir)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir, "*.old"))
+            {
+                try { File.Delete(f); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
