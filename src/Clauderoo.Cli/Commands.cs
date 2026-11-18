@@ -42,6 +42,7 @@ public static class Commands
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
+  logs [--path] [--tail N]            show the last N lines (default 50) of the clauderoo log, or its path
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
   --json                              list, status, maps, which, check, usage, sessions and auto --once: print JSON for scripts
@@ -72,22 +73,28 @@ public static class Commands
         }
         catch (SessionsRunningException e)
         {
+            AppLog.Warn($"cr {Cmd(args)}: {e.Message}");
             var msg = $"{e.Message} (use --force to do it anyway)";
             if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 1;
         }
         catch (ClauderooException e)
         {
+            AppLog.Warn($"cr {Cmd(args)}: {e.Message}");
             if (WantsJson(args)) JsonOut.Error(err, e.Message); else err.WriteLine(e.Message);
             return 1;
         }
         catch (Exception e)
         {
+            AppLog.Error($"cr {Cmd(args)}: unexpected {e.GetType().Name}: {e.Message}");
             var msg = $"Unexpected error: {e.Message}";
             if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 2;
         }
     }
+
+    // Only the command name is logged: arguments can carry values the user wouldn't want in a file.
+    private static string Cmd(string[] args) => args.Length > 0 ? args[0] : "";
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
     private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
@@ -110,7 +117,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "logs"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -123,7 +130,7 @@ public static class Commands
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
         // 'mcp' owns stdout for the protocol, so it never pre-syncs (its notices would corrupt the stream).
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
-            or "version" or "upgrade" or "uninstall" or "mcp"))
+            or "version" or "upgrade" or "uninstall" or "mcp" or "logs"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -132,6 +139,8 @@ public static class Commands
 
         switch (cmd)
         {
+            case "logs":
+                return LogsCommand.Run(pos, output, pm.Paths);
             case "init":
             {
                 var name = "personal";
@@ -889,11 +898,13 @@ public static class Commands
         var cfg = pm.Config;
         if (enable != null || threshold != null || order != null)
         {
-            var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
-            if (enable != null) s.Enabled = enable.Value;
-            if (threshold != null) s.Threshold = threshold.Value;
-            if (order != null) s.Order = order;
-            ConfigStore.Save(pm.Paths, cfg);
+            cfg = ConfigStore.Update(pm.Paths, c =>
+            {
+                var s = c.AutoSwitch ??= new AutoSwitchSettings();
+                if (enable != null) s.Enabled = enable.Value;
+                if (threshold != null) s.Threshold = threshold.Value;
+                if (order != null) s.Order = order;
+            });
         }
 
         if (once) return AutoOnce(output, err, pm, hookCancel, injected, clock, json);

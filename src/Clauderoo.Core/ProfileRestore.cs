@@ -114,9 +114,15 @@ public partial class ProfileManager
             if (Directory.Exists(sub) && Junction.GetTarget(sub) == null && !entry.Overrides.Contains(d))
                 entry.Overrides.Add(d);
         }
-        cfg.Profiles[name] = entry;
-        try { ConfigStore.Save(paths, cfg); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        try
+        {
+            cfg = ConfigStore.Update(paths, c =>
+            {
+                if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"A profile named '{name}' already exists.");
+                c.Profiles[name] = entry;
+            });
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
         {
             try { Directory.Move(dir, source); } catch (Exception) { /* leave it; the message says where it is */ }
             throw new ClauderooException($"Couldn't restore {name}: {e.Message}");

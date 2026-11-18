@@ -78,7 +78,7 @@ public partial class ProfileManager
         if (!Directory.Exists(home))
             throw new ClauderooException($"Home folder not found: {home}");
 
-        ConfigStore.Save(paths, new ClauderooConfig
+        ConfigStore.Create(paths, new ClauderooConfig
         {
             DefaultProfile = name,
             HomeDir = home,
@@ -94,8 +94,12 @@ public partial class ProfileManager
         if (cfg.Profiles.ContainsKey(name))
             throw new ClauderooException($"Profile '{name}' already exists.");
         Directory.CreateDirectory(paths.ProfileDir(name));
-        cfg.Profiles[name] = new ProfileEntry();
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"Profile '{name}' already exists.");
+            c.Profiles[name] = new ProfileEntry();
+        });
+        AppLog.Info($"Profile {name} added.");
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -170,11 +174,14 @@ public partial class ProfileManager
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         try { tokens.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
-        cfg.Profiles.Remove(name);
-        cfg.AutoSwitch?.Order.RemoveAll(n => n == name);
-        foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
-            cfg.Folders.Remove(k);
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            c.Profiles.Remove(name);
+            c.AutoSwitch?.Order.RemoveAll(n => n == name);
+            foreach (var k in c.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
+                c.Folders.Remove(k);
+        });
+        AppLog.Info($"Profile {name} removed (its folder was moved aside).");
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
         try { AutoSwitchState.Remove(name); } catch (IOException) { /* state is best effort */ }
     }
@@ -293,7 +300,11 @@ public partial class ProfileManager
                 else Directory.CreateDirectory(link);
             }
         }
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            var e = Entry(c, name);
+            if (!e.Overrides.Contains(item)) e.Overrides.Add(item);
+        });
     }
 
     public SyncReport Share(string name, string item)
@@ -315,7 +326,7 @@ public partial class ProfileManager
                 Directory.Move(link, $"{link}.bak-{Stamp}");
             }
         }
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c => { Entry(c, name).Overrides.Remove(item); });
         var report = NewSyncer(cfg).Sync(name, justShared: item);
         if (dirBackup != null)
             report.Notices.Insert(0, $"{name}: now sharing {item} from {cfg.HomeProfileName}; previous copy saved as {dirBackup}.");

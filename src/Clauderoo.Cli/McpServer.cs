@@ -222,6 +222,7 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
     private JsonObject LogAndWrap(JsonNode? id, Exception e)
     {
         _ = Log($"mcp: unexpected {e.GetType().Name}");
+        AppLog.Error($"MCP tool failed: unexpected {e.GetType().Name}: {e.Message}");
         return Result(id, ToolJson(new ToolResult($"Unexpected error ({e.GetType().Name}).", true)));
     }
 

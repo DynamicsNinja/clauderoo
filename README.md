@@ -237,6 +237,7 @@ The manager window has the same two actions under the profile list. **Export…*
 | --- | --- |
 | `manage` | Open the profile manager window |
 | `status [--json]` | Show the default profile and any problems |
+| `logs [--path] [--tail N]` | Show the last N lines of the clauderoo log (default 50), or with `--path` just where it is. See [Log file](#log-file) |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |
@@ -397,6 +398,7 @@ In an owned `settings.json`, the provider's settings replace any Vertex or API-k
 %USERPROFILE%\.claude                      ← home profile (read-only to clauderoo)
 %USERPROFILE%\.clauderoo\
 ├── config.json                            ← profiles, providers, env vars, default
+├── logs\clauderoo.log                     ← warnings, errors and key actions
 └── profiles\
     ├── work\                              ← CLAUDE_CONFIG_DIR for "work"
     │   ├── plugins  ──junction──► ~/.claude/plugins
@@ -424,6 +426,16 @@ If you edit a copied file inside a profile, the next sync replaces it with home'
 - From each Claude-login profile's `.credentials.json`, clauderoo reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only, to fetch usage. It never writes, copies, logs or shows the token, and never refreshes it. It never reads the sign-in file of a Vertex, API-key or Claude-token profile.
 - Tokens and API keys are never printed or logged, and API keys and Claude tokens are stored only in encrypted form (DPAPI).
 - Removed profiles are moved, never deleted, and junctions are unlinked before a move.
+
+### Settings file
+
+The CLI, the tray app, the MCP server and `cr auto --once` can all change `config.json` at the same time. Each change takes a machine-wide lock for that file, reads it fresh, applies the change and replaces the file in one move, so no change is lost to another one. Reading never waits: the file is always whole. If another process holds the lock for more than 10 seconds, the change fails with a message asking you to try again.
+
+`config.json` has a `schemaVersion` (currently `1`; a file without one counts as `1`). An older file is upgraded when it's read and saved in the new format on the next change. A file written by a newer clauderoo is still read, with unknown settings kept, but changes are refused until you update clauderoo, so an older version never overwrites settings it doesn't understand.
+
+### Log file
+
+clauderoo keeps a log at `%USERPROFILE%\.clauderoo\logs\clauderoo.log`, written by the CLI, the tray app and the MCP server: warnings, errors, sync problems, auto-switch decisions, default changes and settings saves. It's capped at 1 MB, with two older files kept (`clauderoo.1.log`, `clauderoo.2.log`). Each line says which program wrote it. Tokens, API keys and anything that looks like a secret are removed before a line is written. `cr logs` shows the end of it.
 
 ## Troubleshooting
 
@@ -470,6 +482,7 @@ dotnet test  clauderoo.slnx
 | `src/Clauderoo.Cli` | Command-line entry point (`clauderoo.exe` / `cr.exe`) |
 | `src/Clauderoo.Tray` | WinForms tray app and profile manager (`clauderoow.exe`) |
 | `tests/Clauderoo.Core.Tests` | xUnit tests for Core and the Tray views |
+| `tests/Clauderoo.ConfigWriter` | Test helper: a separate process that changes a test `config.json`, for the locking tests |
 | `tools/IconGen` | Generates the multi-size `.ico` files in `src/Clauderoo.Tray/Icons` |
 | `packaging/winget` | winget manifest, updated for each release |
 | `.github` | CI and release workflows, issue templates, Dependabot |
@@ -486,6 +499,7 @@ This writes the app and status icons, including the high-contrast versions, to `
 
 - Tests must never touch the real `~/.claude`, `%USERPROFILE%\.clauderoo` or user environment. Use the temp-folder fixtures in the test project.
 - Never delete a junction recursively. Unlink it first.
+- Change `config.json` only through `ConfigStore.Update`, and keep the change in memory: no syncing or other locks inside it.
 - Write user-facing text in plain language and keep raw tool output in the **Show details** view.
 
 ## Contributing

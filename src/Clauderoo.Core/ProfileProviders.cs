@@ -58,19 +58,23 @@ public partial class ProfileManager
         if (provider != Providers.ApiKey) secrets.Delete(dir);
         if (provider != Providers.Token) tokens.Delete(dir);
 
-        entry.Provider = provider == Providers.Login ? null : provider;
-        if (provider == Providers.Vertex)
+        cfg = ConfigStore.Update(paths, c =>
         {
-            entry.Vertex = new VertexSettings
+            var e = NonHome(c, name);
+            e.Provider = provider == Providers.Login ? null : provider;
+            if (provider == Providers.Vertex)
             {
-                Project = vertex!.Project.Trim(),
-                Region = vertex.Region.Trim(),
-                SonnetModel = Blank(vertex.SonnetModel),
-                OpusModel = Blank(vertex.OpusModel),
-                HaikuModel = Blank(vertex.HaikuModel),
-            };
-        }
-        ConfigStore.Save(paths, cfg);
+                e.Vertex = new VertexSettings
+                {
+                    Project = vertex!.Project.Trim(),
+                    Region = vertex.Region.Trim(),
+                    SonnetModel = Blank(vertex.SonnetModel),
+                    OpusModel = Blank(vertex.OpusModel),
+                    HaikuModel = Blank(vertex.HaikuModel),
+                };
+            }
+        });
+        AppLog.Info($"Profile {name} now uses {Providers.DisplayName(provider)}.");
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -88,9 +92,13 @@ public partial class ProfileManager
         var entry = NonHome(cfg, name);
         var setList = set.ToList();
         foreach (var kv in setList) ProviderOverlay.ValidateEnvName(kv.Key);
-        foreach (var k in unset) entry.Env.Remove(k);
-        foreach (var kv in setList) entry.Env[kv.Key] = kv.Value;
-        ConfigStore.Save(paths, cfg);
+        var unsetList = unset.ToList();
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            var e = NonHome(c, name);
+            foreach (var k in unsetList) e.Env.Remove(k);
+            foreach (var kv in setList) e.Env[kv.Key] = kv.Value;
+        });
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -99,8 +107,7 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = NonHome(cfg, name);
         foreach (var k in envVars.Keys) ProviderOverlay.ValidateEnvName(k);
-        entry.Env = new Dictionary<string, string>(envVars, StringComparer.Ordinal);
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c => { NonHome(c, name).Env = new Dictionary<string, string>(envVars, StringComparer.Ordinal); });
         return NewSyncer(cfg).Sync(name);
     }
 

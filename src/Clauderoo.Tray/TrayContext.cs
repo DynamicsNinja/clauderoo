@@ -715,14 +715,12 @@ sealed class TrayContext : ApplicationContext
         try
         {
             if (RequireConfig() == null) return;
-            var s = await _gate.RunAsync(() =>
+            var s = await _gate.RunAsync(() => ConfigStore.Update(_paths, cfg =>
             {
-                var cfg = _pm.Config;
                 var settings = cfg.AutoSwitch ??= new AutoSwitchSettings();
                 settings.Enabled = on;
-                ConfigStore.Save(_paths, cfg);
                 return settings;
-            });
+            }));
             QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
             if (on) _ = AutoSwitchAsync();
         }
@@ -884,6 +882,7 @@ sealed class TrayContext : ApplicationContext
     private void ReportError(Exception e)
     {
         var (text, unknown) = TrayText.PlainError(e);
+        AppLog.Warn($"Tray: {e.GetType().Name}: {e.Message}");
         if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
         Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
     }

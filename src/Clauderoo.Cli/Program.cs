@@ -4,6 +4,7 @@ using Clauderoo.Core;
 Console.OutputEncoding = System.Text.Encoding.UTF8; // so ✓ ⚠ ✗ render
 
 var paths = ClauderooPaths.ForCurrentUser();
+AppLog.Start(paths, args is ["mcp"] ? "mcp" : "cli");
 var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
 
 var version = typeof(Commands).Assembly.GetName().Version?.ToString(3) ?? "0";

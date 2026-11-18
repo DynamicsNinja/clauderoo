@@ -1800,10 +1800,12 @@ sealed class ProfilesForm : Form
             {
                 await RunWriteAsync(() =>
                 {
-                    var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
-                    edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
-                    fresh.AutoSwitch = edited;
-                    ConfigStore.Save(_pm.Paths, fresh);
+                    // Read again inside the config lock: the tray or the CLI may have changed it while the dialog was open.
+                    ConfigStore.Update(_pm.Paths, fresh =>
+                    {
+                        edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
+                        fresh.AutoSwitch = edited;
+                    });
                     return true;
                 });
             }

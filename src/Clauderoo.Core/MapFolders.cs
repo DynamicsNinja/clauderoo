@@ -4,24 +4,28 @@ public partial class ProfileManager
 {
     public void Map(string profile, string dir)
     {
-        var cfg = Config;
-        Entry(cfg, profile);
+        Entry(Config, profile);
         var key = FolderMap.Normalize(dir);
-        foreach (var k in cfg.Folders.Keys.Where(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList())
-            cfg.Folders.Remove(k);
-        cfg.Folders[key] = profile;
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, cfg =>
+        {
+            Entry(cfg, profile);
+            foreach (var k in cfg.Folders.Keys.Where(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList())
+                cfg.Folders.Remove(k);
+            cfg.Folders[key] = profile;
+        });
     }
 
     public bool Unmap(string dir)
     {
-        var cfg = Config;
+        _ = Config; // not set up: the usual message
         var key = FolderMap.Normalize(dir);
-        var found = cfg.Folders.Keys.Where(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (found.Count == 0) return false;
-        foreach (var k in found) cfg.Folders.Remove(k);
-        ConfigStore.Save(paths, cfg);
-        return true;
+        return ConfigStore.UpdateWhen(paths, cfg =>
+        {
+            var found = cfg.Folders.Keys.Where(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (found.Count == 0) return false;
+            foreach (var k in found) cfg.Folders.Remove(k);
+            return true;
+        });
     }
 
     public IReadOnlyList<(string Dir, string Profile)> Maps() =>

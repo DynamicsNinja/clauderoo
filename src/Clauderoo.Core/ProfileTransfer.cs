@@ -169,61 +169,63 @@ public partial class ProfileManager
                 foreach (var p in plist.EnumerateArray())
                     ImportProfileSafe(p, force, log);
 
-            // Everything below edits config directly; one load and one save, and only when something changed.
-            var cfg = Config;
-            var dirty = false;
-            foreach (var (name, dir) in log.StartDirs)
-                if (cfg.Profiles.TryGetValue(name, out var pe) && pe.StartDir != dir) { pe.StartDir = dir; dirty = true; }
+            // Everything below edits config directly; one locked load and save, and only when something changed.
             var skipped = log.Skipped;
-
-            if (root.TryGetProperty("folders", out var flist) && flist.ValueKind == JsonValueKind.Array)
+            var autoImported = false;
+            ConfigStore.UpdateWhen(paths, cfg =>
             {
-                foreach (var f in flist.EnumerateArray())
+                var dirty = false;
+                foreach (var (name, dir) in log.StartDirs)
+                    if (cfg.Profiles.TryGetValue(name, out var pe) && pe.StartDir != dir) { pe.StartDir = dir; dirty = true; }
+
+                if (root.TryGetProperty("folders", out var flist) && flist.ValueKind == JsonValueKind.Array)
                 {
-                    var dir = Str(f, "dir");
-                    var profile = Str(f, "profile");
-                    if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(profile)) continue;
-                    if (!cfg.Profiles.ContainsKey(profile))
+                    foreach (var f in flist.EnumerateArray())
                     {
-                        skipped.Add($"folder {dir}: profile '{profile}' doesn't exist here");
-                        continue;
-                    }
-                    string key;
-                    try { key = FolderMap.Normalize(dir); }
-                    catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
-                    {
-                        skipped.Add($"folder {dir}: not a valid path");
-                        continue;
-                    }
-                    var existing = cfg.Folders.Where(k => k.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
-                    if (existing.Count > 0)
-                    {
-                        if (existing.Any(k => k.Value == profile)) continue;
-                        if (!force)
+                        var dir = Str(f, "dir");
+                        var profile = Str(f, "profile");
+                        if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(profile)) continue;
+                        if (!cfg.Profiles.ContainsKey(profile))
                         {
-                            skipped.Add($"folder {key}: already mapped to {existing[0].Value}");
+                            skipped.Add($"folder {dir}: profile '{profile}' doesn't exist here");
                             continue;
                         }
-                        foreach (var k in existing) cfg.Folders.Remove(k.Key);
+                        string key;
+                        try { key = FolderMap.Normalize(dir); }
+                        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+                        {
+                            skipped.Add($"folder {dir}: not a valid path");
+                            continue;
+                        }
+                        var existing = cfg.Folders.Where(k => k.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
+                        if (existing.Count > 0)
+                        {
+                            if (existing.Any(k => k.Value == profile)) continue;
+                            if (!force)
+                            {
+                                skipped.Add($"folder {key}: already mapped to {existing[0].Value}");
+                                continue;
+                            }
+                            foreach (var k in existing) cfg.Folders.Remove(k.Key);
+                        }
+                        cfg.Folders[key] = profile;
+                        log.Mapped.Add($"{key} → {profile}");
+                        dirty = true;
                     }
-                    cfg.Folders[key] = profile;
-                    log.Mapped.Add($"{key} → {profile}");
-                    dirty = true;
                 }
-            }
 
-            // Auto-switch settings are taken over only when this machine has none: an import never changes them.
-            var autoImported = false;
-            if (cfg.AutoSwitch == null && root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind == JsonValueKind.Object)
-            {
-                if (ReadAutoSwitch(auto, cfg, skipped, log.Notices) is { } settings)
+                // Auto-switch settings are taken over only when this machine has none: an import never changes them.
+                if (cfg.AutoSwitch == null && root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind == JsonValueKind.Object)
                 {
-                    cfg.AutoSwitch = settings;
-                    autoImported = dirty = true;
+                    if (ReadAutoSwitch(auto, cfg, skipped, log.Notices) is { } settings)
+                    {
+                        cfg.AutoSwitch = settings;
+                        autoImported = dirty = true;
+                    }
                 }
-            }
 
-            if (dirty) ConfigStore.Save(paths, cfg);
+                return dirty;
+            });
             return new ImportResult(log.Created, log.Updated, skipped, log.NeedSecret, log.Kept.Distinct().ToList(),
                 log.Notices, log.Mapped, log.EnvNames, autoImported);
         }
