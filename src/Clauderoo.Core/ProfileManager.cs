@@ -3,7 +3,8 @@ using System.Text.Json;
 namespace Clauderoo.Core;
 
 public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Email,
-    IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null);
+    IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null,
+    string? StartDir = null);
 
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
@@ -242,7 +243,7 @@ public partial class ProfileManager
             var provider = kv.Value.Home ? Providers.Login : Providers.Of(kv.Value);
             var detail = provider == Providers.Vertex ? kv.Value.Vertex?.Project : null;
             return new ProfileInfo(kv.Key, kv.Value.Home, cfg.DefaultProfile == kv.Key,
-                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail);
+                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail, kv.Value.StartDir);
         }).ToList();
     }
 

@@ -8,7 +8,10 @@ public static class Commands
     private const string Usage = @"Usage: clauderoo <command> [options]   (short form: cr <command>)
 
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
-  add <name>                          create a new profile
+  add <name> [--from <profile>]       create a new profile (--from: copy another profile's settings, as clone does)
+  clone <source> <new>                create a profile with the same provider, env vars, owned items and start folder
+                                      (never the sign-in, conversations, API key or token)
+  startdir <name> [<dir> | --clear]   show, set or clear the folder the tray starts the profile's sessions in
   list                                list profiles
   start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
                                       no name: use the folder's mapping, else the default
@@ -45,6 +48,7 @@ public static class Commands
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
   status                              show the default profile and any problems
+  home [<path>]                       show the home profile's Claude folder, or point it at <path> after ~/.claude moved
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
   --json                              list, status, maps, which, check, usage, sessions, removed, purge and auto --once: print JSON for scripts
@@ -114,7 +118,7 @@ public static class Commands
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
             "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "removed", "purge"];
-        if (!known.Contains(cmd))
+        if (!known.Contains(cmd) && !SetupCommands.Names.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
         var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
@@ -126,7 +130,7 @@ public static class Commands
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
         // 'mcp' owns stdout for the protocol, so it never pre-syncs (its notices would corrupt the stream).
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
-            or "version" or "upgrade" or "uninstall" or "mcp"))
+            or "version" or "upgrade" or "uninstall" or "mcp" or "home"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -151,7 +155,15 @@ public static class Commands
             }
             case "add":
             {
-                var name = Need(pos, 1, "clauderoo add <name>")[0];
+                var from = pos.IndexOf("--from");
+                if (from >= 0)
+                {
+                    if (from + 1 >= pos.Count) throw new ClauderooException("Usage: clauderoo add <name> [--from <profile>]");
+                    var source = pos[from + 1];
+                    pos.RemoveRange(from, 2);
+                    return SetupCommands.Clone(source, Need(pos, 1, "clauderoo add <name> [--from <profile>]")[0], output, err, pm);
+                }
+                var name = Need(pos, 1, "clauderoo add <name> [--from <profile>]")[0];
                 Print(pm.Add(name), output, err);
                 output.WriteLine($"Added profile '{name}'. Run 'clauderoo start {name}' and sign in.");
                 return 0;
@@ -167,6 +179,7 @@ public static class Commands
                             Account = i.Email,
                             Detail = i.ProviderDetail,
                             i.Overrides,
+                            i.StartDir,
                         }),
                     });
                     return 0;
@@ -352,6 +365,15 @@ public static class Commands
                 output.WriteLine($"Renamed '{a[0]}' to '{a[1]}'. Restart any open {a[0]} sessions with 'cr start {a[1]}'.");
                 return 0;
             }
+            case "clone":
+            {
+                var a = Need(pos, 2, "clauderoo clone <source> <new>");
+                return SetupCommands.Clone(a[0], a[1], output, err, pm);
+            }
+            case "startdir":
+                return SetupCommands.StartDir(pos, output, pm);
+            case "home":
+                return SetupCommands.Home(pos, output, err, pm);
             case "status":
             {
                 var s = pm.Status();
@@ -744,6 +766,7 @@ public static class Commands
         {
             var tail = i.IsHome ? "(home)"
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
+            if (i.StartDir != null) tail = (tail + "  starts in " + i.StartDir).TrimStart();
             yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {(useW > 0 ? Use(i).PadRight(useW) + "  " : "")}{tail}".TrimEnd();
         }
     }

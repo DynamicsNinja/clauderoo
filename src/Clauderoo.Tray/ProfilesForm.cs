@@ -47,6 +47,7 @@ sealed class ProfilesForm : Form
     private readonly Button _export = Btn("E&xport…");
     private readonly Button _import = Btn("Import…");
     private readonly Button _removedCopies = Btn("Removed…");
+    private readonly Button _duplicate = Btn("Duplicate…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -103,6 +104,17 @@ sealed class ProfilesForm : Form
     };
     private readonly Button _addFolder = Btn("Add folder…");
     private readonly Button _removeFolder = Btn("Remove folder");
+
+    // Start folder: where Start session (here and in the tray) opens; saved right away, like folder mappings.
+    private readonly Label _startDirLabel = new() { Text = "Start folder (used by Start session)", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly TableLayoutPanel _startDirRow = Table(3);
+    private readonly TextBox _startDir = new()
+    {
+        ReadOnly = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 2, 6, 2),
+        PlaceholderText = "Your user folder", AccessibleName = "Start folder",
+    };
+    private readonly Button _browseStartDir = Btn("Browse…");
+    private readonly Button _clearStartDir = Btn("Clear");
 
     private readonly TableLayoutPanel _loginPanel = FieldGrid();
     private readonly Label _account = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 0, 3), UseMnemonic = false };
@@ -225,7 +237,7 @@ sealed class ProfilesForm : Form
         _list.MinimumSize = new Size(230, 200);
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
-        leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        leftButtons.Controls.AddRange([_new, _duplicate, _rename, _remove]);
         var transferButtons = Flow(FlowDirection.LeftToRight);
         transferButtons.Margin = new Padding(0, 6, 0, 0);
         transferButtons.Controls.AddRange([_export, _import, _removedCopies]);
@@ -310,6 +322,16 @@ sealed class ProfilesForm : Form
         _foldersRow.Controls.Add(_folders, 0, 0);
         _foldersRow.Controls.Add(folderButtons, 1, 0);
 
+        _startDirRow.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _startDirRow.Margin = new Padding(0, 0, 0, 6);
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _startDirRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _startDirRow.Controls.Add(_startDir, 0, 0);
+        _startDirRow.Controls.Add(_browseStartDir, 1, 0);
+        _startDirRow.Controls.Add(_clearStartDir, 2, 0);
+
         _checkRow = Flow(FlowDirection.LeftToRight);
         _checkRow.Margin = new Padding(0, 0, 0, 4);
         _checkRow.Controls.AddRange([_check, _copy, _signIn]);
@@ -329,7 +351,7 @@ sealed class ProfilesForm : Form
         [
             _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
             _usageGroup, _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
-            _envLabel, _envHint,
+            _startDirLabel, _startDirRow, _envLabel, _envHint,
         ];
         top.RowCount = topRows.Length;
         for (var i = 0; i < topRows.Length; i++)
@@ -442,6 +464,9 @@ sealed class ProfilesForm : Form
         _import.Click += (_, _) => Guard(ImportProfiles);
         _removedCopies.Click += (_, _) => Guard(ShowRemovedCopies);
         _tips.SetToolTip(_removedCopies, "Restore or permanently delete removed profiles.");
+        _duplicate.Click += (_, _) => Guard(DuplicateProfile);
+        _browseStartDir.Click += (_, _) => Guard(BrowseStartDir);
+        _clearStartDir.Click += (_, _) => Guard(ClearStartDir);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -754,6 +779,7 @@ sealed class ProfilesForm : Form
             _env.Rows.Clear();
             _hasSavedKey = _hasSavedToken = false;
             LoadFolders(info?.Name);
+            LoadStartDir(info?.Name);
 
             if (info == null)
             {
@@ -976,6 +1002,7 @@ sealed class ProfilesForm : Form
         _loginPanel.Visible = editable && p == Providers.Login;
         // Folder mappings work for every profile, the home profile too.
         _foldersLabel.Visible = _foldersHint.Visible = _foldersRow.Visible = _current != null;
+        _startDirLabel.Visible = _startDirRow.Visible = _current != null;
         _fieldError.Visible = _checkRow.Visible = _checkStatus.Visible = editable;
         _signIn.Visible = p == Providers.Vertex;
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
@@ -1467,6 +1494,7 @@ sealed class ProfilesForm : Form
     {
         var checkingHere = _checkingFor != null && _checkingFor == _current;
         _rename.Enabled = _current != null && !checkingHere;
+        _duplicate.Enabled = _current != null;
         _setDefault.Enabled = _current != null && !_currentIsDefault;
         _remove.Enabled = _current != null && !_currentIsHome && !_currentIsDefault && !checkingHere;
         _check.Enabled = _checkingFor == null;
@@ -1748,6 +1776,51 @@ sealed class ProfilesForm : Form
         Write(() => _pm.Unmap(dir));
         LoadFolders(name);
         SetResult($"{dir} no longer uses {name}.", SystemColors.ControlText);
+    }
+
+    // ---------- start folder / duplicate ----------
+
+    private void LoadStartDir(string? name)
+    {
+        _startDir.Text = name == null ? "" : _pm.Get(name).StartDir ?? "";
+        _clearStartDir.Enabled = _startDir.Text.Length > 0;
+    }
+
+    // Takes effect right away, like a folder mapping: it only tells Start session where to open.
+    private void BrowseStartDir()
+    {
+        if (_current == null) return;
+        var name = _current;
+        using var dlg = new FolderBrowserDialog { Description = $"Choose the folder {name}'s sessions start in", UseDescriptionForTitle = true };
+        if (Directory.Exists(_startDir.Text)) dlg.InitialDirectory = _startDir.Text;
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        ClearResult();
+        Write(() => _pm.SetStartDir(name, dlg.SelectedPath));
+        LoadStartDir(name);
+        SetResult($"{name}'s sessions now start in {_startDir.Text}.", SystemColors.ControlText);
+    }
+
+    private void ClearStartDir()
+    {
+        if (_current == null) return;
+        var name = _current;
+        ClearResult();
+        Write(() => _pm.SetStartDir(name, null));
+        LoadStartDir(name);
+        SetResult($"{name}'s sessions now start in your user folder.", SystemColors.ControlText);
+    }
+
+    private void DuplicateProfile()
+    {
+        if (_current == null || !ConfirmLeave()) return;
+        ClearResult();
+        var source = _current;
+        var name = InputDialog.Ask("Duplicate profile", $"Name for the copy of '{source}':", this, null,
+            InputDialog.ProfileNameRule(ProfileNames()), InputDialog.ProfileNameHint, lowercase: true);
+        if (string.IsNullOrEmpty(name)) return;
+        var r = Write(() => _pm.Clone(source, name));
+        Reload(name);
+        ShowResult(r.Report, TrayText.Duplicated(source, name, r.SecretToSet));
     }
 
     /// <summary>
