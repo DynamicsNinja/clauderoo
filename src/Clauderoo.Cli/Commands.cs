@@ -3,12 +3,15 @@ using Clauderoo.Core;
 
 namespace Clauderoo.Cli;
 
-public static class Commands
+public static partial class Commands
 {
     private const string Usage = @"Usage: clauderoo <command> [options]   (short form: cr <command>)
 
   init [--name <n>] [--home <path>]   set up clauderoo around your existing ~/.claude
-  add <name>                          create a new profile
+  add <name> [--from <profile>]       create a new profile (--from: copy another profile's settings, as clone does)
+  clone <source> <new>                create a profile with the same provider, env vars, owned items and start folder
+                                      (never the sign-in, conversations, API key or token)
+  startdir <name> [<dir> | --clear]   show, set or clear the folder the tray starts the profile's sessions in
   list                                list profiles
   start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
                                       no name: use the folder's mapping, else the default
@@ -24,34 +27,59 @@ public static class Commands
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
+" + SharingCommands.Usage + @"
   remove <name> [--force]             remove a profile (its folder is moved, not deleted)
-  restore <name>                      bring back the most recently removed profile of that name
+  restore <name> [--at <id>]          bring back a removed profile (newest copy, or the one 'removed' lists as <id>)
+  removed [name]                      list removed copies of profiles, with when they were removed and their size
+  purge [name] [--at <id>] [--older-than <age>] [--all] [--yes]
+                                      permanently delete removed copies (age e.g. 30d, 2w, 12h); asks first
   rename <old> <new> [--force]   rename a profile
   provider <name> login               use the profile's own Claude login (default)
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
                                       use Claude on Google Vertex AI
-  provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
-  provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
-  env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  provider <name> apikey [--new|--keep]
+                                      use an Anthropic API key (read from stdin or prompted)
+  provider <name> token [--new|--keep]
+                                      use a Claude token from 'claude setup-token' (read from stdin or prompted)
+                                      a key or token saved earlier is kept when you switch provider: an empty
+                                      answer or --keep uses it again, --new always asks for a new one
+  forget <name> apikey|token          delete the profile's saved API key or Claude token
+  env <name> [set A=1 B=2 | unset A] [--json]
+                                      show, set or unset a profile's environment variables
   export <file> [names...] [--no-env] [--force]
                                       save profile settings to a file (no secrets or logins)
   import <file> [--force]             create profiles from an export (--force updates existing ones)
-  check <name>                        check the profile's sign-in (Vertex: full setup checklist)
+  check <name> [--live]               check the profile's sign-in (Vertex: full setup checklist;
+                                      --live tests an API key or Claude token for real)
+  doctor [--json]                     check this machine's setup (claude, PATH, MCP, links); changes nothing
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
+  config [terminal wt|conhost] [shell cmd|pwsh|powershell]
+                                      show or set where new tabs open and which shell runs them
+  wt-profiles [--remove]              add (or remove) a Windows Terminal profile for each clauderoo profile
+  code [name] [dir] [--cursor | --editor <exe>]
+                                      open VS Code (or Cursor) with the profile, for the Claude Code extension
+  auto --schedule [on|off] [--every N]
+                                      run 'auto --once' every N minutes (default 10) as a Task Scheduler task;
+                                      with neither on nor off, say whether the task is set up
   status                              show the default profile and any problems
+  home [<path>]                       show the home profile's Claude folder, or point it at <path> after ~/.claude moved
+  logs [--path] [--tail N]            show the last N lines (default 50) of the clauderoo log, or its path
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
-  --json                              list, status, maps, which, check, usage, sessions and auto --once: print JSON for scripts
+  --json                              list, status, maps, which, check, usage, sessions, env, doctor, removed, purge,
+                                      shared, config and auto --once: print JSON for scripts
+  completion powershell|bash          print a tab-completion script (see the README to install it)
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
   install                             copy clauderoo to %LOCALAPPDATA%\clauderoo and add it to PATH
   version | --version                 print the clauderoo version
   upgrade [--check]                   install the latest GitHub release (--check only reports)
-  uninstall [--yes]                   remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
+  uninstall [--yes] [--purge]         remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
+                                      unless --purge (never ~/.claude)
   help                                show this help";
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
@@ -67,30 +95,46 @@ public static class Commands
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
+            var code = Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
                 hookCancel ?? HookConsoleCancel, hooks, usage, clock ?? (() => DateTimeOffset.UtcNow), clipboard, mcpInput);
+            if (code == 0) TerminalCommands.AfterCommand(args, pm);
+            return code;
         }
         catch (SessionsRunningException e)
         {
+            AppLog.Warn($"cr {Cmd(args)}: {e.Message}");
             var msg = $"{e.Message} (use --force to do it anyway)";
             if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 1;
         }
         catch (ClauderooException e)
         {
+            AppLog.Warn($"cr {Cmd(args)}: {e.Message}");
             if (WantsJson(args)) JsonOut.Error(err, e.Message); else err.WriteLine(e.Message);
             return 1;
         }
         catch (Exception e)
         {
+            AppLog.Error($"cr {Cmd(args)}: unexpected {e.GetType().Name}: {e.Message}");
             var msg = $"Unexpected error: {e.Message}";
             if (WantsJson(args)) JsonOut.Error(err, msg); else err.WriteLine(msg);
             return 2;
         }
     }
 
+    // Only the command name is logged: arguments can carry values the user wouldn't want in a file.
+    private static string Cmd(string[] args) => args.Length > 0 ? args[0] : "";
+
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "removed", "purge",
+        "shared", "config", "env", "doctor"];
+
+    /// <summary>Every command Dispatch accepts. "__complete" is hidden: the completion scripts call it.</summary>
+    public static readonly string[] KnownCommands = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
+        "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "forget", "manage", "map", "unmap", "maps", "which",
+        "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "doctor", "completion",
+        "removed", "purge", "logs", "config", "wt-profiles", "code", .. SetupCommands.Names, .. SharingCommands.Names,
+        "__complete"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -108,10 +152,7 @@ public static class Commands
         }
 
         var cmd = args[0] == "--version" ? "version" : args[0];
-        string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp"];
-        if (!known.Contains(cmd))
+        if (!KnownCommands.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
         var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
@@ -123,7 +164,8 @@ public static class Commands
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
         // 'mcp' owns stdout for the protocol, so it never pre-syncs (its notices would corrupt the stream).
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
-            or "version" or "upgrade" or "uninstall" or "mcp"))
+            or "version" or "upgrade" or "uninstall" or "mcp" or "home" or "logs"
+            or "doctor" or "completion" or "__complete"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -132,6 +174,8 @@ public static class Commands
 
         switch (cmd)
         {
+            case "logs":
+                return LogsCommand.Run(pos, output, pm.Paths);
             case "init":
             {
                 var name = "personal";
@@ -148,7 +192,15 @@ public static class Commands
             }
             case "add":
             {
-                var name = Need(pos, 1, "clauderoo add <name>")[0];
+                var from = pos.IndexOf("--from");
+                if (from >= 0)
+                {
+                    if (from + 1 >= pos.Count) throw new ClauderooException("Usage: clauderoo add <name> [--from <profile>]");
+                    var source = pos[from + 1];
+                    pos.RemoveRange(from, 2);
+                    return SetupCommands.Clone(source, Need(pos, 1, "clauderoo add <name> [--from <profile>]")[0], output, err, pm);
+                }
+                var name = Need(pos, 1, "clauderoo add <name> [--from <profile>]")[0];
                 Print(pm.Add(name), output, err);
                 output.WriteLine($"Added profile '{name}'. Run 'clauderoo start {name}' and sign in.");
                 return 0;
@@ -164,6 +216,8 @@ public static class Commands
                             Account = i.Email,
                             Detail = i.ProviderDetail,
                             i.Overrides,
+                            i.StartDir,
+                            Exclude = i.Exclude ?? [],
                         }),
                     });
                     return 0;
@@ -253,6 +307,12 @@ public static class Commands
                 else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
+            case "config":
+                return TerminalCommands.Config(pos, json, output, pm);
+            case "wt-profiles":
+                return TerminalCommands.WtProfiles(pos, output, pm);
+            case "code":
+                return TerminalCommands.Code(pos, claudeArgs, output, pm, startNewWindow);
             case "sessions":
                 return SessionsCmd(pos, output, pm, json);
             case "resume":
@@ -313,6 +373,8 @@ public static class Commands
                 output.WriteLine($"{a[0]} now owns {a[1]}.");
                 return 0;
             }
+            case "exclude" or "include" or "shared":
+                return SharingCommands.Run(cmd, pos, json, output, err, pm);
             case "share":
             {
                 var a = Need(pos, 2, "clauderoo share <name> <item>");
@@ -330,11 +392,17 @@ public static class Commands
             }
             case "restore":
             {
-                var name = Need(pos, 1, "clauderoo restore <name>")[0];
-                Print(pm.Restore(name), output, err);
+                const string restoreUsage = "clauderoo restore <name> [--at <id>]";
+                var at = RemovedCommands.TakeAt(pos, "Usage: " + restoreUsage);
+                var name = Need(pos, 1, restoreUsage)[0];
+                Print(pm.Restore(name, at), output, err);
                 output.WriteLine($"Restored '{name}' with its settings and provider.");
                 return 0;
             }
+            case "removed":
+                return RemovedCommands.Removed(pos, json, output, pm);
+            case "purge":
+                return RemovedCommands.Purge(pos, json, output, err, pm, hooks?.ReadLine ?? Console.In.ReadLine);
             case "rename":
             {
                 var force = pos.Remove("--force");
@@ -343,6 +411,15 @@ public static class Commands
                 output.WriteLine($"Renamed '{a[0]}' to '{a[1]}'. Restart any open {a[0]} sessions with 'cr start {a[1]}'.");
                 return 0;
             }
+            case "clone":
+            {
+                var a = Need(pos, 2, "clauderoo clone <source> <new>");
+                return SetupCommands.Clone(a[0], a[1], output, err, pm);
+            }
+            case "startdir":
+                return SetupCommands.StartDir(pos, output, pm);
+            case "home":
+                return SetupCommands.Home(pos, output, err, pm);
             case "status":
             {
                 var s = pm.Status();
@@ -382,19 +459,38 @@ public static class Commands
             case "mcp":
                 return McpCmd(pos, claudeArgs, output, err, pm, claudePath, usage, clipboard, mcpInput);
             case "auto":
+                if (pos.Contains("--schedule")) return AutoScheduleCmd(pos, json, output, err, pm, hooks);
                 return AutoCmd(pos, json, output, err, pm, hookCancel, usage, clock);
+            case "doctor":
+                return DoctorCmd(pos, json, output, err, pm, hookCancel, hooks);
+            case "completion":
+                return CompletionCmd(pos, output);
+            case "__complete":
+                return CompleteCmd(pos, output, pm);
+            case "forget":
+                return ForgetCmd(pos, output, pm);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
+                if (json) return EnvJsonCmd(pos, output, pm);
                 return EnvCmd(pos, output, err, pm);
             case "check":
             {
-                var name = Need(pos, 1, "clauderoo check <name>")[0];
-                if (pm.Get(name).Provider != Providers.Vertex)
+                var live = pos.Remove("--live");
+                var name = Need(pos, 1, "clauderoo check <name> [--live] [--json]")[0];
+                var checkedProvider = pm.Get(name).Provider;
+                if (live && checkedProvider is Providers.ApiKey or Providers.Token)
+                    return CheckSecretCmd(name, json, output, err, pm, hookCancel);
+                if (checkedProvider != Providers.Vertex)
                 {
                     var r = pm.Check(name);
-                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, Items = Array.Empty<object>() });
-                    else output.WriteLine(r.Message);
+                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, r.Warning, Items = Array.Empty<object>() });
+                    else
+                    {
+                        output.WriteLine(r.Message);
+                        if (r is { Ok: true, Verified: false })
+                            output.WriteLine($"Run 'cr check {name} --live' to test it now.");
+                    }
                     return r.Ok ? 0 : 1;
                 }
                 // The model probes run inside CheckSetupAsync, so announce them first.
@@ -459,7 +555,7 @@ public static class Commands
             case "upgrade":
                 return ReleaseCommands.Upgrade(pos, output, err, hooks);
             case "uninstall":
-                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks);
+                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks, () => pm.Config.HomeDir);
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);
@@ -504,25 +600,81 @@ public static class Commands
                 report = pm.SetProvider(name, Providers.Vertex, v);
                 break;
             }
-            case Providers.ApiKey:
+            case Providers.ApiKey or Providers.Token:
             {
-                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var key = readSecret("API key: ");
-                report = pm.SetProvider(name, Providers.ApiKey, null, string.IsNullOrWhiteSpace(key) ? null : key.Trim());
-                break;
-            }
-            case Providers.Token:
-            {
-                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var token = readSecret("Token: ");
-                report = pm.SetProvider(name, Providers.Token, token: string.IsNullOrWhiteSpace(token) ? null : token.Trim());
-                break;
+                var secret = ReadProviderSecret(name, kind, rest, usage, pm, readSecret, out var reused);
+                report = kind == Providers.ApiKey
+                    ? pm.SetProvider(name, Providers.ApiKey, null, secret)
+                    : pm.SetProvider(name, Providers.Token, token: secret);
+                Print(report, output, err);
+                output.WriteLine($"'{name}' now uses {kind}.");
+                if (reused != null) output.WriteLine(reused);
+                // A reused token may be near the end of its year: say so now rather than at the next status.
+                if (kind == Providers.Token && secret == null)
+                    foreach (var p in pm.TokenAgeProblems().Where(p => p.Profile == name)) err.WriteLine("warning: " + p.Detail);
+                return 0;
             }
             default:
                 throw new ClauderooException($"Unknown provider '{kind}'. Known: {ProfileManager.KnownProviders}.");
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
+        return 0;
+    }
+
+    /// <summary>
+    /// The new secret for `provider apikey|token`, or null to use the saved one (then <paramref name="reused"/> says so).
+    /// With a saved one, an empty answer (or end of input) keeps it; --keep keeps it without reading anything; --new
+    /// always wants a new one. Never echoes or prints the secret.
+    /// </summary>
+    private static string? ReadProviderSecret(string name, string kind, List<string> rest, string usage, ProfileManager pm,
+        Func<string, string?> readSecret, out string? reused)
+    {
+        reused = null;
+        var fresh = rest.Remove("--new");
+        var keep = rest.Remove("--keep");
+        if (rest.Count > 0 || (fresh && keep)) throw new ClauderooException($"Usage: {usage}");
+        var word = ProfileManager.SecretWord(kind);
+        var savedAt = pm.SecretSavedAt(name, kind); // also refuses an unknown or the home profile before any prompt
+        var saved = kind == Providers.ApiKey ? pm.HasApiKey(name) : pm.HasToken(name);
+        var on = savedAt is { } t ? $", saved on {t.ToLocalTime():yyyy-MM-dd}" : "";
+        string? secret = null;
+        if (keep)
+        {
+            if (!saved)
+                throw new ClauderooException($"No {word} is saved for '{name}'. Run 'cr provider {name} {kind}' to enter one.");
+        }
+        else
+        {
+            var label = kind == Providers.ApiKey ? "API key" : "Token";
+            secret = readSecret(saved && !fresh ? $"{label} (Enter keeps the saved one{on}): " : $"{label}: ")?.Trim();
+            if (string.IsNullOrEmpty(secret))
+            {
+                secret = null;
+                if (fresh || !saved)
+                    throw new ClauderooException(kind == Providers.ApiKey
+                        ? "Enter an API key."
+                        : "Enter a Claude token. Create one with 'claude setup-token'.");
+            }
+        }
+        if (secret == null) reused = $"Using the saved {word}{on}.";
+        return secret;
+    }
+
+    private static int ForgetCmd(List<string> pos, TextWriter output, ProfileManager pm)
+    {
+        const string usage = "Usage: clauderoo forget <name> apikey|token";
+        if (pos.Count != 2 || pos[1] is not (Providers.ApiKey or Providers.Token)) throw new ClauderooException(usage);
+        var (name, kind) = (pos[0], pos[1]);
+        var word = ProfileManager.SecretWord(kind);
+        if (!pm.ForgetSecret(name, kind))
+        {
+            output.WriteLine($"No {word} is saved for '{name}'. Nothing was changed.");
+            return 0;
+        }
+        output.WriteLine($"Deleted the saved {word} for '{name}'.");
+        if (Providers.Of(pm.Get(name)) == kind)
+            output.WriteLine($"'{name}' still uses {kind}: set a new one with 'cr provider {name} {kind}', or switch provider.");
         return 0;
     }
 
@@ -735,6 +887,9 @@ public static class Commands
         {
             var tail = i.IsHome ? "(home)"
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
+            if (i.StartDir != null) tail = (tail + "  starts in " + i.StartDir).TrimStart();
+            if (!i.IsHome && i.Exclude is { Count: > 0 } ex)
+                tail = (tail.Length > 0 ? tail + "  " : "") + "excludes: " + string.Join(", ", ex);
             yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {(useW > 0 ? Use(i).PadRight(useW) + "  " : "")}{tail}".TrimEnd();
         }
     }
@@ -889,11 +1044,13 @@ public static class Commands
         var cfg = pm.Config;
         if (enable != null || threshold != null || order != null)
         {
-            var s = cfg.AutoSwitch ??= new AutoSwitchSettings();
-            if (enable != null) s.Enabled = enable.Value;
-            if (threshold != null) s.Threshold = threshold.Value;
-            if (order != null) s.Order = order;
-            ConfigStore.Save(pm.Paths, cfg);
+            cfg = ConfigStore.Update(pm.Paths, c =>
+            {
+                var s = c.AutoSwitch ??= new AutoSwitchSettings();
+                if (enable != null) s.Enabled = enable.Value;
+                if (threshold != null) s.Threshold = threshold.Value;
+                if (order != null) s.Order = order;
+            });
         }
 
         if (once) return AutoOnce(output, err, pm, hookCancel, injected, clock, json);

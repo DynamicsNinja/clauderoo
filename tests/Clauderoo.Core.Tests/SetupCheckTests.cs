@@ -27,7 +27,15 @@ public sealed class FakeClaude : IClaudeRunner
     public string? Path { get; set; } = @"C:\fake\claude.cmd";
     public Func<IReadOnlyList<string>, (int, string, string)> Responder { get; set; } = _ => (0, "OK\n", "");
     public List<(IReadOnlyList<string> args, string configDir)> Calls { get; } = [];
+    /// <summary>The extra environment of each call that passed one (e.g. the token check's token).</summary>
+    public List<IReadOnlyDictionary<string, string>> Envs { get; } = [];
     public string? Find() => Path;
+    public Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+        string configDir, TimeSpan timeout, CancellationToken ct, IReadOnlyDictionary<string, string> extraEnv)
+    {
+        Envs.Add(extraEnv);
+        return RunAsync(claudePath, args, configDir, timeout, ct);
+    }
     public Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
         string configDir, TimeSpan timeout, CancellationToken ct)
     {

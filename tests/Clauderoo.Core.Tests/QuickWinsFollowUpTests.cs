@@ -55,7 +55,7 @@ public class QuickWinsFollowUpTests
     [Theory]
     [InlineData("add", "x")]
     [InlineData("start", "work")]
-    [InlineData("env", "work")]
+    [InlineData("rename", "work")]
     [InlineData("default", "work")]
     public void Json_NotSupported_PlainUsageError(string cmd, string arg)
     {

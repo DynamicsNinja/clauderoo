@@ -67,16 +67,13 @@ public partial class ProfileManager
             }
             BeforeRenameCommit?.Invoke();
 
-            // Rebuild the map so the entry keeps its position.
-            var profiles = new Dictionary<string, ProfileEntry>();
-            foreach (var kv in cfg.Profiles) profiles[kv.Key == oldName ? newName : kv.Key] = kv.Value;
-            cfg.Profiles = profiles;
-            if (cfg.DefaultProfile == oldName) cfg.DefaultProfile = newName;
-            if (cfg.AutoSwitch is { } auto)
-                auto.Order = auto.Order.Select(n => n == oldName ? newName : n).ToList();
-            foreach (var k in cfg.Folders.Keys.ToList())
-                if (cfg.Folders[k] == oldName) cfg.Folders[k] = newName;
-            ConfigStore.Save(paths, cfg);
+            cfg = ConfigStore.Update(paths, c =>
+            {
+                if (!c.Profiles.ContainsKey(oldName)) throw new ClauderooException($"No such profile: {oldName}");
+                if (c.Profiles.ContainsKey(newName)) throw new ClauderooException($"A profile named '{newName}' already exists.");
+                RenameIn(c, oldName, newName);
+            });
+            AppLog.Info($"Profile {oldName} renamed to {newName}.");
 
             if (!entry.Home && !string.IsNullOrEmpty(oldEnv) && Norm(oldEnv) == Norm(oldDir))
             {
@@ -97,10 +94,33 @@ public partial class ProfileManager
             // Best-effort rollback; the original exception is what the caller needs to see.
             try { if (isoMoved) Directory.Move(newIso, oldIso); } catch { }
             try { if (moved) Directory.Move(newDir, oldDir); } catch { }
-            try { ConfigStore.Save(paths, original); } catch { }
+            // Undo only our own rename, keeping whatever another process saved meanwhile.
+            try
+            {
+                ConfigStore.UpdateWhen(paths, c =>
+                {
+                    if (!c.Profiles.ContainsKey(newName) || c.Profiles.ContainsKey(oldName)) return false;
+                    RenameIn(c, newName, oldName);
+                    return true;
+                });
+            }
+            catch { }
             try { if (envChanged) env.SetUser(EnvVar, oldEnv); } catch { }
             try { if (moved) NewSyncer(original).Sync(oldName); } catch { }
             throw;
         }
+    }
+
+    // Renames the entry and every reference to it; rebuilds the map so the entry keeps its position.
+    private static void RenameIn(ClauderooConfig cfg, string oldName, string newName)
+    {
+        var profiles = new Dictionary<string, ProfileEntry>();
+        foreach (var kv in cfg.Profiles) profiles[kv.Key == oldName ? newName : kv.Key] = kv.Value;
+        cfg.Profiles = profiles;
+        if (cfg.DefaultProfile == oldName) cfg.DefaultProfile = newName;
+        if (cfg.AutoSwitch is { } auto)
+            auto.Order = auto.Order.Select(n => n == oldName ? newName : n).ToList();
+        foreach (var k in cfg.Folders.Keys.ToList())
+            if (cfg.Folders[k] == oldName) cfg.Folders[k] = newName;
     }
 }

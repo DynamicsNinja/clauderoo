@@ -5,6 +5,7 @@
     <Project Path="src/Clauderoo.Tray/Clauderoo.Tray.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Clauderoo.ConfigWriter/Clauderoo.ConfigWriter.csproj" />
     <Project Path="tests/Clauderoo.Core.Tests/Clauderoo.Core.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

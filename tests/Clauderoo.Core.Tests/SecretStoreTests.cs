@@ -10,6 +10,10 @@ public sealed class FakeSecretStore : ISecretStore
     public List<string> Deleted { get; } = [];
     public void Delete(string profileDir) { Deleted.Add(profileDir); _secrets.Remove(profileDir); }
     public bool Exists(string profileDir) => _secrets.ContainsKey(profileDir);
+    /// <summary>Saved-at times by profile folder; set by tests (Save doesn't stamp one).</summary>
+    public Dictionary<string, DateTimeOffset> Times { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public DateTimeOffset? SavedAt(string profileDir) =>
+        _secrets.ContainsKey(profileDir) && Times.TryGetValue(profileDir, out var t) ? t : null;
 }
 
 public class SecretStoreTests

@@ -157,13 +157,13 @@ public class McpServerTests
     }
 
     [Fact]
-    public async Task ToolsList_HasFourTools()
+    public async Task ToolsList_HasSevenTools()
     {
         using var f = new Fixture();
         var r = Assert.Single(await Talk(f.Server, """{"jsonrpc":"2.0","id":"a","method":"tools/list"}"""));
         Assert.Equal("a", r["id"]!.GetValue<string>());
         var tools = r["result"]!["tools"]!.AsArray().Select(t => t!.AsObject()).ToList();
-        Assert.Equal(["list_profiles", "usage", "set_default", "delegate"], tools.Select(t => t["name"]!.GetValue<string>()));
+        Assert.Equal(["list_profiles", "usage", "set_default", "delegate", "which_profile", "list_sessions", "check_profile"], tools.Select(t => t["name"]!.GetValue<string>()));
         foreach (var t in tools) Assert.Equal("object", t["inputSchema"]!["type"]!.GetValue<string>());
         var del = tools.Single(t => t["name"]!.GetValue<string>() == "delegate");
         Assert.Equal(["profile", "prompt"], del["inputSchema"]!["required"]!.AsArray().Select(x => x!.GetValue<string>()));
@@ -1021,5 +1021,114 @@ public class McpServerTests
         var line = Assert.Single(lines);
         Assert.NotNull(JsonNode.Parse(line)!["result"]);
         Assert.False(Directory.Exists(home.Paths.ProfileDir("work")));
+    }
+
+    // ---- which_profile, list_sessions, check_profile ----
+
+    [Fact]
+    public async Task WhichProfile_SessionStartedByClauderoo()
+    {
+        using var f = new Fixture();
+        f.CallerProfile = "work";
+        var result = await CallOne(f, "which_profile");
+        Assert.False(IsError(result));
+        var j = JsonNode.Parse(Text(result))!;
+        Assert.Equal("work", j["profile"]!.GetValue<string>());
+        Assert.Equal("session", j["source"]!.GetValue<string>());
+        Assert.False(j["isolated"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task WhichProfile_NothingSet_IsHome()
+    {
+        using var f = new Fixture();
+        var j = JsonNode.Parse(Text(await CallOne(f, "which_profile")))!;
+        Assert.Equal(f.Pm.Config.HomeProfileName, j["profile"]!.GetValue<string>());
+        Assert.Equal("home", j["source"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ListSessions_RunningAndConversations()
+    {
+        using var f = new Fixture();
+        var t0 = new DateTime(2026, 11, 17, 8, 0, 0, DateTimeKind.Utc);
+        f.Pm.Sessions = new SessionTracker(f.Home.Paths, _ => (true, t0));
+        f.Pm.Sessions.Record("work", 42, t0);
+        var result = await CallOne(f, "list_sessions");
+        Assert.False(IsError(result));
+        var j = JsonNode.Parse(Text(result))!;
+        var run = Assert.Single(j["running"]!.AsArray())!;
+        Assert.Equal("work", run["profile"]!.GetValue<string>());
+        Assert.Equal(42, run["pid"]!.GetValue<int>());
+        Assert.Equal("2026-11-17T08:00:00Z", run["started"]!.GetValue<string>());
+        Assert.Empty(j["conversations"]!.AsArray());
+        Assert.DoesNotContain("CANARY", Text(result));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(201)]
+    [InlineData(2.5)]
+    public async Task ListSessions_BadLimit_InvalidParams(double limit)
+    {
+        using var f = new Fixture();
+        var r = Assert.Single(await Talk(f.Server, Call(1, "list_sessions", new { limit })));
+        Assert.Equal(-32602, r["error"]!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task ListSessions_UnknownProfile_IsToolError()
+    {
+        using var f = new Fixture();
+        var result = await CallOne(f, "list_sessions", new { profile = "ghost" });
+        Assert.True(IsError(result));
+        Assert.Contains("Unknown profile", Text(result));
+    }
+
+    [Fact]
+    public async Task CheckProfile_TokenOffline_NoSecret()
+    {
+        using var f = new Fixture();
+        var result = await CallOne(f, "check_profile", new { profile = "ci" });
+        Assert.False(IsError(result));
+        var j = JsonNode.Parse(Text(result))!;
+        Assert.Equal("ci", j["profile"]!.GetValue<string>());
+        Assert.Equal("token", j["provider"]!.GetValue<string>());
+        Assert.True(j["ok"]!.GetValue<bool>());
+        Assert.False(j["verified"]!.GetValue<bool>());
+        Assert.DoesNotContain("CANARY", Text(result));
+        Assert.Equal(0, f.Runner.Calls);
+    }
+
+    [Fact]
+    public async Task CheckProfile_LoginNotSignedIn_IsErrorResult()
+    {
+        using var f = new Fixture();
+        var result = await CallOne(f, "check_profile", new { profile = "work" });
+        Assert.True(IsError(result));
+        Assert.False(JsonNode.Parse(Text(result))!["ok"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task CheckProfile_BadArgs()
+    {
+        using var f = new Fixture();
+        var rs = await Talk(f.Server,
+            Call(1, "check_profile"),
+            Call(2, "check_profile", new { profile = "work", live = "yes" }),
+            Call(3, "check_profile", new { profile = "ghost" }));
+        var byId = rs.ToDictionary(r => r["id"]!.GetValue<int>());
+        Assert.Equal(-32602, byId[1]["error"]!["code"]!.GetValue<int>());
+        Assert.Equal(-32602, byId[2]["error"]!["code"]!.GetValue<int>());
+        Assert.True(IsError(byId[3]["result"]!.AsObject()));
+    }
+
+    [Fact]
+    public async Task NewTools_ReadOnly_ConfigUnchanged()
+    {
+        using var f = new Fixture();
+        var before = File.ReadAllText(f.Home.Paths.ConfigFile);
+        await Talk(f.Server, Call(1, "which_profile"), Call(2, "list_sessions"), Call(3, "check_profile", new { profile = "ci" }));
+        Assert.Equal(before, File.ReadAllText(f.Home.Paths.ConfigFile));
     }
 }

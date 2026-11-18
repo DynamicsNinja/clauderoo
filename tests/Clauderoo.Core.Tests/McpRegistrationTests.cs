@@ -3,6 +3,7 @@ using Clauderoo.Tray;
 
 namespace Clauderoo.Core.Tests;
 
+[Collection(WinFormsCollection.Name)]
 public class McpRegistrationTests
 {
     [Fact]

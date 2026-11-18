@@ -115,6 +115,12 @@ public interface IClaudeRunner
     string? Find();
     Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
         string configDir, TimeSpan timeout, CancellationToken ct);
+
+    /// <summary>As above, with extra variables (e.g. a Claude token) in the child's environment only. The default
+    /// ignores them, which only suits test runners that never start a process.</summary>
+    Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+        string configDir, TimeSpan timeout, CancellationToken ct, IReadOnlyDictionary<string, string> extraEnv) =>
+        RunAsync(claudePath, args, configDir, timeout, ct);
 }
 
 public sealed class ProcessClaudeRunner : IClaudeRunner
@@ -160,10 +166,15 @@ public sealed class ProcessClaudeRunner : IClaudeRunner
         return psi;
     }
 
+    public Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
+        string configDir, TimeSpan timeout, CancellationToken ct) =>
+        RunAsync(claudePath, args, configDir, timeout, ct, new Dictionary<string, string>());
+
     public async Task<(int exit, string stdout, string stderr)> RunAsync(string claudePath, IReadOnlyList<string> args,
-        string configDir, TimeSpan timeout, CancellationToken ct)
+        string configDir, TimeSpan timeout, CancellationToken ct, IReadOnlyDictionary<string, string> extraEnv)
     {
         var psi = BuildStartInfo(claudePath, args, configDir);
+        foreach (var (k, v) in extraEnv) psi.Environment[k] = v; // after BuildStartInfo drops any inherited token
         var workDir = psi.WorkingDirectory;
         try
         {

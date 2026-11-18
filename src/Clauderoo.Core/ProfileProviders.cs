@@ -1,8 +1,9 @@
 namespace Clauderoo.Core;
 
 /// <summary><see cref="Verified"/> is false when Ok only means "nothing is wrong that we can see" (e.g. a saved API key
-/// that was never tried); the UI shows such results neutrally instead of as a success.</summary>
-public record CheckResult(bool Ok, string Message, bool Verified = true);
+/// that was never tried); the UI shows such results neutrally instead of as a success. <see cref="Warning"/> is set when
+/// something needs attention soon (e.g. a Claude token near the end of its one-year life); Message includes it.</summary>
+public record CheckResult(bool Ok, string Message, bool Verified = true, string? Warning = null);
 
 public partial class ProfileManager
 {
@@ -44,7 +45,8 @@ public partial class ProfileManager
                 throw new ClauderooException($"Unknown provider '{provider}'. Known: {KnownProviders}.");
         }
 
-        // Save the new secret before deleting the other one: if saving fails, the old secret is still there.
+        // The other provider's secret is kept (unused), so switching back reuses it. Only a new secret, ForgetSecret
+        // or removing the profile deletes one.
         if (provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(apiKey))
         {
             Directory.CreateDirectory(dir);
@@ -55,22 +57,24 @@ public partial class ProfileManager
             Directory.CreateDirectory(dir);
             tokens.Save(dir, token);
         }
-        if (provider != Providers.ApiKey) secrets.Delete(dir);
-        if (provider != Providers.Token) tokens.Delete(dir);
 
-        entry.Provider = provider == Providers.Login ? null : provider;
-        if (provider == Providers.Vertex)
+        cfg = ConfigStore.Update(paths, c =>
         {
-            entry.Vertex = new VertexSettings
+            var e = NonHome(c, name);
+            e.Provider = provider == Providers.Login ? null : provider;
+            if (provider == Providers.Vertex)
             {
-                Project = vertex!.Project.Trim(),
-                Region = vertex.Region.Trim(),
-                SonnetModel = Blank(vertex.SonnetModel),
-                OpusModel = Blank(vertex.OpusModel),
-                HaikuModel = Blank(vertex.HaikuModel),
-            };
-        }
-        ConfigStore.Save(paths, cfg);
+                e.Vertex = new VertexSettings
+                {
+                    Project = vertex!.Project.Trim(),
+                    Region = vertex.Region.Trim(),
+                    SonnetModel = Blank(vertex.SonnetModel),
+                    OpusModel = Blank(vertex.OpusModel),
+                    HaikuModel = Blank(vertex.HaikuModel),
+                };
+            }
+        });
+        AppLog.Info($"Profile {name} now uses {Providers.DisplayName(provider)}.");
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -88,9 +92,13 @@ public partial class ProfileManager
         var entry = NonHome(cfg, name);
         var setList = set.ToList();
         foreach (var kv in setList) ProviderOverlay.ValidateEnvName(kv.Key);
-        foreach (var k in unset) entry.Env.Remove(k);
-        foreach (var kv in setList) entry.Env[kv.Key] = kv.Value;
-        ConfigStore.Save(paths, cfg);
+        var unsetList = unset.ToList();
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            var e = NonHome(c, name);
+            foreach (var k in unsetList) e.Env.Remove(k);
+            foreach (var kv in setList) e.Env[kv.Key] = kv.Value;
+        });
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -99,17 +107,42 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = NonHome(cfg, name);
         foreach (var k in envVars.Keys) ProviderOverlay.ValidateEnvName(k);
-        entry.Env = new Dictionary<string, string>(envVars, StringComparer.Ordinal);
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c => { NonHome(c, name).Env = new Dictionary<string, string>(envVars, StringComparer.Ordinal); });
         return NewSyncer(cfg).Sync(name);
     }
 
-    /// <summary>The profile's saved API key, or null. Throws for an unknown profile or the home profile.</summary>
+    /// <summary>
+    /// The profile's saved API key, or null; null too when the profile doesn't use an API key now (a key kept from
+    /// before a provider switch is never handed out). Throws for an unknown profile or the home profile.
+    /// </summary>
     public string? GetApiKey(string name)
     {
-        NonHome(Config, name);
-        return secrets.Load(paths.ProfileDir(name));
+        var entry = NonHome(Config, name);
+        return Providers.Of(entry) == Providers.ApiKey ? secrets.Load(paths.ProfileDir(name)) : null;
     }
+
+    /// <summary>
+    /// Deletes the profile's saved API key (<paramref name="kind"/> apikey) or Claude token (token), with its saved-at
+    /// file; false when none was saved. The provider isn't changed: a profile that still uses it needs a new one.
+    /// </summary>
+    public bool ForgetSecret(string name, string kind)
+    {
+        NonHome(Config, name);
+        var store = kind switch
+        {
+            Providers.ApiKey => secrets,
+            Providers.Token => tokens,
+            _ => throw new ClauderooException($"Only a saved API key (apikey) or Claude token (token) can be forgotten, not '{kind}'."),
+        };
+        var dir = paths.ProfileDir(name);
+        if (!store.Exists(dir)) return false;
+        store.Delete(dir);
+        AppLog.Info($"Profile {name}: its saved {SecretWord(kind)} was deleted.");
+        return true;
+    }
+
+    /// <summary>"API key" or "Claude token", for messages.</summary>
+    internal static string SecretWord(string kind) => kind == Providers.Token ? "Claude token" : "API key";
 
     internal const string TokenPrefix = "sk-ant-oat";
     internal const string TokenEnvVar = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -179,11 +212,11 @@ public partial class ProfileManager
                 return new CheckResult(false, $"Google sign-in failed: {line}");
             case Providers.ApiKey:
                 return secrets.Exists(dir)
-                    ? new CheckResult(true, "Key saved — not verified. Start a session to test it.", Verified: false)
+                    ? SecretSaved(cfg, name, dir, token: false)
                     : new CheckResult(false, "No API key saved.");
             case Providers.Token:
                 return tokens.Exists(dir)
-                    ? new CheckResult(true, "Token saved — not verified. Start a session to test it.", Verified: false)
+                    ? SecretSaved(cfg, name, dir, token: true)
                     : new CheckResult(false, $"No Claude token saved. Set one with 'cr provider {name} token'.");
             default:
                 var json = entry.Home ? cfg.HomeJson : Path.Combine(dir, ".claude.json");

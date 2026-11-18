@@ -37,6 +37,7 @@ sealed class TrayContext : ApplicationContext
     private ProfilesForm? _profilesForm;
     private ProblemsForm? _problemsForm;
     private ConversationsForm? _conversationsForm;
+    private DoctorForm? _doctorForm;
 
     // Current state: kept between syncs, shown by the icon, tooltip, menu and Problems window.
     private IReadOnlyList<Problem> _problems = [];
@@ -67,7 +68,7 @@ sealed class TrayContext : ApplicationContext
         if (SynchronizationContext.Current == null)
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         _ui = SynchronizationContext.Current!;
-        _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now);
+        _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now) { WtFragmentFile = WtFragment.DefaultFile() };
         _owner = new OwnerWindow(() => Guard(() => UpdateStatus(forceIcon: true)));
 
         var version = typeof(TrayContext).Assembly.GetName().Version?.ToString(3) ?? "0";
@@ -212,7 +213,7 @@ sealed class TrayContext : ApplicationContext
     {
         var first = !_seeded;
         RefreshProfiles();
-        SetProblems(report.ProblemItems);
+        SetProblems(WithTokenAge(report.ProblemItems));
         // The first sync's notices are what changed while the tray wasn't running: no balloon at startup, but kept
         // for the Problems window's "Recent messages".
         if (first) AddRecent(report.Notices);
@@ -332,6 +333,7 @@ sealed class TrayContext : ApplicationContext
             ShowProfiles = () => Guard(ShowProfiles),
             NewProfile = () => _ = NewProfileAsync(),
             ContinueConversation = () => Guard(ShowConversations),
+            CheckThisPc = () => Guard(ShowDoctor),
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
@@ -345,6 +347,9 @@ sealed class TrayContext : ApplicationContext
             Exit = () => Guard(Exit),
             RefreshUsage = () => _ = RefreshUsageAsync(),
             SetAutoSwitch = on => _ = SetAutoSwitchAsync(on),
+            OpenInCode = name => Guard(() => OpenInCode(name)),
+            SetTerminal = t => _ = SetLaunchSettingsAsync(t, null),
+            SetShell = sh => _ = SetLaunchSettingsAsync(null, sh),
         };
 
         var cfg = LoadConfig();
@@ -365,7 +370,9 @@ sealed class TrayContext : ApplicationContext
         var newer = releaseBuild ? UpdateCheck.NewerThan(_updateState, AppVersion.Current) : null;
         TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
             newer?.ToString(), _updateState.CheckEnabled, releaseBuild,
-            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch), actions);
+            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch,
+            cfg is null ? TerminalChoice.Wt : TerminalChoice.TerminalOf(cfg),
+            cfg is null ? TerminalChoice.Cmd : TerminalChoice.ShellOf(cfg)), actions);
     }
 
     // The fetch runs on a worker thread; the result comes back through the poller's Updated event.
@@ -523,6 +530,28 @@ sealed class TrayContext : ApplicationContext
         }
     }
 
+    // A Claude token near or past its one-year life is listed with the sync problems (no Fix: it needs a new token).
+    private IReadOnlyList<Problem> WithTokenAge(IReadOnlyList<Problem> problems)
+    {
+        try { return [.. problems, .. _pm.TokenAgeProblems()]; }
+        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return problems; }
+    }
+
+    // The read-only `cr doctor` checklist in a window; one at a time.
+    private void ShowDoctor()
+    {
+        if (_doctorForm is not { IsDisposed: false } form)
+        {
+            form = new DoctorForm(_paths, _pm.Env);
+            var created = form;
+            form.FormClosed += (_, _) => { if (_doctorForm == created) _doctorForm = null; created.Dispose(); };
+            _doctorForm = form;
+            form.Show();
+        }
+        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+        form.Activate();
+    }
+
     private void ShowProblems()
     {
         var form = _problemsForm;
@@ -600,6 +629,54 @@ sealed class TrayContext : ApplicationContext
         dir ??= _pm.Get(name).StartDir
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable(), isolated: isolated));
+    }
+
+    // Runs `clauderoo code <name> <dir>` (hidden): the CLI is the only place a token profile's token is read, and it
+    // starts VS Code with the profile's environment. Its error, if any, comes back as a balloon.
+    private void OpenInCode(string name)
+    {
+        if (RequireConfig() is null) return;
+        var dir = _pm.Get(name).StartDir;
+        if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+        {
+            using var dlg = new FolderBrowserDialog { Description = $"Open a folder in VS Code with '{name}'" };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+            dir = dlg.SelectedPath;
+        }
+        var exe = HelperExePath.Resolve();
+        if (!File.Exists(exe)) throw new ClauderooException("clauderoo isn't installed properly — reinstall it.");
+        var psi = new System.Diagnostics.ProcessStartInfo(exe)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
+            WorkingDirectory = dir,
+        };
+        foreach (var a in new[] { "code", name, dir }) psi.ArgumentList.Add(a);
+        var p = System.Diagnostics.Process.Start(psi) ?? throw new ClauderooException("Couldn't start clauderoo.");
+        _ = Task.Run(async () =>
+        {
+            using (p)
+            {
+                var errText = p.StandardError.ReadToEndAsync();
+                await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                var msg = (await errText).Trim();
+                if (p.ExitCode != 0)
+                    Post(() => ReportError(new ClauderooException(msg.Length > 0 ? msg : "VS Code couldn't be opened.")));
+            }
+        });
+    }
+
+    private async Task SetLaunchSettingsAsync(string? terminal, string? shell)
+    {
+        try
+        {
+            if (RequireConfig() == null) return;
+            await _gate.RunAsync(() => { _pm.SetLaunchSettings(terminal, shell); return true; });
+            var cfg = _pm.Config;
+            QueueNotices([$"New sessions open in {TerminalChoice.TerminalName(TerminalChoice.TerminalOf(cfg))} with "
+                          + $"{TerminalChoice.ShellName(TerminalChoice.ShellOf(cfg))}."], now: true);
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
     // The Profiles window shows a failed start in a message box: give it the plain words too.
@@ -715,14 +792,12 @@ sealed class TrayContext : ApplicationContext
         try
         {
             if (RequireConfig() == null) return;
-            var s = await _gate.RunAsync(() =>
+            var s = await _gate.RunAsync(() => ConfigStore.Update(_paths, cfg =>
             {
-                var cfg = _pm.Config;
                 var settings = cfg.AutoSwitch ??= new AutoSwitchSettings();
                 settings.Enabled = on;
-                ConfigStore.Save(_paths, cfg);
                 return settings;
-            });
+            }));
             QueueNotices([TrayText.AutoSwitchToggled(s)], now: true);
             if (on) _ = AutoSwitchAsync();
         }
@@ -884,6 +959,7 @@ sealed class TrayContext : ApplicationContext
     private void ReportError(Exception e)
     {
         var (text, unknown) = TrayText.PlainError(e);
+        AppLog.Warn($"Tray: {e.GetType().Name}: {e.Message}");
         if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
         Balloon(text, ToolTipIcon.Warning, opensProblems: unknown);
     }
@@ -910,6 +986,7 @@ sealed class TrayContext : ApplicationContext
             _profilesForm?.Dispose();
             _problemsForm?.Dispose();
             _conversationsForm?.Dispose();
+            _doctorForm?.Dispose();
             _manageSignal.Dispose();
             _poller.Dispose();      // stops the loop first, then the client it uses
             _usageClient.Dispose();

@@ -68,6 +68,19 @@ internal static class TrayText
 
     public static string Problems(int n) => Plural(n, "problem", "problems");
 
+    /// <summary>The result line after Duplicate: what was copied, what wasn't, and the secret to enter again.</summary>
+    public static string Duplicated(string source, string name, string? secretToSet)
+    {
+        var text = $"Profile '{name}' created from '{source}' with its provider, environment variables, owned items and start folder. " +
+                   "Its sign-in, conversations, API key or token and folder mappings weren't copied. Its owned items were.";
+        return secretToSet switch
+        {
+            Providers.ApiKey => text + $" {name} uses the Claude login until you choose API key and paste a key.",
+            Providers.Token => text + $" {name} uses the Claude login until you choose Claude token and paste a token.",
+            _ => text + " Start a session in it to sign in.",
+        };
+    }
+
     public static string Running(int n) => Plural(n, "session running", "sessions running");
 
     /// <summary>The menu's first line: "clauderoo — all good", or the clickable "3 problems…" (with a mnemonic).</summary>
@@ -91,6 +104,7 @@ internal static class TrayText
     {
         ProblemFix.ShareAgain => "&Share it again",
         ProblemFix.RecreateLink => "&Repair the link",
+        ProblemFix.KeepOwn => "&Keep its own copy",
         _ => "&Sync again",
     };
 
@@ -100,6 +114,7 @@ internal static class TrayText
     public static string Explain(Problem p)
     {
         var who = p.Profile.Length > 0 ? p.Profile : "this profile";
+        if (p.Hint is { Length: > 0 } hint) return hint;
         var item = ItemPattern.Match(p.Detail) is { Success: true } m ? m.Groups["d"].Value : "shared";
         return p.Fix switch
         {
@@ -107,8 +122,12 @@ internal static class TrayText
                 $"Share it again replaces {who}'s own {item} folder with the shared one; clauderoo keeps a backup of the old folder.",
             ProblemFix.RecreateLink =>
                 $"Repair the link points {who}'s {item} folder back at the shared one. Nothing in the shared folder is changed.",
+            ProblemFix.KeepOwn =>
+                $"Keep its own copy makes {who}'s {item} folder its own: what it shares from home is copied in and nothing is deleted.",
             ProblemFix.Resync =>
                 $"Sync again retries the update for {who}. If another program is using Claude's files, close it first.",
+            _ when p.Title.Contains("home Claude folder") =>
+                "clauderoo can't find your home Claude folder, so nothing is shared with your profiles. If you moved it, tell clauderoo where it is now: in a terminal, type cr home followed by the folder.",
             _ when p.Title.Contains("damaged") =>
                 "A Claude settings file has a mistake in it, so clauderoo left it alone. Copy the details and send them to whoever helps you with clauderoo.",
             _ when p.Title.StartsWith("A file is blocking") =>

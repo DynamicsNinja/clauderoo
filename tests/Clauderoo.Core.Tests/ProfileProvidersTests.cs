@@ -92,14 +92,21 @@ public class ProfileProvidersTests
     }
 
     [Fact]
-    public void SetProvider_LeaveApiKey_DeletesSecret()
+    public void SetProvider_LeaveApiKey_KeepsSecret_ButNeverHandsItOut()
     {
         var (pm, h, secrets, _) = Make();
         using var _h = h;
         pm.SetProvider("work", Providers.ApiKey, apiKey: "sk-1");
         pm.SetProvider("work", Providers.Login);
-        Assert.False(secrets.Exists(h.Paths.ProfileDir("work")));
-        Assert.False(pm.HasApiKey("work"));
+        Assert.True(secrets.Exists(h.Paths.ProfileDir("work")));
+        Assert.True(pm.HasApiKey("work"));
+        Assert.Empty(secrets.Deleted);
+        // Kept, but not used: apiKeyHelper is gone and `cr apikey` gets nothing.
+        Assert.Null(pm.GetApiKey("work"));
+        Assert.DoesNotContain("apiKeyHelper", File.ReadAllText(Path.Combine(h.Paths.ProfileDir("work"), "settings.json")));
+        // Switching back without a key uses it again.
+        pm.SetProvider("work", Providers.ApiKey);
+        Assert.Equal("sk-1", pm.GetApiKey("work"));
     }
 
     [Fact]

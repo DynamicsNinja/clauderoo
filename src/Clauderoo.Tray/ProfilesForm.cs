@@ -20,7 +20,9 @@ sealed class ProfilesForm : Form
         "•  plugins, skills, hooks, agents, commands and output styles\n" +
         "•  MCP servers\n\n" +
         "Each profile keeps its own sign-in, provider and environment variables. Change a shared thing in your home " +
-        "profile and every profile gets it.";
+        "profile and every profile gets it.\n\n" +
+        "To give a profile its own copy of something, or leave single skills, MCP servers or plugins out of it, select " +
+        "the profile and choose Sharing….";
 
     /// <summary>A profile's last check, kept for the life of the tray process (closing the window keeps it).</summary>
     private sealed record CheckRecord(DateTime At, string Provider, CheckStatus? Status, string Message, IReadOnlyList<CheckItem>? Items);
@@ -46,6 +48,8 @@ sealed class ProfilesForm : Form
     private readonly Button _autoSwitch = Btn("Auto-s&witch…");
     private readonly Button _export = Btn("E&xport…");
     private readonly Button _import = Btn("Import…");
+    private readonly Button _removedCopies = Btn("Removed…");
+    private readonly Button _duplicate = Btn("Duplicate…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -84,7 +88,10 @@ sealed class ProfilesForm : Form
                "isn't signed in with it.",
         ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6),
     };
-    private const string TokenSavedCue = "(saved — leave empty to keep)";
+    private const string TokenSavedCue = "(saved — leave empty to use it, or paste a new one)";
+    private const string KeySavedCue = "•••• saved — leave empty to use it, or paste a new one";
+    // Shown under a saved key or token, whichever provider is in use: switching provider keeps it.
+    private readonly LinkLabel _forget = new() { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
     private const string TokenCue = "Paste the token (sk-ant-oat…)";
 
     // Folders that `cr start` maps to this profile; changed right away (not part of Save).
@@ -102,6 +109,20 @@ sealed class ProfilesForm : Form
     };
     private readonly Button _addFolder = Btn("Add folder…");
     private readonly Button _removeFolder = Btn("Remove folder");
+    // Own / Share again / what's left out, per shared item (SharingDialog).
+    private readonly Button _sharing = Btn("Sharin&g…");
+    internal Button SharingButtonForTest => _sharing;
+
+    // Start folder: where Start session (here and in the tray) opens; saved right away, like folder mappings.
+    private readonly Label _startDirLabel = new() { Text = "Start folder (used by Start session)", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly TableLayoutPanel _startDirRow = Table(3);
+    private readonly TextBox _startDir = new()
+    {
+        ReadOnly = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 2, 6, 2),
+        PlaceholderText = "Your user folder", AccessibleName = "Start folder",
+    };
+    private readonly Button _browseStartDir = Btn("Browse…");
+    private readonly Button _clearStartDir = Btn("Clear");
 
     private readonly TableLayoutPanel _loginPanel = FieldGrid();
     private readonly Label _account = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 0, 3), UseMnemonic = false };
@@ -125,6 +146,9 @@ sealed class ProfilesForm : Form
     private readonly Button _check = Btn(CheckText);
     private readonly Button _copy = Btn("Cop&y results");
     private readonly Button _signIn = Btn("Sign &in to Google…");
+    // No access key: every letter of "Live check" is taken by another control.
+    private readonly CheckBox _liveCheck = new() { Text = "Live check", AutoSize = true, Margin = new Padding(6, 4, 6, 0) };
+    private readonly WrapLabel _liveNote = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6) };
     private readonly GlyphLabel _checkStatus = new() { Margin = new Padding(0, 0, 0, 6) };
     private readonly CheckListView _checkList = new()
     {
@@ -193,6 +217,7 @@ sealed class ProfilesForm : Form
     private string? _undoName;     // removed profile the status line offers to restore
     private bool _showRestart;     // the last action saved the current profile (the restart note may apply)
     private string? _checkingFor;  // profile a check is running for (one at a time)
+    private string? _checkingProvider; // the provider a checklist check (Vertex, live check) is running for
     private int _checkSeq;         // bumped when a check is cancelled: its result is dropped
     private CancellationTokenSource? _checkCts; // the running setup check, if any
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
@@ -224,10 +249,10 @@ sealed class ProfilesForm : Form
         _list.MinimumSize = new Size(230, 200);
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
-        leftButtons.Controls.AddRange([_new, _rename, _remove]);
+        leftButtons.Controls.AddRange([_new, _duplicate, _rename, _remove]);
         var transferButtons = Flow(FlowDirection.LeftToRight);
         transferButtons.Margin = new Padding(0, 6, 0, 0);
-        transferButtons.Controls.AddRange([_export, _import]);
+        transferButtons.Controls.AddRange([_export, _import, _removedCopies]);
         // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
         _autoSwitch.Margin = new Padding(0, 6, 6, 0);
         _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
@@ -309,9 +334,19 @@ sealed class ProfilesForm : Form
         _foldersRow.Controls.Add(_folders, 0, 0);
         _foldersRow.Controls.Add(folderButtons, 1, 0);
 
+        _startDirRow.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _startDirRow.Margin = new Padding(0, 0, 0, 6);
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _startDirRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _startDirRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _startDirRow.Controls.Add(_startDir, 0, 0);
+        _startDirRow.Controls.Add(_browseStartDir, 1, 0);
+        _startDirRow.Controls.Add(_clearStartDir, 2, 0);
+
         _checkRow = Flow(FlowDirection.LeftToRight);
         _checkRow.Margin = new Padding(0, 0, 0, 4);
-        _checkRow.Controls.AddRange([_check, _copy, _signIn]);
+        _checkRow.Controls.AddRange([_check, _liveCheck, _copy, _signIn]);
 
         var envButtons = _envButtons = Flow(FlowDirection.LeftToRight);
         envButtons.Controls.Add(_envDelete);
@@ -326,8 +361,10 @@ sealed class ProfilesForm : Form
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Control[] topRows =
         [
-            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
-            _usageGroup, _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
+            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _forget, _loginPanel,
+            _usageGroup, _fieldError, _checkRow, _liveNote, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
+            _startDirLabel, _startDirRow,
+            _sharing,
             _envLabel, _envHint,
         ];
         top.RowCount = topRows.Length;
@@ -397,6 +434,7 @@ sealed class ProfilesForm : Form
 
         // Size the window from its content, measured with the largest provider panel and every optional line showing.
         _homePanel.Visible = _apiKeyPanel.Visible = _tokenPanel.Visible = _tokenHelp.Visible = _loginPanel.Visible = false;
+        _forget.Visible = _liveCheck.Visible = _liveNote.Visible = false;
         _unsaved.Visible = true;
         var rightWidth = Math.Max(_vertexPanel.GetPreferredSize(Size.Empty).Width, _env.MinimumSize.Width);
         foreach (var w in new[] { _vertexHelp, _foldersHint, _envHint }) w.WrapTo(rightWidth - w.Margin.Horizontal);
@@ -414,7 +452,7 @@ sealed class ProfilesForm : Form
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
 
         // Status labels wrap to the width of their column.
-        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _fieldError, _checkStatus, _checkList,
+        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _liveNote, _fieldError, _checkStatus, _checkList,
             _foldersHint, _envHint, _usageInfo, _usageStatus);
         WrapTo(right, _envError);
         WrapTo(root, _result);
@@ -439,6 +477,11 @@ sealed class ProfilesForm : Form
         _autoSwitch.Click += async (_, _) => await EditAutoSwitchAsync();
         _export.Click += (_, _) => Guard(ExportProfiles);
         _import.Click += (_, _) => Guard(ImportProfiles);
+        _removedCopies.Click += (_, _) => Guard(ShowRemovedCopies);
+        _tips.SetToolTip(_removedCopies, "Restore or permanently delete removed profiles.");
+        _duplicate.Click += (_, _) => Guard(DuplicateProfile);
+        _browseStartDir.Click += (_, _) => Guard(BrowseStartDir);
+        _clearStartDir.Click += (_, _) => Guard(ClearStartDir);
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -451,6 +494,9 @@ sealed class ProfilesForm : Form
         _folders.SelectedIndexChanged += (_, _) => _removeFolder.Enabled = _folders.SelectedIndex >= 0;
         _addFolder.Click += (_, _) => Guard(AddFolder);
         _removeFolder.Click += (_, _) => Guard(RemoveFolder);
+        _sharing.Margin = new Padding(0, LogicalToDeviceUnits(2), 0, LogicalToDeviceUnits(6));
+        _tips.SetToolTip(_sharing, "Choose what this profile shares with your home profile, owns, or leaves out.");
+        _sharing.Click += (_, _) => Guard(() => { if (_current != null) SharingDialog.ShowFor(this, _pm, _current, w => RunWriteAsync(w)); });
         // Commit each keystroke so validation and the Save state follow typing in the grid.
         _env.CurrentCellDirtyStateChanged += (_, _) =>
         {
@@ -460,6 +506,8 @@ sealed class ProfilesForm : Form
         _env.RowsAdded += (_, _) => OnEdited();
         _env.RowsRemoved += (_, _) => OnEdited();
         _check.Click += (_, _) => RunCheck();
+        _liveCheck.CheckedChanged += (_, _) => { UpdateLiveNote(); EnsureFits(); };
+        _forget.LinkClicked += (_, _) => Guard(ForgetSecret);
         _copy.Click += (_, _) => CopyResults();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
@@ -502,7 +550,7 @@ sealed class ProfilesForm : Form
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
                      (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
                      (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
-                     (_export, Glyph.Save), (_import, Glyph.FolderOpen),
+                     (_export, Glyph.Save), (_import, Glyph.FolderOpen), (_removedCopies, Glyph.Undo),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -751,6 +799,7 @@ sealed class ProfilesForm : Form
             _env.Rows.Clear();
             _hasSavedKey = _hasSavedToken = false;
             LoadFolders(info?.Name);
+            LoadStartDir(info?.Name);
 
             if (info == null)
             {
@@ -773,11 +822,11 @@ sealed class ProfilesForm : Form
                         _opus.Text = v.OpusModel ?? "";
                         _haiku.Text = v.HaikuModel ?? "";
                     }
+                    // Kept across provider switches, so a key or token saved earlier is reused when its provider is
+                    // picked again. The secret itself is never read here: only whether there is one.
                     _hasSavedKey = _pm.HasApiKey(info.Name);
-                    if (_hasSavedKey) _apiKey.PlaceholderText = "•••• saved (type to replace)";
-                    // The saved token itself is never read here: only whether there is one.
                     _hasSavedToken = _pm.HasToken(info.Name);
-                    if (_hasSavedToken) _token.PlaceholderText = TokenSavedCue;
+                    ShowSavedCues();
                     foreach (var kv in _pm.GetEnv(info.Name).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
                         _env.Rows.Add(kv.Key, kv.Value);
                 }
@@ -973,8 +1022,13 @@ sealed class ProfilesForm : Form
         _loginPanel.Visible = editable && p == Providers.Login;
         // Folder mappings work for every profile, the home profile too.
         _foldersLabel.Visible = _foldersHint.Visible = _foldersRow.Visible = _current != null;
+        _startDirLabel.Visible = _startDirRow.Visible = _current != null;
         _fieldError.Visible = _checkRow.Visible = _checkStatus.Visible = editable;
+        _sharing.Visible = editable;
         _signIn.Visible = p == Providers.Vertex;
+        _liveCheck.Visible = LiveCheckShown;
+        UpdateLiveNote();
+        UpdateForgetLink();
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
         _save.Visible = editable;
         _env.AllowUserToAddRows = editable;
@@ -1112,22 +1166,7 @@ sealed class ProfilesForm : Form
         }
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (n, v) in EnvRows()) env[n] = v;
-        try
-        {
-            if (provider != Providers.ApiKey && _pm.HasApiKey(name) &&
-                MessageBox.Show(this, $"Switching {name} away from API key deletes its saved key. Continue?", "clauderoo",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                return false;
-            if (provider != Providers.Token && _pm.HasToken(name) &&
-                MessageBox.Show(this, $"This deletes the saved token for {name}.{Environment.NewLine}{Environment.NewLine}Continue?",
-                    "clauderoo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                return false;
-        }
-        catch (Exception e)
-        {
-            ShowError(e.Message);
-            return false;
-        }
+        // Switching provider keeps a saved key or token (Forget deletes one), so there is nothing to confirm.
 
         var notices = new List<string>();
         var problems = new List<string>();
@@ -1260,6 +1299,60 @@ sealed class ProfilesForm : Form
         _checkProgress?.Cancel();
     }
 
+    // ---------- saved key / token ----------
+
+    // The key and token boxes say when a saved one will be used (also one kept from before a provider switch).
+    private void ShowSavedCues()
+    {
+        _apiKey.PlaceholderText = _hasSavedKey ? KeySavedCue : "Paste the key (sk-ant-…)";
+        _token.PlaceholderText = _hasSavedToken ? TokenSavedCue : TokenCue;
+    }
+
+    // "Forget the saved key/token": under the selected provider's box when one is saved.
+    private void UpdateForgetLink()
+    {
+        _forget.Text = SelectedProvider == Providers.Token ? "Forget the saved token" : "Forget the saved key";
+        _forget.Visible = ForgetShown;
+    }
+
+    // Deletes the saved key or token right away (not part of Save), after asking.
+    private void ForgetSecret()
+    {
+        if (_current == null || _currentIsHome) return;
+        var name = _current;
+        var kind = SelectedProvider;
+        if (kind is not (Providers.ApiKey or Providers.Token)) return;
+        var word = kind == Providers.Token ? "Claude token" : "API key";
+        var inUse = _currentInfo?.Provider == kind;
+        var question = $"Delete the saved {word} for {name}?" + Environment.NewLine + Environment.NewLine +
+                       (inUse ? $"{name} uses it now: its sessions can't sign in until you paste a new one."
+                              : "You'll need to paste it again to use it.");
+        if (MessageBox.Show(this, question, "clauderoo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+        ClearResult();
+        Write(() => _pm.ForgetSecret(name, kind));
+        if (kind == Providers.Token) _hasSavedToken = false; else _hasSavedKey = false;
+        ShowSavedCues();
+        UpdateForgetLink();
+        OnEdited(); // an API-key profile now needs a key to save
+        SetResult($"Deleted the saved {word} for {name}.", SystemColors.ControlText);
+    }
+
+    // The note under Live check: what it does with the secret, and what it costs.
+    private void UpdateLiveNote()
+    {
+        _liveNote.Text = SelectedProvider == Providers.Token
+            ? "Live check sends one tiny prompt with the token, so it uses a little of its quota."
+            : "Live check tries the key against the Anthropic API (it uses no quota).";
+        _liveNote.Visible = LiveNoteShown;
+    }
+
+    // The window's own state, not Control.Visible (which reads false until the window is shown).
+    private bool LiveCheckShown => _current != null && !_currentIsHome && SelectedProvider is Providers.ApiKey or Providers.Token;
+    private bool LiveNoteShown => LiveCheckShown && _liveCheck.Checked;
+    private bool ForgetShown => _current != null && !_currentIsHome &&
+                                ((SelectedProvider == Providers.ApiKey && _hasSavedKey) || (SelectedProvider == Providers.Token && _hasSavedToken));
+
     // ---------- checks ----------
 
     private void RunCheck()
@@ -1279,7 +1372,12 @@ sealed class ProfilesForm : Form
         var provider = SelectedProvider;
         if (provider == Providers.Vertex)
         {
-            RunSetupCheck(name);
+            RunChecklist(name, provider, (ct, progress) => _pm.CheckSetupAsync(name, ct, progress));
+            return;
+        }
+        if (_liveCheck.Checked && provider is Providers.ApiKey or Providers.Token)
+        {
+            RunChecklist(name, provider, (ct, progress) => LiveCheckAsync(name, provider, ct, progress));
             return;
         }
 
@@ -1299,7 +1397,8 @@ sealed class ProfilesForm : Form
                 {
                     if (seq != _checkSeq) return; // cancelled (profile renamed/removed, window closing)
                     LastChecks[name] = new CheckRecord(DateTime.Now, provider,
-                        !result.Ok ? CheckStatus.Fail : result.Verified ? CheckStatus.Ok : null, SignInWords(result.Message), null);
+                        !result.Ok ? CheckStatus.Fail : result.Warning != null ? CheckStatus.Warn : result.Verified ? CheckStatus.Ok : null,
+                        SignInWords(result.Message), null);
                     CheckFinished(name);
                 });
             }
@@ -1311,10 +1410,32 @@ sealed class ProfilesForm : Form
     private static string SignInWords(string s) =>
         s.Replace("Not logged in", "Not signed in").Replace("Logged in", "Signed in").Replace("logged in", "signed in");
 
-    // Vertex: the full checklist (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model).
-    private void RunSetupCheck(string name)
+    private string? _liveExe;            // tests: the exe the live check runs (null: the installed clauderoo.exe)
+    private LiveCheck.Runner? _liveRun;  // tests: how it runs (null: a hidden process)
+
+    internal void UseLiveCheckRunnerForTest(string exe, LiveCheck.Runner run) => (_liveExe, _liveRun) = (exe, run);
+
+    // The live check of an API key or token, through the hidden CLI (the tray never reads a secret itself). The CLI
+    // reports at the end only, so the planned rows wait as Pending and the test itself as Running until then.
+    private async Task<IReadOnlyList<CheckItem>> LiveCheckAsync(string name, string provider, CancellationToken ct,
+        IProgress<CheckItem> progress)
+    {
+        var plan = ProfileManager.SecretCheckPlan(provider);
+        foreach (var (key, label) in plan)
+            progress.Report(new CheckItem(key == "live" ? CheckStatus.Running : CheckStatus.Pending, label, null) { Key = key });
+        var (items, error) = await LiveCheck.RunAsync(name, ct, _liveExe, _liveRun).ConfigureAwait(false);
+        if (items == null) throw new ClauderooException(error ?? "The check couldn't run.");
+        foreach (var item in items) progress.Report(item);
+        return items;
+    }
+
+    // A checklist check: Vertex's full setup (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model), or the
+    // live check of a key or token. Rows fill in as reported; the result is filed under the profile and provider.
+    private void RunChecklist(string name, string provider,
+        Func<CancellationToken, IProgress<CheckItem>, Task<IReadOnlyList<CheckItem>>> run)
     {
         var seq = _checkSeq;
+        _checkingProvider = provider;
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
         var live = _checkProgress = new CheckProgressModel();
@@ -1332,7 +1453,7 @@ sealed class ProfilesForm : Form
         {
             IReadOnlyList<CheckItem>? items = null;
             string? error = null;
-            try { items = await _pm.CheckSetupAsync(name, ct, progress).ConfigureAwait(false); }
+            try { items = await run(ct, progress).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception e) { error = e.Message; }
             try
@@ -1344,8 +1465,8 @@ sealed class ProfilesForm : Form
                     cts.Dispose();
                     if (seq != _checkSeq) return; // cancelled: drop the result
                     if (_checkProgress == live) _checkProgress = null;
-                    if (items != null) LastChecks[name] = Summarise(items);
-                    else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, Providers.Vertex, CheckStatus.Fail, error, null);
+                    if (items != null) LastChecks[name] = Summarise(items, provider);
+                    else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, provider, CheckStatus.Fail, error, null);
                     CheckFinished(name);
                 });
             }
@@ -1372,7 +1493,7 @@ sealed class ProfilesForm : Form
         if (_current == name) ShowCheckRecord();
     }
 
-    private static CheckRecord Summarise(IReadOnlyList<CheckItem> items)
+    private static CheckRecord Summarise(IReadOnlyList<CheckItem> items, string provider)
     {
         var fails = items.Count(i => i.Status == CheckStatus.Fail);
         var warns = items.Count(i => i.Status == CheckStatus.Warn);
@@ -1380,7 +1501,7 @@ sealed class ProfilesForm : Form
             fails > 0 ? (CheckStatus.Fail, fails == 1 ? "1 problem found." : $"{fails} problems found.")
             : warns > 0 ? (CheckStatus.Warn, warns == 1 ? "Works, with 1 warning." : $"Works, with {warns} warnings.")
             : (CheckStatus.Ok, "Setup looks good.");
-        return new CheckRecord(DateTime.Now, Providers.Vertex, status, message, items);
+        return new CheckRecord(DateTime.Now, provider, status, message, items);
     }
 
     // The current profile's check: running, or the last result if it was made for the provider now selected.
@@ -1394,7 +1515,7 @@ sealed class ProfilesForm : Form
         }
         if (_checkingFor == _current)
         {
-            if (SelectedProvider == Providers.Vertex && _checkProgress is { Total: > 0 } live)
+            if (SelectedProvider == _checkingProvider && _checkProgress is { Total: > 0 } live)
             {
                 _checkStatus.Show(Glyph.Info, StatusColors.Muted, live.StatusText);
                 ShowCheckList(live.Rows, live: true);
@@ -1464,9 +1585,10 @@ sealed class ProfilesForm : Form
     {
         var checkingHere = _checkingFor != null && _checkingFor == _current;
         _rename.Enabled = _current != null && !checkingHere;
+        _duplicate.Enabled = _current != null;
         _setDefault.Enabled = _current != null && !_currentIsDefault;
         _remove.Enabled = _current != null && !_currentIsHome && !_currentIsDefault && !checkingHere;
-        _check.Enabled = _checkingFor == null;
+        _check.Enabled = _liveCheck.Enabled = _checkingFor == null;
         _copy.Enabled = _current != null && !checkingHere && RecordFor(_current, SelectedProvider) != null;
         // A disabled button shows no tooltip itself: put the reason on its panel too.
         var why = _current == null ? null
@@ -1497,12 +1619,14 @@ sealed class ProfilesForm : Form
     private const string ExportEnvWarning =
         "Environment variables are saved as plain text in the file. Check it before sharing it.";
 
-    // Export every profile except home: a small options dialog first, then the save dialog.
+    // Export every profile except home, or only the selected one: a small options dialog first, then the save dialog.
     private void ExportProfiles()
     {
         if (!ConfirmLeave()) return;
         ClearResult();
         bool includeEnv;
+        var single = _current != null && !_currentIsHome ? _current : null;
+        string? only = null;
         using (var options = new Form
         {
             Text = "Export profiles", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
@@ -1510,6 +1634,8 @@ sealed class ProfilesForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12),
         })
         {
+            var all = new RadioButton { Text = "All profiles (except home)", AutoSize = true, Checked = true, Margin = new Padding(0, 0, 0, 2) };
+            var one = new RadioButton { Text = $"Only {single}", AutoSize = true, Margin = new Padding(0, 0, 0, 8), UseMnemonic = false };
             var env = new CheckBox { Text = "Include environment variables", AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var note = new WrapLabel { Text = ExportEnvWarning, Margin = new Padding(0, 0, 0, 10) };
             var ok = new Button { Text = "Continue", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 0) };
@@ -1518,9 +1644,15 @@ sealed class ProfilesForm : Form
             buttons.Dock = DockStyle.Fill;
             buttons.Controls.AddRange([cancel, ok]);
             var table = Table(1);
-            table.Controls.Add(env, 0, 0);
-            table.Controls.Add(note, 0, 1);
-            table.Controls.Add(buttons, 0, 2);
+            var row = 0;
+            if (single != null)
+            {
+                table.Controls.Add(all, 0, row++);
+                table.Controls.Add(one, 0, row++);
+            }
+            table.Controls.Add(env, 0, row++);
+            table.Controls.Add(note, 0, row++);
+            table.Controls.Add(buttons, 0, row);
             table.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
             options.Controls.Add(table);
             options.AcceptButton = ok;
@@ -1528,17 +1660,19 @@ sealed class ProfilesForm : Form
             options.Font = Font;
             if (options.ShowDialog(this) != DialogResult.OK) return;
             includeEnv = env.Checked;
+            if (single != null && one.Checked) only = single;
         }
 
         using var dialog = new SaveFileDialog
         {
-            Title = "Export profiles", FileName = "clauderoo-profiles.json", DefaultExt = "json",
+            Title = only == null ? "Export profiles" : $"Export {only}",
+            FileName = only == null ? "clauderoo-profiles.json" : $"clauderoo-{only}.json", DefaultExt = "json",
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         // The save dialog has already confirmed any overwrite.
         // Gated too, so the export reads a config no tray write is halfway through.
-        Write(() => _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true));
+        Write(() => _pm.ExportToFile(dialog.FileName, only == null ? null : [only], includeEnv, force: true));
         SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
     }
 
@@ -1600,7 +1734,7 @@ sealed class ProfilesForm : Form
         var name = _current;
         if (BlockIfRunning(name, "removed")) return;
         if (MessageBox.Show(this, $"Remove profile '{name}'?{Environment.NewLine}{Environment.NewLine}" +
-                                  "You can undo this here until you do something else.", "clauderoo",
+                                  "You can undo this here until you do something else, or restore it later from Removed….", "clauderoo",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
         StopCheckAndWait(name);
         try
@@ -1638,6 +1772,17 @@ sealed class ProfilesForm : Form
         ClearResult();
         Reload(name);
         ShowResult(report, $"Restored {name}.");
+    }
+
+    // The removed copies in profiles\_removed: restore one (here, like Undo) or delete some permanently (in the dialog).
+    private void ShowRemovedCopies()
+    {
+        ClearResult();
+        var copy = RemovedProfilesDialog.Pick(this, () => _pm.ListRemoved(), sel => RunWriteAsync(() => _pm.Purge(sel)));
+        if (copy == null || !ConfirmLeave()) return;
+        var report = Write(() => _pm.Restore(copy.Name, copy.Id));
+        Reload(copy.Name);
+        ShowResult(report, $"Restored {copy.Name} (removed {RemovedText.When(copy)}).");
     }
 
     // True (after saying why) when clauderoo-started sessions of the profile are running, or when that can't be told.
@@ -1736,6 +1881,51 @@ sealed class ProfilesForm : Form
         SetResult($"{dir} no longer uses {name}.", SystemColors.ControlText);
     }
 
+    // ---------- start folder / duplicate ----------
+
+    private void LoadStartDir(string? name)
+    {
+        _startDir.Text = name == null ? "" : _pm.Get(name).StartDir ?? "";
+        _clearStartDir.Enabled = _startDir.Text.Length > 0;
+    }
+
+    // Takes effect right away, like a folder mapping: it only tells Start session where to open.
+    private void BrowseStartDir()
+    {
+        if (_current == null) return;
+        var name = _current;
+        using var dlg = new FolderBrowserDialog { Description = $"Choose the folder {name}'s sessions start in", UseDescriptionForTitle = true };
+        if (Directory.Exists(_startDir.Text)) dlg.InitialDirectory = _startDir.Text;
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        ClearResult();
+        Write(() => _pm.SetStartDir(name, dlg.SelectedPath));
+        LoadStartDir(name);
+        SetResult($"{name}'s sessions now start in {_startDir.Text}.", SystemColors.ControlText);
+    }
+
+    private void ClearStartDir()
+    {
+        if (_current == null) return;
+        var name = _current;
+        ClearResult();
+        Write(() => _pm.SetStartDir(name, null));
+        LoadStartDir(name);
+        SetResult($"{name}'s sessions now start in your user folder.", SystemColors.ControlText);
+    }
+
+    private void DuplicateProfile()
+    {
+        if (_current == null || !ConfirmLeave()) return;
+        ClearResult();
+        var source = _current;
+        var name = InputDialog.Ask("Duplicate profile", $"Name for the copy of '{source}':", this, null,
+            InputDialog.ProfileNameRule(ProfileNames()), InputDialog.ProfileNameHint, lowercase: true);
+        if (string.IsNullOrEmpty(name)) return;
+        var r = Write(() => _pm.Clone(source, name));
+        Reload(name);
+        ShowResult(r.Report, TrayText.Duplicated(source, name, r.SecretToSet));
+    }
+
     /// <summary>
     /// A default chosen by hand: on a worker thread inside the tray's write gate (SetDefault syncs), and noted as a
     /// manual hold so auto-switch doesn't move straight off it.
@@ -1800,10 +1990,12 @@ sealed class ProfilesForm : Form
             {
                 await RunWriteAsync(() =>
                 {
-                    var fresh = _pm.Config; // read again: the tray may have changed the default while the dialog was open
-                    edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
-                    fresh.AutoSwitch = edited;
-                    ConfigStore.Save(_pm.Paths, fresh);
+                    // Read again inside the config lock: the tray or the CLI may have changed it while the dialog was open.
+                    ConfigStore.Update(_pm.Paths, fresh =>
+                    {
+                        edited.Extra = fresh.AutoSwitch?.Extra; // fields this version doesn't know survive the save
+                        fresh.AutoSwitch = edited;
+                    });
                     return true;
                 });
             }
@@ -1873,6 +2065,27 @@ sealed class ProfilesForm : Form
     internal void OfferUndoForTest(string name, Action link) { _undoName = name; _resultLink = link; }
     internal DataGridView EnvGridForTest => _env;
     internal Button SetDefaultButtonForTest => _setDefault;
+    internal CheckBox LiveCheckBoxForTest => _liveCheck;
+    internal Label LiveNoteForTest => _liveNote;
+    internal LinkLabel ForgetLinkForTest => _forget;
+    internal bool LiveCheckShownForTest => LiveCheckShown;
+    internal bool LiveNoteShownForTest => LiveNoteShown;
+    internal bool ForgetShownForTest => ForgetShown;
+    internal TextBox ApiKeyBoxForTest => _apiKey;
+    internal TextBox TokenBoxForTest => _token;
+    internal void SelectProviderForTest(string provider) =>
+        (provider switch
+        {
+            Providers.Vertex => _rbVertex,
+            Providers.ApiKey => _rbApiKey,
+            Providers.Token => _rbToken,
+            _ => _rbLogin,
+        }).Checked = true;
+    internal void RunCheckForTest() => RunCheck();
+    internal bool CheckRunningForTest => _checkingFor != null;
+    internal IReadOnlyList<CheckItem>? LastCheckItemsForTest(string name) =>
+        LastChecks.TryGetValue(name, out var r) ? r.Items : null;
+    internal string? LastCheckMessageForTest(string name) => LastChecks.TryGetValue(name, out var r) ? r.Message : null;
     internal bool CurrentIsDefaultForTest => _currentIsDefault;
     internal IReadOnlyList<ProfileInfo> ListedProfilesForTest => _list.Items.Cast<ListItem>().Select(i => i.Info).ToList();
     internal void UndoRemoveForTest() => UndoRemove();

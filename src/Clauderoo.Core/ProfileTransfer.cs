@@ -66,6 +66,7 @@ public partial class ProfileManager
                 o["env"] = env;
             }
             o["overrides"] = new JsonArray(e.Overrides.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
+            if (e.Exclude.Count > 0) o["exclude"] = new JsonArray(e.Exclude.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
             o["startDir"] = e.StartDir;
             profiles.Add(o);
         }
@@ -169,61 +170,63 @@ public partial class ProfileManager
                 foreach (var p in plist.EnumerateArray())
                     ImportProfileSafe(p, force, log);
 
-            // Everything below edits config directly; one load and one save, and only when something changed.
-            var cfg = Config;
-            var dirty = false;
-            foreach (var (name, dir) in log.StartDirs)
-                if (cfg.Profiles.TryGetValue(name, out var pe) && pe.StartDir != dir) { pe.StartDir = dir; dirty = true; }
+            // Everything below edits config directly; one locked load and save, and only when something changed.
             var skipped = log.Skipped;
-
-            if (root.TryGetProperty("folders", out var flist) && flist.ValueKind == JsonValueKind.Array)
+            var autoImported = false;
+            ConfigStore.UpdateWhen(paths, cfg =>
             {
-                foreach (var f in flist.EnumerateArray())
+                var dirty = false;
+                foreach (var (name, dir) in log.StartDirs)
+                    if (cfg.Profiles.TryGetValue(name, out var pe) && pe.StartDir != dir) { pe.StartDir = dir; dirty = true; }
+
+                if (root.TryGetProperty("folders", out var flist) && flist.ValueKind == JsonValueKind.Array)
                 {
-                    var dir = Str(f, "dir");
-                    var profile = Str(f, "profile");
-                    if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(profile)) continue;
-                    if (!cfg.Profiles.ContainsKey(profile))
+                    foreach (var f in flist.EnumerateArray())
                     {
-                        skipped.Add($"folder {dir}: profile '{profile}' doesn't exist here");
-                        continue;
-                    }
-                    string key;
-                    try { key = FolderMap.Normalize(dir); }
-                    catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
-                    {
-                        skipped.Add($"folder {dir}: not a valid path");
-                        continue;
-                    }
-                    var existing = cfg.Folders.Where(k => k.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
-                    if (existing.Count > 0)
-                    {
-                        if (existing.Any(k => k.Value == profile)) continue;
-                        if (!force)
+                        var dir = Str(f, "dir");
+                        var profile = Str(f, "profile");
+                        if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(profile)) continue;
+                        if (!cfg.Profiles.ContainsKey(profile))
                         {
-                            skipped.Add($"folder {key}: already mapped to {existing[0].Value}");
+                            skipped.Add($"folder {dir}: profile '{profile}' doesn't exist here");
                             continue;
                         }
-                        foreach (var k in existing) cfg.Folders.Remove(k.Key);
+                        string key;
+                        try { key = FolderMap.Normalize(dir); }
+                        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+                        {
+                            skipped.Add($"folder {dir}: not a valid path");
+                            continue;
+                        }
+                        var existing = cfg.Folders.Where(k => k.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
+                        if (existing.Count > 0)
+                        {
+                            if (existing.Any(k => k.Value == profile)) continue;
+                            if (!force)
+                            {
+                                skipped.Add($"folder {key}: already mapped to {existing[0].Value}");
+                                continue;
+                            }
+                            foreach (var k in existing) cfg.Folders.Remove(k.Key);
+                        }
+                        cfg.Folders[key] = profile;
+                        log.Mapped.Add($"{key} → {profile}");
+                        dirty = true;
                     }
-                    cfg.Folders[key] = profile;
-                    log.Mapped.Add($"{key} → {profile}");
-                    dirty = true;
                 }
-            }
 
-            // Auto-switch settings are taken over only when this machine has none: an import never changes them.
-            var autoImported = false;
-            if (cfg.AutoSwitch == null && root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind == JsonValueKind.Object)
-            {
-                if (ReadAutoSwitch(auto, cfg, skipped, log.Notices) is { } settings)
+                // Auto-switch settings are taken over only when this machine has none: an import never changes them.
+                if (cfg.AutoSwitch == null && root.TryGetProperty(AutoSwitchKey, out var auto) && auto.ValueKind == JsonValueKind.Object)
                 {
-                    cfg.AutoSwitch = settings;
-                    autoImported = dirty = true;
+                    if (ReadAutoSwitch(auto, cfg, skipped, log.Notices) is { } settings)
+                    {
+                        cfg.AutoSwitch = settings;
+                        autoImported = dirty = true;
+                    }
                 }
-            }
 
-            if (dirty) ConfigStore.Save(paths, cfg);
+                return dirty;
+            });
             return new ImportResult(log.Created, log.Updated, skipped, log.NeedSecret, log.Kept.Distinct().ToList(),
                 log.Notices, log.Mapped, log.EnvNames, autoImported);
         }
@@ -322,7 +325,7 @@ public partial class ProfileManager
         var hasOverrides = p.TryGetProperty("overrides", out var ov) && ov.ValueKind == JsonValueKind.Array;
         if (hasOverrides)
             foreach (var o in ov.EnumerateArray())
-                if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(o.GetString()!)) overrides.Add(o.GetString()!);
+                if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(cfg, o.GetString()!)) overrides.Add(o.GetString()!);
 
         if (!exists)
         {
@@ -330,13 +333,24 @@ public partial class ProfileManager
             added = true;
         }
 
-        // A profile that holds a stored secret never has its provider changed: switching would delete the secret.
-        var holdsSecret = exists && (HasApiKey(name) || HasToken(name));
-        if (holdsSecret && provider != Providers.Of(current!))
-            log.Kept.Add($"{name}: kept its {(Providers.Of(current!) == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
+        // A profile signed in with a stored secret keeps its sign-in: an import never changes how it signs in.
+        var currentProvider = exists ? Providers.Of(current!) : Providers.Login;
+        var holdsSecret = currentProvider switch
+        {
+            Providers.ApiKey => HasApiKey(name),
+            Providers.Token => HasToken(name),
+            _ => false,
+        };
+        if (holdsSecret && provider != currentProvider)
+            log.Kept.Add($"{name}: kept its {(currentProvider == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
         switch (provider)
         {
             case var _ when holdsSecret:
+                break;
+            // A secret kept from before a provider switch is used again.
+            case Providers.ApiKey when exists && HasApiKey(name):
+            case Providers.Token when exists && HasToken(name):
+                log.Collect(SetProvider(name, provider));
                 break;
             case Providers.ApiKey or Providers.Token:
                 log.Collect(SetProvider(name, Providers.Login));
@@ -362,6 +376,15 @@ public partial class ProfileManager
         // Owned items are only added. An import never shares a profile's own copies back, even with force.
         var have = Get(name).Overrides.ToList();
         foreach (var item in overrides.Where(i => !have.Contains(i))) Own(name, item);
+
+        // Exclusions too are only added, never removed.
+        if (p.TryGetProperty("exclude", out var ex) && ex.ValueKind == JsonValueKind.Array)
+            foreach (var x in ex.EnumerateArray())
+            {
+                if (x.ValueKind != JsonValueKind.String || Get(name).Exclude.Contains(x.GetString()!)) continue;
+                try { log.Collect(Exclude(name, x.GetString()!)); }
+                catch (ClauderooException e) { log.Notices.Add($"{name}: {x.GetString()} not excluded: {e.Message}"); }
+            }
 
         // Only a startDir present in the file is applied, and only one that exists on this machine.
         if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("startDir", out var sd)

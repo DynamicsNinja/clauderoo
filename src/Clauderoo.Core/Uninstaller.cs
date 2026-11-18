@@ -51,6 +51,77 @@ public static class Uninstaller
         (options.Schedule ?? StartScheduled)(BuildRemoveArguments(dir));
     }
 
+    /// <summary>
+    /// Refuses (changing nothing) a data folder that is a drive root, your user folder, a junction or link itself, or
+    /// that overlaps any of <paramref name="keep"/> (~/.claude, the home profile's folder): neither may be inside the
+    /// other.
+    /// </summary>
+    public static void AssertSafeToPurge(string dataDir, IEnumerable<string?> keep)
+    {
+        var dir = System.IO.Path.GetFullPath(dataDir).TrimEnd('\\', '/');
+        if (System.IO.Path.GetPathRoot(dir)?.TrimEnd('\\', '/').Equals(dir, StringComparison.OrdinalIgnoreCase) ?? true)
+            throw new ClauderooException($"Refusing to delete {dir}: it is a drive root. Nothing was changed.");
+        if (Same(dir, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
+            throw new ClauderooException($"Refusing to delete {dir}: it is your user folder. Nothing was changed.");
+        if (Directory.Exists(dir) && new DirectoryInfo(dir).Attributes.HasFlag(FileAttributes.ReparsePoint))
+            throw new ClauderooException($"Refusing to delete {dir}: it is a junction or link. Nothing was changed.");
+        foreach (var k in keep)
+        {
+            if (string.IsNullOrWhiteSpace(k)) continue;
+            var kk = System.IO.Path.GetFullPath(k).TrimEnd('\\', '/');
+            if (Same(dir, kk) || Inside(kk, dir) || Inside(dir, kk))
+                throw new ClauderooException(
+                    $"Refusing to delete {dir}: it overlaps {kk}, which is never touched. Nothing was changed.");
+        }
+    }
+
+    /// <summary>
+    /// Deletes clauderoo's data folder without ever following a junction or link: each link inside it is removed as a
+    /// link (its target, such as the shared folders in ~/.claude, is left alone), and real folders are emptied one by
+    /// one. Checks <see cref="AssertSafeToPurge"/> first. Throws listing what couldn't be deleted (e.g. files in use).
+    /// </summary>
+    public static void Purge(string dataDir, IEnumerable<string?> keep)
+    {
+        var keepList = keep.ToList();
+        AssertSafeToPurge(dataDir, keepList);
+        var dir = System.IO.Path.GetFullPath(dataDir).TrimEnd('\\', '/');
+        if (!Directory.Exists(dir)) return;
+        var failed = new List<string>();
+        DeleteTree(dir, failed);
+        if (failed.Count > 0)
+            throw new ClauderooException(
+                $"Couldn't delete {failed.Count} item(s) in {dir} (close Claude sessions and try again): " +
+                string.Join(", ", failed.Take(5)) + (failed.Count > 5 ? ", …" : ""));
+    }
+
+    private static void DeleteTree(string dir, List<string> failed)
+    {
+        IEnumerable<FileSystemInfo> entries;
+        try { entries = new DirectoryInfo(dir).EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly).ToList(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { failed.Add(dir); return; }
+        foreach (var entry in entries)
+        {
+            try
+            {
+                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    // The link only: Directory.Delete without recursion never touches a junction's target.
+                    if (entry is DirectoryInfo) Directory.Delete(entry.FullName, recursive: false);
+                    else File.Delete(entry.FullName);
+                }
+                else if (entry is DirectoryInfo) DeleteTree(entry.FullName, failed);
+                else
+                {
+                    if (entry.Attributes.HasFlag(FileAttributes.ReadOnly)) entry.Attributes &= ~FileAttributes.ReadOnly;
+                    File.Delete(entry.FullName);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { failed.Add(entry.FullName); }
+        }
+        try { Directory.Delete(dir, recursive: false); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { if (!failed.Any(f => f.StartsWith(dir, StringComparison.OrdinalIgnoreCase))) failed.Add(dir); }
+    }
+
     private static bool TrayIsRunning()
     {
         var procs = Process.GetProcessesByName("clauderoow");

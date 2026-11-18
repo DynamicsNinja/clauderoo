@@ -9,6 +9,9 @@ public interface ISecretStore
     string? Load(string profileDir);
     void Delete(string profileDir);
     bool Exists(string profileDir);
+
+    /// <summary>When the secret was saved (non-secret metadata), or null when unknown.</summary>
+    DateTimeOffset? SavedAt(string profileDir) => null;
 }
 
 /// <summary>Stores one kind of profile secret (API key, Claude token) as a DPAPI (CurrentUser) blob in the profile folder.</summary>
@@ -40,11 +43,54 @@ public sealed class DpapiSecretStore(string fileName = DpapiSecretStore.FileName
 
     private string PathFor(string profileDir) => Path.Combine(profileDir, fileName);
 
+    /// <summary>The plain-text sidecar holding only the saved-at time (never the secret), e.g. ".clauderoo-token.meta".</summary>
+    private string MetaFor(string profileDir) => PathFor(profileDir) + MetaSuffix;
+    public const string MetaSuffix = ".meta";
+
+    /// <summary>The clock Save stamps the sidecar with (tests set it).</summary>
+    internal Func<DateTimeOffset> Clock { get; init; } = () => DateTimeOffset.UtcNow;
+
     public void Save(string profileDir, string secret)
     {
         var blob = Transform(Encoding.UTF8.GetBytes(secret), protect: true)
             ?? throw new ClauderooException($"Couldn't encrypt the {kind} on this account.");
         AtomicFile.WriteAllBytes(PathFor(profileDir), blob);
+        // Best effort: a missing sidecar falls back to the blob's own write time.
+        try
+        {
+            AtomicFile.WriteAllText(MetaFor(profileDir), System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["savedAt"] = Clock().UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture),
+            }));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// The sidecar's saved-at time; for a blob saved before sidecars existed (or whose sidecar is unreadable), the
+    /// blob's last write time. Null when no secret is saved.
+    /// </summary>
+    public DateTimeOffset? SavedAt(string profileDir)
+    {
+        var path = PathFor(profileDir);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var meta = MetaFor(profileDir);
+            if (File.Exists(meta))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(meta));
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("savedAt", out var v)
+                    && v.ValueKind == System.Text.Json.JsonValueKind.String
+                    && DateTimeOffset.TryParse(v.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeUniversal, out var at))
+                    return at.ToUniversalTime();
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { }
+        try { return new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
     public string? Load(string profileDir)
@@ -60,6 +106,8 @@ public sealed class DpapiSecretStore(string fileName = DpapiSecretStore.FileName
     {
         var path = PathFor(profileDir);
         if (File.Exists(path)) File.Delete(path);
+        var meta = MetaFor(profileDir);
+        if (File.Exists(meta)) File.Delete(meta);
     }
 
     public bool Exists(string profileDir) => File.Exists(PathFor(profileDir));

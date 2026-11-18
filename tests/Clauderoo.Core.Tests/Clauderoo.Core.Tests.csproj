@@ -28,6 +28,7 @@
     <ProjectReference Include="../../src/Clauderoo.Core/Clauderoo.Core.csproj" />
     <ProjectReference Include="../../src/Clauderoo.Cli/Clauderoo.Cli.csproj" />
     <ProjectReference Include="../../src/Clauderoo.Tray/Clauderoo.Tray.csproj" />
+    <ProjectReference Include="../Clauderoo.ConfigWriter/Clauderoo.ConfigWriter.csproj" />
   </ItemGroup>
 
 </Project>

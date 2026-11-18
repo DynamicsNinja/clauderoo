@@ -3,7 +3,9 @@ using System.Text.Json;
 namespace Clauderoo.Core;
 
 public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Email,
-    IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null);
+    IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null,
+    string? StartDir = null,
+    IReadOnlyList<string>? Exclude = null);
 
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
@@ -47,7 +49,13 @@ public partial class ProfileManager
     public ClauderooPaths Paths => paths;
     public IEnvStore Env => env;
 
-    public SyncReport SyncAll() => NewSyncer(Config).SyncAll();
+    public SyncReport SyncAll()
+    {
+        var cfg = Config;
+        var report = NewSyncer(cfg).SyncAll();
+        RefreshWtFragment(cfg);
+        return report;
+    }
 
     public ClauderooConfig Config =>
         ConfigStore.Load(paths) ?? throw new ClauderooException("Run 'clauderoo init' first.");
@@ -78,7 +86,7 @@ public partial class ProfileManager
         if (!Directory.Exists(home))
             throw new ClauderooException($"Home folder not found: {home}");
 
-        ConfigStore.Save(paths, new ClauderooConfig
+        ConfigStore.Create(paths, new ClauderooConfig
         {
             DefaultProfile = name,
             HomeDir = home,
@@ -94,8 +102,12 @@ public partial class ProfileManager
         if (cfg.Profiles.ContainsKey(name))
             throw new ClauderooException($"Profile '{name}' already exists.");
         Directory.CreateDirectory(paths.ProfileDir(name));
-        cfg.Profiles[name] = new ProfileEntry();
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"Profile '{name}' already exists.");
+            c.Profiles[name] = new ProfileEntry();
+        });
+        AppLog.Info($"Profile {name} added.");
         return NewSyncer(cfg).Sync(name);
     }
 
@@ -170,11 +182,14 @@ public partial class ProfileManager
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
         try { tokens.Delete(keyDir); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* moved aside already; still DPAPI-protected */ }
-        cfg.Profiles.Remove(name);
-        cfg.AutoSwitch?.Order.RemoveAll(n => n == name);
-        foreach (var k in cfg.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
-            cfg.Folders.Remove(k);
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            c.Profiles.Remove(name);
+            c.AutoSwitch?.Order.RemoveAll(n => n == name);
+            foreach (var k in c.Folders.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList())
+                c.Folders.Remove(k);
+        });
+        AppLog.Info($"Profile {name} removed (its folder was moved aside).");
         try { Usage.Remove(name); } catch (IOException) { /* the cache is best effort */ }
         try { AutoSwitchState.Remove(name); } catch (IOException) { /* state is best effort */ }
     }
@@ -242,7 +257,8 @@ public partial class ProfileManager
             var provider = kv.Value.Home ? Providers.Login : Providers.Of(kv.Value);
             var detail = provider == Providers.Vertex ? kv.Value.Vertex?.Project : null;
             return new ProfileInfo(kv.Key, kv.Value.Home, cfg.DefaultProfile == kv.Key,
-                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail);
+                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail, kv.Value.StartDir,
+                kv.Value.Exclude.ToArray());
         }).ToList();
     }
 
@@ -260,11 +276,11 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = Entry(cfg, name);
         if (entry.Home) throw new ClauderooException("The home profile owns everything already.");
-        if (!SharedItems.IsKnown(item)) throw new ClauderooException(UnknownItem(item));
+        if (!SharedItems.IsKnown(cfg, item)) throw new ClauderooException(SharedItems.UnknownItem(cfg, item));
 
         if (!entry.Overrides.Contains(item)) entry.Overrides.Add(item);
 
-        if (SharedItems.IsDir(item))
+        if (SharedItems.IsDir(cfg, item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
             var source = Path.Combine(cfg.HomeDir, item);
@@ -287,13 +303,26 @@ public partial class ProfileManager
                     throw new ClauderooException($"Could not copy {item} for '{name}': {e.Message}");
                 }
             }
+            else if (FilteredDir.IsFiltered(link))
+            {
+                // Its links into home become copies, so the owned folder never leads into home.
+                try { FilteredDir.MakeOwned(link, CopyDir); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+                {
+                    throw new ClauderooException($"Could not copy {item} for '{name}': {e.Message}");
+                }
+            }
             else if (!Directory.Exists(link))
             {
                 if (Directory.Exists(source)) CopyDir(source, link);
                 else Directory.CreateDirectory(link);
             }
         }
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            var e = Entry(c, name);
+            if (!e.Overrides.Contains(item)) e.Overrides.Add(item);
+        });
     }
 
     public SyncReport Share(string name, string item)
@@ -301,21 +330,22 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = Entry(cfg, name);
         if (entry.Home) throw new ClauderooException("The home profile is the source of shared items.");
-        if (!SharedItems.IsKnown(item)) throw new ClauderooException(UnknownItem(item));
+        if (!SharedItems.IsKnown(cfg, item)) throw new ClauderooException(SharedItems.UnknownItem(cfg, item));
 
         entry.Overrides.Remove(item);
 
         string? dirBackup = null;
-        if (SharedItems.IsDir(item))
+        if (SharedItems.IsDir(cfg, item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
-            if (Directory.Exists(link) && Junction.GetTarget(link) == null)
+            // A filtered folder is already clauderoo's (shared, minus exclusions): the sync below keeps it.
+            if (Directory.Exists(link) && Junction.GetTarget(link) == null && !FilteredDir.IsFiltered(link))
             {
                 dirBackup = $"{item}.bak-{Stamp}";
                 Directory.Move(link, $"{link}.bak-{Stamp}");
             }
         }
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c => { Entry(c, name).Overrides.Remove(item); });
         var report = NewSyncer(cfg).Sync(name, justShared: item);
         if (dirBackup != null)
             report.Notices.Insert(0, $"{name}: now sharing {item} from {cfg.HomeProfileName}; previous copy saved as {dirBackup}.");
@@ -341,14 +371,12 @@ public partial class ProfileManager
             && !defEntry.Home && Providers.Of(defEntry) == Providers.Token)
             problems.Add($"{cfg.DefaultProfile} signs in with a token; start it with 'cr start {cfg.DefaultProfile}' " +
                          "(plain 'claude' isn't signed in).");
+        problems.AddRange(TokenAgeProblems().Select(p => p.Detail));
         return new StatusReport(cfg.DefaultProfile, userValue, matches, problems);
     }
 
     private static string Norm(string p) =>
         p.TrimEnd('\\', '/').ToUpperInvariant();
-
-    private static string UnknownItem(string item) =>
-        $"Unknown item '{item}'. Known: {string.Join(", ", SharedItems.Dirs.Concat(SharedItems.Files).Append(SharedItems.McpServers))}.";
 
     private static ProfileEntry Entry(ClauderooConfig cfg, string name) =>
         cfg.Profiles.TryGetValue(name, out var e)

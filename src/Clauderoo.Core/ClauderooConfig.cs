@@ -7,6 +7,8 @@ public class ProfileEntry
 {
     public bool Home { get; set; }
     public List<string> Overrides { get; set; } = [];
+    /// <summary>Entries of shared items this profile leaves out, as "item/entry" (e.g. "skills/foo"; see SharedItems).</summary>
+    public List<string> Exclude { get; set; } = [];
     public string? StartDir { get; set; }
     public string? Provider { get; set; }
     public VertexSettings? Vertex { get; set; }
@@ -48,8 +50,15 @@ public static class Providers
 
 public class ClauderooConfig
 {
+    /// <summary>The config.json format version (see <see cref="ConfigStore.CurrentSchemaVersion"/>); missing means 1.</summary>
+    public int SchemaVersion { get; set; } = ConfigStore.CurrentSchemaVersion;
+
     public string? DefaultProfile { get; set; }
+    /// <summary>"wt" (default) or "conhost"; see TerminalChoice.</summary>
     public string Terminal { get; set; } = "wt";
+    /// <summary>"cmd" (default when null), "pwsh" or "powershell": the shell new sessions run in. See TerminalChoice.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Shell { get; set; }
     public string HomeDir { get; set; } = "";
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();
@@ -57,6 +66,12 @@ public class ClauderooConfig
 
     /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
     public Dictionary<string, string> Folders { get; set; } = new();
+
+    /// <summary>Folders and files of the home profile shared on top of the built-in ones (see SharedItems).</summary>
+    public List<string> ExtraSharedDirs { get; set; } = [];
+    public List<string> ExtraSharedFiles { get; set; } = [];
+    /// <summary>Days after saving a Claude token before clauderoo warns that it expires soon (default 335; tokens last a year).</summary>
+    public int? TokenWarnAfterDays { get; set; }
 
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
@@ -67,7 +82,7 @@ public class ClauderooConfig
         Profiles.FirstOrDefault(p => p.Value.Home).Key;
 }
 
-public static class ConfigStore
+public static partial class ConfigStore
 {
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -80,7 +95,7 @@ public static class ConfigStore
         if (!File.Exists(p.ConfigFile)) return null;
         try
         {
-            return JsonSerializer.Deserialize<ClauderooConfig>(File.ReadAllText(p.ConfigFile), Options);
+            return Parse(p, AtomicFile.ReadAllTextShared(p.ConfigFile));
         }
         catch (JsonException)
         {
@@ -101,7 +116,20 @@ public static class ConfigStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
 
-    public static void Save(ClauderooPaths p, ClauderooConfig c)
+    /// <summary>
+    /// Replaces config.json with <paramref name="c"/> as is, under the config lock. For a load-change-save use
+    /// <see cref="Update"/>, which re-reads the file inside the lock so another process's change isn't lost.
+    /// </summary>
+    public static void Save(ClauderooPaths p, ClauderooConfig c) =>
+        WithLock(p, LockTimeout, () =>
+        {
+            RefuseNewer(p, c.SchemaVersion);
+            RefuseNewer(p, DiskSchemaVersion(p));
+            Write(p, c);
+            return true;
+        });
+
+    private static void Write(ClauderooPaths p, ClauderooConfig c)
     {
         Directory.CreateDirectory(p.Root);
         AtomicFile.WriteAllText(p.ConfigFile, JsonSerializer.Serialize(c, Options));

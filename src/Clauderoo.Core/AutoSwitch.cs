@@ -179,6 +179,7 @@ public static class AutoSwitchRunner
         }
         catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
         {
+            AppLog.Warn($"Auto-switch: couldn't read the settings: {e.Message}");
             return new PassResult(new Decision.NoAction(), null, null, null, e);
         }
 
@@ -203,11 +204,22 @@ public static class AutoSwitchRunner
             }
             catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException)
             {
+                AppLog.Warn($"Auto-switch: couldn't re-check the default: {e.Message}");
                 return new PassResult(new Decision.NoAction(), from, null, cfg.AutoSwitch, e);
             }
             if (decision is Decision.SwitchTo apply)
-                report = pm.SetDefault(apply.Profile); // throws: nothing saved. Not a manual choice: no hold.
+            {
+                try { report = pm.SetDefault(apply.Profile); } // throws: nothing saved. Not a manual choice: no hold.
+                catch (Exception e)
+                {
+                    AppLog.Warn($"Auto-switch: couldn't switch from {from} to {apply.Profile}: {e.Message}");
+                    throw;
+                }
+                AppLog.Info($"Auto-switch: default moved from {from} to {apply.Profile} ({apply.Reason}).");
+            }
         }
+        if (decision is Decision.NoTarget none) AppLog.Info($"Auto-switch: no profile to switch to ({none.Reason}).");
+        if (decision is Decision.Recovered back) AppLog.Info($"Auto-switch: {back.Profile} has room again.");
 
         var next = AutoSwitch.Next(state, decision, from, usage, now, cfg.AutoSwitch);
         if (next != state)

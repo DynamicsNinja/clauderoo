@@ -31,8 +31,12 @@ public partial class ProfileManager
             report = NewSyncer(cfg).Sync(target);
             env.SetUser(EnvVar, paths.ProfileDir(target));
         }
-        cfg.DefaultProfile = target;
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            Entry(c, target); // removed meanwhile: throws, nothing saved
+            c.DefaultProfile = target;
+        });
+        AppLog.Info($"Default profile set to {target}.");
         return report;
     }
 

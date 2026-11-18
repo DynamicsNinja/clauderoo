@@ -50,7 +50,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
-- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, export and import them, and run the setup check.
+- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles (any removed copy, from **Removed…**, which can also delete them permanently), export and import them, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
 - **Auto-switch.** When the default profile nears a usage limit, new terminals move to another profile that has room.
 - **MCP server.** `cr mcp` lets a Claude session list your profiles, check their usage, change the default and hand a one-shot prompt to another profile.
@@ -147,19 +147,23 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which`, `check`, `usage` and `sessions` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
+`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `env <name>`, `doctor`, `auto --once`, `removed`, `purge`, `shared` and `config` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
 | Command | What it does |
 | --- | --- |
 | `init [--name <n>] [--home <path>]` | Set up clauderoo around your existing `~/.claude` |
-| `add <name>` | Create a profile (names may use `a-z`, `0-9` and `-`) |
+| `add <name> [--from <profile>]` | Create a profile (names may use `a-z`, `0-9` and `-`). `--from` copies another profile's settings, as `clone` does |
+| `clone <source> <new>` | Create a profile with the same provider, Vertex settings, environment variables and start folder, plus a copy of each item the source owns (for `mcpServers`, only the server list). The sign-in, conversations, folder mappings and any API key or token are never copied: an API-key or token profile's copy uses the Claude login until you set its secret with `cr provider <new> apikey\|token`. The profile manager's **Duplicate…** does the same |
+| `startdir <name> [<dir> \| --clear]` | Show, set or clear the folder that **Start session** (tray and profile manager) opens the profile in. The folder must exist. Without one, sessions open in your user folder. `list` shows it |
 | `list [--json]` | List profiles and the account each one is logged in with, plus the last known 5h/7d usage of Claude-login profiles |
 | `usage [name] [--json]` | Show 5-hour and 7-day usage, reset times, plan and per-model limits for every profile, or just `name`. Fetches live and falls back to the last reading ("as of hh:mm") when offline or rate-limited. Vertex, API-key and Claude-token profiles show "Usage isn't tracked for …". `--json` prints `{profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}` |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
-| `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
+| `restore <name> [--at <id>]` | Bring back the most recently removed profile with that name, or the copy `removed` lists as `<id>` (e.g. `20261118-142501`). Its isolated folder comes back too. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
+| `removed [name] [--json]` | List removed copies of profiles: name, when it was removed, its id and its size. `--json` prints `{removed:[{name, id, removedAt, sizeBytes, hasProfile, hasIsolated}], totalBytes}` |
+| `purge [name] [--at <id>] [--older-than <age>] [--all] [--yes] [--json]` | Permanently delete removed copies: all copies of `name` (or just `--at <id>`), every copy (`--all`), or those removed longer ago than `<age>` (`30d`, `2w`, `12h`, `90m`). Shows what will be deleted and the space freed, then asks; `--yes` skips the question (and is required with `--json`, which prints `{deleted, freedBytes, failed}`). Junctions inside are removed as links, so your shared home folders are never touched. This is the only command that really deletes profile data |
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
 | `auto [on\|off] [--threshold N] [--order a,b,c]` | Turn [auto-switch](#auto-switch) on or off, set the threshold (6 to 100, default 90) and the profiles to switch to, in order. With no arguments, it shows the current settings |
 | `auto --once [--json]` | Check usage now and switch the default if it has reached the threshold. Exit codes: 0 switched, 2 nothing to do, 3 no other profile has room, 1 error. For Task Scheduler when the tray isn't running |
@@ -169,13 +173,32 @@ All commands work with either `clauderoo` or `cr`.
 | Command | What it does |
 | --- | --- |
 | `start [name] [dir] [-- args]` | Run Claude for a profile in this terminal (`run` does the same). Without a name, the folder's mapping picks the profile, or else the default |
-| `start [name] [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead. Prompts there can't contain `" % ! ;` |
+| `start [name] [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead (see [Terminals, shells and editors](#terminals-shells-and-editors)). With the default Command Prompt shell, prompts there can't contain `" % ! ;`; with PowerShell any text works |
 | `start [name] [dir] --isolated` | Run with a separate config folder: no shared plugins, skills, hooks or MCP servers. A Claude login profile needs its own `/login` there once; other providers work right away |
 | `which [--json]` | Show which profile this terminal is using, and why |
 | `sessions [profile] [--json]` | List conversations across profiles (home's read-only, isolated folders included), newest first: id, profile, when, folder and your first prompt |
 | `resume <id> --as <profile> [--isolated] [--tab] [-- args]` | Continue a conversation under another profile. The start of the id is enough. It's copied into that profile (a newer or bigger copy there is kept; an older one is saved as `.bak-<time>`), then Claude starts in the conversation's own folder with `--resume`. Anything after `--` is passed on to Claude. It can't copy into the home profile, because clauderoo never writes inside `~/.claude`; `--as <home> --isolated` works, since that folder is clauderoo's |
 
 The tray does the same from **Continue a conversation…**. The window lists conversations across your profiles (when, profile, folder and your first prompt; nothing else of a conversation is shown), with a search box and a profile filter. Pick one, choose **Continue as** and press **Continue**: the conversation is copied into that profile and Claude opens in a new tab, in the conversation's own folder, resumed. The home profile appears only as "(isolated)" there, because clauderoo never writes inside `~/.claude`. If the conversation's folder no longer exists, the window says so instead of starting.
+
+### Terminals, shells and editors
+
+| Command | What it does |
+| --- | --- |
+| `config [--json]` | Show where new sessions open (`terminal`) and which shell runs them (`shell`) |
+| `config terminal wt\|conhost` | `wt` (default): a new Windows Terminal tab, or a console window when Windows Terminal isn't installed. `conhost`: always a classic console window |
+| `config shell cmd\|pwsh\|powershell` | The shell the new tab or window runs: Command Prompt (default), PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1. It sets the profile's environment, runs `clauderoo run <profile>` and stays open afterwards |
+| `wt-profiles [--remove]` | Add a Windows Terminal profile for each clauderoo profile, named "Claude · &lt;name&gt;", with its own tab colour and the profile's start folder. They appear in Windows Terminal's new-tab dropdown (open a new Windows Terminal window to see them). Once added, they follow `add`, `rename`, `remove`, `restore`, `import` and the shell setting. `--remove` takes them out again |
+| `code [name] [dir] [--cursor \| --editor <exe>]` | Open VS Code on `dir` (default: the current folder) with the profile's environment, so the Claude Code extension in that window uses the profile. The profile is picked as `start` picks it. `--cursor` opens Cursor; `--editor` takes the path of another VS Code-based editor's `.exe` or `.cmd` launcher |
+
+The same choices are in the tray under **Advanced › New sessions open in**, and each profile's tray menu has **Open in VS Code…** (it opens the profile's start folder, or asks for one).
+
+**PowerShell and special characters.** With `pwsh` or `powershell`, the tab gets its commands as one encoded block that neither Windows Terminal nor Command Prompt reads, and every value in it is a quoted literal. So prompts and folders may contain any character, including `" % ! ; & '`. With `cmd`, the old limits stay.
+
+**VS Code and a running instance.** `code` needs VS Code's `code` command on `PATH` (the installer's "Add to PATH" option). It always asks VS Code for a new window and never changes your user environment. VS Code runs one process for all its windows. A new window gets the variables of the command that opened it, but VS Code can keep variables from its first start that the new command doesn't set. So:
+
+- A folder that's already open in VS Code is only brought to the front, and keeps the profile it was opened with. Close that window first.
+- Variables a profile sets always win, but a variable it doesn't set can carry over from VS Code's first start. The home profile has no `CLAUDE_CONFIG_DIR`, and only Claude-token profiles set a token. If VS Code was first started by `cr code` for another profile, a home-profile window (or a window of a profile without a token) may still use that profile. Quit VS Code completely and run `cr code` again. `cr code` says so when VS Code was already running.
 
 ### Folders
 
@@ -191,10 +214,11 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 
 | Command | What it does |
 | --- | --- |
-| `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token` |
-| `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
-| `check <name> [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
-| `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
+| `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token`. A key or token saved earlier is kept when you switch provider: an empty answer or `--keep` uses it again, `--new` always asks for a new one |
+| `forget <name> apikey\|token` | Delete the profile's saved API key or Claude token (and its saved-at file). The provider isn't changed |
+| `env <name> [set A=1 B=2 \| unset A] [--json]` | Show, set or unset a profile's environment variables. `env <name> --json` prints `{"schemaVersion":1,"profile":…,"env":{"NAME":"value"}}` with the names exactly as set |
+| `check <name> [--live] [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. For an API-key or Claude-token profile, `--live` tests the secret for real (see [Checking keys and tokens](#checking-keys-and-tokens)). Exits with code 1 if anything fails |
+| `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs. A key kept from before a provider switch isn't printed |
 
 ### Export and import
 
@@ -205,21 +229,21 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 
 Import only files from people you trust: environment variables and folder mappings take effect in new sessions.
 
-Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`. With `--force`, an existing profile that has a matching key or token kept from an earlier provider switch uses it again.
 
 Folder mappings in the file are added for new and existing profiles alike, even without `--force`; a folder already mapped to another profile is skipped. With `--force`, an import also:
 
 - updates the settings of profiles that already exist (provider, Vertex project and models, environment, start folder);
 - re-points folders that are already mapped to another profile;
-- keeps the provider of a profile that holds an API key or token, so the secret is never deleted.
+- keeps the provider of a profile that signs in with an API key or token, so its sign-in never changes under you.
 
 An import only ever adds owned items. It never gives a profile's own copies back to home, with or without `--force`. A start folder that doesn't exist on this machine is left out and reported. The summary lists what was created, updated and mapped, the names (never the values) of the environment variables that arrived, and anything skipped.
 
-The manager window has the same two actions under the profile list. **Export…** exports every profile except home: it asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. To share a single profile, use `cr export <file> <name>`. **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
+The manager window has the same two actions under the profile list. **Export…** asks whether to export every profile except home or only the selected one, and whether to include environment variables (with a plain-text warning), then where to save the file (`clauderoo-profiles.json`, or `clauderoo-<name>.json` for one profile). **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
 
 **Onboarding a colleague on Vertex.**
 
-1. Export the Vertex profile with `cr export vertex.json work`. (**Export…** in the window exports every profile except home.)
+1. Export the Vertex profile with `cr export vertex.json work`, or select it and choose **Export…** › **Only work** in the window.
 2. Your colleague imports it (`cr import vertex.json`, or **Import…** in the window).
 3. They sign in to gcloud (**Sign in to Google…** in the window, or `gcloud auth application-default login`).
 4. They run **Check setup** (`cr check <name>`) to confirm everything works.
@@ -230,19 +254,30 @@ The manager window has the same two actions under the profile list. **Export…*
 | --- | --- |
 | `own <name> <item>` | Give a profile its own copy of a shared item |
 | `share <name> <item>` | Go back to sharing that item from the home profile |
+| `exclude <name> <item>/<entry>` | Leave one entry of a shared item out of a profile, e.g. `skills/my-skill`, `agents/reviewer.md`, `mcpServers/github` or `plugins/name@marketplace`. Allowed (with a warning) for an entry home doesn't have yet. `exclude <name>` lists what the profile leaves out |
+| `include <name> <item>/<entry>` | Share an excluded entry with the profile again |
+| `shared [list] [--json]` | List the shared files and folders, built-in and added |
+| `shared add <name> [--dir\|--file]` | Share another file or folder of the home profile (directly inside `~/.claude`) with every profile. `--dir`/`--file` is needed only when it isn't there yet. A profile that already has its own item of that name keeps it |
+| `shared remove <name>` | Stop sharing an added item. Each profile's link is removed; a copied file or an owned folder stays as the profile's own. Built-in items can't be removed |
+
+In the manager window, select a profile and choose **Sharing…** to see how each shared item reaches it (shared from home, its own copy, or shared with some entries left out), and to **Own**, **Share again** or **Choose what's shared…** (the same as `exclude`/`include`).
 
 ### App
 
 | Command | What it does |
 | --- | --- |
 | `manage` | Open the profile manager window |
-| `status [--json]` | Show the default profile and any problems |
+| `status [--json]` | Show the default profile and any problems (including a missing home Claude folder or a Claude token near the end of its one-year life) |
+| `home [<path>]` | Show the home profile's Claude folder, or point clauderoo at `<path>` after `~/.claude` moved. The folder must look like a Claude config folder (`settings.json`, `.credentials.json`, `projects`, `plugins`…). clauderoo only reads it: every profile's shared links are moved to it and synced again |
+| `logs [--path] [--tail N]` | Show the last N lines of the clauderoo log (default 50), or with `--path` just where it is. See [Log file](#log-file) |
+| `doctor [--json]` | Check this machine's setup without changing anything. See [Doctor](#doctor) |
+| `completion powershell\|bash` | Print a tab-completion script. See [Shell completion](#shell-completion) |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |
 | `version` | Print the installed version (`--version` works too) |
 | `upgrade [--check]` | Install the latest GitHub release after verifying its SHA256. `--check` only says whether a newer one exists. Builds not made from a release can't upgrade |
-| `uninstall [--yes]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept. Quit the tray app first |
+| `uninstall [--yes] [--purge]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept unless you add `--purge`, which also deletes `%USERPROFILE%\.clauderoo` after you type `delete` to confirm (`--yes` skips that). Purge removes junctions as links, never what they point to, and never touches `~/.claude`. Quit the tray app and close clauderoo's Claude sessions first |
 | `mcp` | Run clauderoo's MCP server over stdio. Claude Code starts it; you don't run it yourself. See [MCP server](#mcp-server) |
 | `mcp install` | Print the `claude mcp add` command that registers the server, and copy it to the clipboard. It never runs it |
 
@@ -270,6 +305,17 @@ cr env work set HTTPS_PROXY=http://proxy:8080
 cr env work unset HTTPS_PROXY
 cr check work
 ```
+
+**Switching provider keeps the saved key or token.** Move a profile from API key or Claude token to another provider and its secret stays saved (encrypted, unused), so switching back doesn't mean pasting it again:
+
+```powershell
+cr provider work token           # with a token saved: "Token (Enter keeps the saved one, saved on 2026-03-01):"
+cr provider work token --keep    # use the saved one without asking (for scripts; fails if none is saved)
+cr provider work token --new     # always ask for a new one
+cr forget work token             # delete the saved token (or `apikey`) for good
+```
+
+Piping a value in (`... | cr provider work apikey`) replaces the saved one; empty input keeps it. Only the provider in use counts: a kept secret isn't handed to Claude, `cr apikey` doesn't print a kept key, and `cr status` and `cr check` don't warn about a kept token's age. Removing a profile deletes its saved key and token, kept or not. In the manager window, a saved key or token shows as "saved — leave empty to use it" when you pick its provider, and **Forget the saved key** (or token) deletes it.
 
 If you accept a model update from inside Claude (for example, moving Opus to a newer version), clauderoo saves the new model to the profile. It isn't reverted on the next sync.
 
@@ -307,6 +353,17 @@ The checks run in parallel and the list updates as each one finishes. Each line 
   <img src="docs/images/check-setup-progress.png" width="560" alt="Check setup running with live progress">
 </p>
 
+### Checking keys and tokens
+
+Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live` (or **Live check** ticked next to **Check setup** in the window, which shows the results as the same checklist):
+
+- **API key:** one authenticated request to the Anthropic API's models list (`GET /v1/models`), with a 10-second timeout. It uses no quota. A profile that sets `ANTHROPIC_BASE_URL` is tested against that address; the key is only sent over `https` (or plain `http` to this computer).
+- **Claude token:** a token from `claude setup-token` can only make model requests, so there's no free way to test it. clauderoo runs `claude -p` with the token, the Haiku model and a one-line prompt, which uses a few tokens of the account's quota.
+
+The key or token is never printed, logged or included in `--json` output; error text is scrubbed of it. The window's live check runs `clauderoo check <name> --live --json` without a console window and shows its rows, so the tray app itself never decrypts the secret.
+
+**Token expiry.** Claude tokens last one year. clauderoo records when each key and token was saved (in a small `.meta` file next to the encrypted secret; for secrets saved before this, the encrypted file's date is used). From 335 days after a token was saved, `cr status`, `cr check`, the tray's Problems list and the manager window warn that it expires soon, and after a year that it has probably expired. Change the warning point with `"tokenWarnAfterDays": <days>` in `%USERPROFILE%\.clauderoo\config.json`. clauderoo can't read a token's real expiry date, so the date is counted from when you saved it in clauderoo.
+
 ### Usage limits
 
 For Claude-login profiles (home included), clauderoo shows how much of the subscription's 5-hour and 7-day windows is used, plus any per-model limits:
@@ -325,7 +382,7 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 
 ### MCP server
 
-`cr mcp` is an MCP server (stdio, JSON-RPC 2.0) that gives Claude Code four clauderoo tools:
+`cr mcp` is an MCP server (stdio, JSON-RPC 2.0) that gives Claude Code these clauderoo tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -333,6 +390,9 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 | `usage {profile?}` | 5-hour and 7-day usage for one profile or all of them. Uses no quota. A reading under 2 minutes old is reused, each profile is checked at most once every 2 minutes, and a rate limit is waited out for at least 10 minutes |
 | `set_default {profile}` | Make a profile the default for new terminals. It counts as choosing the default yourself, so auto-switch leaves it alone |
 | `delegate {profile, prompt, cwd?}` | Run a one-shot `claude -p` under another profile and return its output |
+| `which_profile` | Which profile this session runs under, and how that was decided (like `cr which`). Uses no quota |
+| `list_sessions {profile?, limit?}` | Running sessions started by clauderoo and recent conversations (id, profile, folder, time, first prompt), newest first; `limit` is 1 to 200, default 20. Uses no quota |
+| `check_profile {profile, live?}` | The read-only sign-in check (like `cr check`). A Vertex profile gets the full checklist, which sends one tiny prompt per model; `live: true` tests an API key (no quota) or a Claude token (a few tokens). One check runs at a time |
 
 **Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or click **Use from Claude…** in the profile manager, and you get this command to run once in a terminal:
 
@@ -372,7 +432,7 @@ Auto-switch changes the default profile when the default reaches a share of its 
 - **What the tray tells you:** a balloon such as "personal is at 92% of its 5-hour limit. New terminals now use work." When no other profile has room, a balloon says so once each time the default crosses the threshold. When the profile it switched away from has room again, a balloon says "personal has room again". Click it to make that profile the default again.
 - **In the tray menu:** a usage window at or above the threshold is shown in amber, or red from 90%. While auto-switch is off, only windows at 90% or more are coloured.
 
-The tray decides each time it checks usage, every 2 to 5 minutes. When the tray isn't running, `cr auto --once` fetches usage, decides and switches once. Schedule it in Task Scheduler, for example every 10 minutes, and check its exit code:
+The tray decides each time it checks usage, every 2 to 5 minutes. When the tray isn't running, `cr auto --once` fetches usage, decides and switches once. To run it on a schedule, use `cr auto --schedule on [--every <minutes>]` (default every 10 minutes). It creates a Task Scheduler task named `clauderoo auto-switch` for your user only: no administrator rights, no stored password, and it runs only while you're signed in. The task runs `clauderoow.exe --auto-once`, which runs `clauderoo auto --once` without opening a console window. Its exit code shows as the task's **Last Run Result**. `cr auto --schedule off` removes the task, and `cr auto --schedule` on its own says whether it is set up. The exit codes are:
 
 | Exit code | Meaning |
 | --- | --- |
@@ -384,6 +444,40 @@ The tray decides each time it checks usage, every 2 to 5 minutes. When the tray 
 Every clauderoo command, `cr auto --once` included, also exits with 2 on an unexpected error (a bug or an unforeseen failure), with the message on stderr. To tell that apart from "nothing to do", check that stderr is empty, or use `--json`: a real result is a JSON document on stdout with an `action` of `switched`, `none` or `noTarget`, and an error is `{"schemaVersion":1,"error":"…"}` on stderr.
 
 `--json` prints `{"schemaVersion": 1, "action", "from", "to", "reason"}` instead of plain text. The switch state (last switch time, which profile it switched from, and a profile chosen by hand) is kept in `%USERPROFILE%\.clauderoo\autoswitch.json`.
+
+### Doctor
+
+`cr doctor`, or **Advanced › Check this PC…** in the tray, runs a read-only checklist of the machine and clauderoo's own state. It changes nothing: no sync, no config write, and the only program it runs is `claude --version`.
+
+1. clauderoo is set up and `config.json` can be read.
+2. Claude Code is on `PATH`, and its version.
+3. Windows Terminal (`wt.exe`) is installed. Without it, `--tab` and the tray open a plain console window.
+4. gcloud is installed (only checked when a profile uses Vertex AI).
+5. clauderoo is installed in `%LOCALAPPDATA%\clauderoo`, and that folder is on your user `PATH`.
+6. The home profile's folder exists.
+7. clauderoo's MCP server is registered in the home profile's `.claude.json`, and points to a program that exists.
+8. The default profile exists, and new terminals use it (`CLAUDE_CONFIG_DIR`).
+9. For each profile, every shared-folder junction resolves to the home profile's folder. A broken (dangling) link is a failure.
+
+The checks run in parallel and each line prints as it finishes, like `cr check`. `--json` prints `{"schemaVersion":1,"ok","message","items":[{"key","label","status","hint","detail"}]}`. The exit code is 1 if anything failed.
+
+### Shell completion
+
+`cr completion powershell` and `cr completion bash` print a script that completes commands, their flags and your profile names (the script asks `cr` for the names each time, so new profiles appear straight away).
+
+**PowerShell:** add this line to your profile (`notepad $PROFILE`):
+
+```powershell
+cr completion powershell | Out-String | Invoke-Expression
+```
+
+**Git Bash:** add this line to `~/.bashrc`:
+
+```bash
+eval "$(cr completion bash | tr -d '\r')"
+```
+
+Open a new terminal afterwards. Both work for `cr`, `clauderoo`, `cr.exe` and `clauderoo.exe`.
 
 ### Profiles that own their settings.json
 
@@ -397,6 +491,7 @@ In an owned `settings.json`, the provider's settings replace any Vertex or API-k
 %USERPROFILE%\.claude                      ← home profile (read-only to clauderoo)
 %USERPROFILE%\.clauderoo\
 ├── config.json                            ← profiles, providers, env vars, default
+├── logs\clauderoo.log                     ← warnings, errors and key actions
 └── profiles\
     ├── work\                              ← CLAUDE_CONFIG_DIR for "work"
     │   ├── plugins  ──junction──► ~/.claude/plugins
@@ -418,12 +513,34 @@ The home profile is the source of truth. Other profiles follow it in one directi
 
 If you edit a copied file inside a profile, the next sync replaces it with home's version and keeps a `.bak-<timestamp>` copy next to it. To keep a profile's own version, run `cr own <profile> <item>`, for example with `settings.json`, `skills` or `mcpServers`. `cr share <profile> <item>` goes back to following home.
 
+`cr shared add <name>` shares more of home the same way: an added folder is a junction, an added file is copied. Names must be a single file or folder directly inside `~/.claude`; sign-ins (`.credentials.json`), `.claude.json`, `projects`, `history.jsonl`, `sessions`, `todos` and similar per-account data are refused.
+
+#### Leaving things out of one profile
+
+`cr exclude <profile> <item>/<entry>` keeps the rest of an item shared and leaves out one entry:
+
+- **MCP servers:** the profile gets home's servers minus the excluded ones.
+- **Folders** (`skills`, `agents`, `commands`, `hooks`, `output-styles` and added folders): instead of one junction, the profile's folder becomes a real folder holding a junction for each sub-folder of home's folder and a copy of each file, minus the excluded entries. It follows home on every sync: new entries appear, removed ones go. A `.clauderoo-filtered.json` file in it records what clauderoo put there; clauderoo only ever removes those (links non-recursively), so anything else you put in the folder is left alone. When the last exclusion goes, the folder turns back into one junction, unless it holds files of its own.
+- **Plugins:** Claude Code keeps every installed plugin in the shared `plugins` folder (with `installed_plugins.json`, marketplaces and caches that refer to each other by path) and turns each one on or off with `enabledPlugins` in `settings.json`. So the `plugins` folder stays one junction, and an excluded plugin is written as `"enabledPlugins": { "<name>@<marketplace>": false }` into the profile's copy of `settings.json`. `plugins/<name>` covers that name from every marketplace. A profile that owns its `settings.json` can't have plugins excluded this way: turn them off in its own `settings.json`, or run `cr share <profile> settings.json` first. A project's own `.claude/settings.json` can still turn a plugin back on there.
+
+`cr include <profile> <item>/<entry>` shares it again. `cr own` on a filtered folder turns its links into copies, so the owned folder never leads into home.
+
 ### Safety guarantees
 
 - clauderoo never writes inside `~/.claude` or `~/.claude.json`.
 - From each Claude-login profile's `.credentials.json`, clauderoo reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only, to fetch usage. It never writes, copies, logs or shows the token, and never refreshes it. It never reads the sign-in file of a Vertex, API-key or Claude-token profile.
 - Tokens and API keys are never printed or logged, and API keys and Claude tokens are stored only in encrypted form (DPAPI).
-- Removed profiles are moved, never deleted, and junctions are unlinked before a move.
+- Removed profiles are moved, never deleted, and junctions are unlinked before a move. Only `cr purge` (or **Delete permanently** in the manager window) deletes a removed copy, after asking, and it never follows a junction.
+
+### Settings file
+
+The CLI, the tray app, the MCP server and `cr auto --once` can all change `config.json` at the same time. Each change takes a machine-wide lock for that file, reads it fresh, applies the change and replaces the file in one move, so no change is lost to another one. Reading never waits: the file is always whole. If another process holds the lock for more than 10 seconds, the change fails with a message asking you to try again.
+
+`config.json` has a `schemaVersion` (currently `1`; a file without one counts as `1`). An older file is upgraded when it's read and saved in the new format on the next change. A file written by a newer clauderoo is still read, with unknown settings kept, but changes are refused until you update clauderoo, so an older version never overwrites settings it doesn't understand.
+
+### Log file
+
+clauderoo keeps a log at `%USERPROFILE%\.clauderoo\logs\clauderoo.log`, written by the CLI, the tray app and the MCP server: warnings, errors, sync problems, auto-switch decisions, default changes and settings saves. It's capped at 1 MB, with two older files kept (`clauderoo.1.log`, `clauderoo.2.log`). Each line says which program wrote it. Tokens, API keys and anything that looks like a secret are removed before a line is written. `cr logs` shows the end of it.
 
 ## Troubleshooting
 
@@ -440,7 +557,15 @@ If you install or update a plugin from a non-home profile, that profile's folder
 
 Removed profiles are moved to `%USERPROFILE%\.clauderoo\profiles\_removed\<name>-<timestamp>`, never deleted, and their shared-folder junctions are unlinked first.
 
-If you clean up `_removed` yourself, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders.
+To clean them up, use `cr removed` to see what's there and `cr purge` to delete copies permanently (for example `cr purge --older-than 30d`), or **Removed…** in the profile manager window. Both remove junctions as links and never touch what they point to.
+
+If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders. To remove all of clauderoo's data when uninstalling, use `cr uninstall --purge`, which never follows junctions.
+</details>
+
+<details>
+<summary><strong>Something isn't working and you don't know why</strong></summary>
+
+Run `cr doctor` (or **Advanced › Check this PC…** in the tray). It checks Claude Code, `PATH`, the MCP server, the default profile and every profile's shared-folder links, and says how to fix what it finds.
 </details>
 
 <details>
@@ -470,6 +595,7 @@ dotnet test  clauderoo.slnx
 | `src/Clauderoo.Cli` | Command-line entry point (`clauderoo.exe` / `cr.exe`) |
 | `src/Clauderoo.Tray` | WinForms tray app and profile manager (`clauderoow.exe`) |
 | `tests/Clauderoo.Core.Tests` | xUnit tests for Core and the Tray views |
+| `tests/Clauderoo.ConfigWriter` | Test helper: a separate process that changes a test `config.json`, for the locking tests |
 | `tools/IconGen` | Generates the multi-size `.ico` files in `src/Clauderoo.Tray/Icons` |
 | `packaging/winget` | winget manifest, updated for each release |
 | `.github` | CI and release workflows, issue templates, Dependabot |
@@ -486,6 +612,7 @@ This writes the app and status icons, including the high-contrast versions, to `
 
 - Tests must never touch the real `~/.claude`, `%USERPROFILE%\.clauderoo` or user environment. Use the temp-folder fixtures in the test project.
 - Never delete a junction recursively. Unlink it first.
+- Change `config.json` only through `ConfigStore.Update`, and keep the change in memory: no syncing or other locks inside it.
 - Write user-facing text in plain language and keep raw tool output in the **Show details** view.
 
 ## Contributing
