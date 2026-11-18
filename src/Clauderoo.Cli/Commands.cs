@@ -25,7 +25,10 @@ public static class Commands
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
   remove <name> [--force]             remove a profile (its folder is moved, not deleted)
-  restore <name>                      bring back the most recently removed profile of that name
+  restore <name> [--at <id>]          bring back a removed profile (newest copy, or the one 'removed' lists as <id>)
+  removed [name]                      list removed copies of profiles, with when they were removed and their size
+  purge [name] [--at <id>] [--older-than <age>] [--all] [--yes]
+                                      permanently delete removed copies (age e.g. 30d, 2w, 12h); asks first
   rename <old> <new> [--force]   rename a profile
   provider <name> login               use the profile's own Claude login (default)
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
@@ -44,7 +47,7 @@ public static class Commands
   status                              show the default profile and any problems
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
-  --json                              list, status, maps, which, check, usage, sessions and auto --once: print JSON for scripts
+  --json                              list, status, maps, which, check, usage, sessions, removed, purge and auto --once: print JSON for scripts
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
@@ -90,7 +93,7 @@ public static class Commands
     }
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "removed", "purge"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -110,7 +113,7 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "removed", "purge"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -330,11 +333,17 @@ public static class Commands
             }
             case "restore":
             {
-                var name = Need(pos, 1, "clauderoo restore <name>")[0];
-                Print(pm.Restore(name), output, err);
+                const string restoreUsage = "clauderoo restore <name> [--at <id>]";
+                var at = RemovedCommands.TakeAt(pos, "Usage: " + restoreUsage);
+                var name = Need(pos, 1, restoreUsage)[0];
+                Print(pm.Restore(name, at), output, err);
                 output.WriteLine($"Restored '{name}' with its settings and provider.");
                 return 0;
             }
+            case "removed":
+                return RemovedCommands.Removed(pos, json, output, pm);
+            case "purge":
+                return RemovedCommands.Purge(pos, json, output, err, pm, hooks?.ReadLine ?? Console.In.ReadLine);
             case "rename":
             {
                 var force = pos.Remove("--force");

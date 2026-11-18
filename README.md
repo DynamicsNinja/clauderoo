@@ -50,7 +50,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
-- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles, export and import them, and run the setup check.
+- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles (any removed copy, from **Removed…**, which can also delete them permanently), export and import them, and run the setup check.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
 - **Auto-switch.** When the default profile nears a usage limit, new terminals move to another profile that has room.
 - **MCP server.** `cr mcp` lets a Claude session list your profiles, check their usage, change the default and hand a one-shot prompt to another profile.
@@ -147,7 +147,7 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which`, `check`, `usage` and `sessions` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
+`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `removed` and `purge` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
@@ -159,7 +159,9 @@ All commands work with either `clauderoo` or `cr`.
 | `usage [name] [--json]` | Show 5-hour and 7-day usage, reset times, plan and per-model limits for every profile, or just `name`. Fetches live and falls back to the last reading ("as of hh:mm") when offline or rate-limited. Vertex, API-key and Claude-token profiles show "Usage isn't tracked for …". `--json` prints `{profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}` |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
 | `remove <name> [--force]` | Remove a profile. Its folder is moved, not deleted. Refuses while sessions of it started by clauderoo are running; `--force` overrides |
-| `restore <name>` | Bring back the most recently removed profile with that name. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
+| `restore <name> [--at <id>]` | Bring back the most recently removed profile with that name, or the copy `removed` lists as `<id>` (e.g. `20261118-142501`). Its isolated folder comes back too. Refuses if the name is taken. Its saved provider comes back too; an API key or Claude token was deleted on removal and must be entered again |
+| `removed [name] [--json]` | List removed copies of profiles: name, when it was removed, its id and its size. `--json` prints `{removed:[{name, id, removedAt, sizeBytes, hasProfile, hasIsolated}], totalBytes}` |
+| `purge [name] [--at <id>] [--older-than <age>] [--all] [--yes] [--json]` | Permanently delete removed copies: all copies of `name` (or just `--at <id>`), every copy (`--all`), or those removed longer ago than `<age>` (`30d`, `2w`, `12h`, `90m`). Shows what will be deleted and the space freed, then asks; `--yes` skips the question (and is required with `--json`, which prints `{deleted, freedBytes, failed}`). Junctions inside are removed as links, so your shared home folders are never touched. This is the only command that really deletes profile data |
 | `default <name>` / `default --clear` | Choose which profile plain `claude` uses in new terminals |
 | `auto [on\|off] [--threshold N] [--order a,b,c]` | Turn [auto-switch](#auto-switch) on or off, set the threshold (6 to 100, default 90) and the profiles to switch to, in order. With no arguments, it shows the current settings |
 | `auto --once [--json]` | Check usage now and switch the default if it has reached the threshold. Exit codes: 0 switched, 2 nothing to do, 3 no other profile has room, 1 error. For Task Scheduler when the tray isn't running |
@@ -423,7 +425,7 @@ If you edit a copied file inside a profile, the next sync replaces it with home'
 - clauderoo never writes inside `~/.claude` or `~/.claude.json`.
 - From each Claude-login profile's `.credentials.json`, clauderoo reads only the access token, its expiry and the plan (subscription type and rate-limit tier), in memory only, to fetch usage. It never writes, copies, logs or shows the token, and never refreshes it. It never reads the sign-in file of a Vertex, API-key or Claude-token profile.
 - Tokens and API keys are never printed or logged, and API keys and Claude tokens are stored only in encrypted form (DPAPI).
-- Removed profiles are moved, never deleted, and junctions are unlinked before a move.
+- Removed profiles are moved, never deleted, and junctions are unlinked before a move. Only `cr purge` (or **Delete permanently** in the manager window) deletes a removed copy, after asking, and it never follows a junction.
 
 ## Troubleshooting
 
@@ -440,7 +442,9 @@ If you install or update a plugin from a non-home profile, that profile's folder
 
 Removed profiles are moved to `%USERPROFILE%\.clauderoo\profiles\_removed\<name>-<timestamp>`, never deleted, and their shared-folder junctions are unlinked first.
 
-If you clean up `_removed` yourself, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders.
+To clean them up, use `cr removed` to see what's there and `cr purge` to delete copies permanently (for example `cr purge --older-than 30d`), or **Removed…** in the profile manager window. Both remove junctions as links and never touch what they point to.
+
+If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders.
 </details>
 
 <details>
