@@ -7,6 +7,8 @@ public class ProfileEntry
 {
     public bool Home { get; set; }
     public List<string> Overrides { get; set; } = [];
+    /// <summary>Entries of shared items this profile leaves out, as "item/entry" (e.g. "skills/foo"; see SharedItems).</summary>
+    public List<string> Exclude { get; set; } = [];
     public string? StartDir { get; set; }
     public string? Provider { get; set; }
     public VertexSettings? Vertex { get; set; }
@@ -57,6 +59,10 @@ public class ClauderooConfig
 
     /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
     public Dictionary<string, string> Folders { get; set; } = new();
+
+    /// <summary>Folders and files of the home profile shared on top of the built-in ones (see SharedItems).</summary>
+    public List<string> ExtraSharedDirs { get; set; } = [];
+    public List<string> ExtraSharedFiles { get; set; } = [];
 
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
