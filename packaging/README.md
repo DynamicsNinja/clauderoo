@@ -2,7 +2,7 @@
 
 ## winget
 
-`winget/` holds the manifest for `DynamicsNinja.clauderoo`, set up for release 0.1.0. It is not submitted yet. For each
+`winget/` holds the manifest for `DynamicsNinja.clauderoo`, set up for release 0.2.0. It is not submitted yet. For each
 release, before sending it to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs):
 
 1. Set `PackageVersion` in all three files to the release version (no `v`), and the version inside `InstallerUrl`.

@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
 PackageIdentifier: DynamicsNinja.clauderoo
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -13,7 +13,7 @@ Dependencies:
     - PackageIdentifier: Microsoft.DotNet.DesktopRuntime.10
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/DynamicsNinja/clauderoo/releases/download/v0.1.0/clauderoo-0.1.0-win-x64.zip
-    InstallerSha256: 9B6227E68C7E08A930F9422AE6FC0BDA5BB770831FA60796A3782DECBFDB6A68
+    InstallerUrl: https://github.com/DynamicsNinja/clauderoo/releases/download/v0.2.0/clauderoo-0.2.0-win-x64.zip
+    InstallerSha256: 6F4B36014475E2A0169498FC5E8FA645837F1BAA9AE79B9F3B2D26D50B9CF4C2
 ManifestType: installer
 ManifestVersion: 1.28.0
