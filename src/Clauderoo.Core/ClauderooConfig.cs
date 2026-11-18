@@ -48,6 +48,9 @@ public static class Providers
 
 public class ClauderooConfig
 {
+    /// <summary>The config.json format version (see <see cref="ConfigStore.CurrentSchemaVersion"/>); missing means 1.</summary>
+    public int SchemaVersion { get; set; } = ConfigStore.CurrentSchemaVersion;
+
     public string? DefaultProfile { get; set; }
     public string Terminal { get; set; } = "wt";
     public string HomeDir { get; set; } = "";
@@ -67,7 +70,7 @@ public class ClauderooConfig
         Profiles.FirstOrDefault(p => p.Value.Home).Key;
 }
 
-public static class ConfigStore
+public static partial class ConfigStore
 {
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -80,7 +83,7 @@ public static class ConfigStore
         if (!File.Exists(p.ConfigFile)) return null;
         try
         {
-            return JsonSerializer.Deserialize<ClauderooConfig>(File.ReadAllText(p.ConfigFile), Options);
+            return Parse(p, File.ReadAllText(p.ConfigFile));
         }
         catch (JsonException)
         {
@@ -101,7 +104,20 @@ public static class ConfigStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
 
-    public static void Save(ClauderooPaths p, ClauderooConfig c)
+    /// <summary>
+    /// Replaces config.json with <paramref name="c"/> as is, under the config lock. For a load-change-save use
+    /// <see cref="Update"/>, which re-reads the file inside the lock so another process's change isn't lost.
+    /// </summary>
+    public static void Save(ClauderooPaths p, ClauderooConfig c) =>
+        WithLock(p, LockTimeout, () =>
+        {
+            RefuseNewer(p, c.SchemaVersion);
+            RefuseNewer(p, DiskSchemaVersion(p));
+            Write(p, c);
+            return true;
+        });
+
+    private static void Write(ClauderooPaths p, ClauderooConfig c)
     {
         Directory.CreateDirectory(p.Root);
         AtomicFile.WriteAllText(p.ConfigFile, JsonSerializer.Serialize(c, Options));

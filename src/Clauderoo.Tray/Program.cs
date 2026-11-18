@@ -15,6 +15,7 @@ static class Program
             return;
         }
 
+        Clauderoo.Core.AppLog.Start(Clauderoo.Core.ClauderooPaths.ForCurrentUser(), "tray");
         ApplicationConfiguration.Initialize();
         using var context = new TrayContext(openProfiles: manage);
         Application.Run(context);

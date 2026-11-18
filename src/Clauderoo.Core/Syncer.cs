@@ -30,8 +30,15 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     public SyncReport Sync(string profile, string? justShared)
     {
         _justShared = justShared;
-        try { return SyncCore(profile); }
+        try { return Logged(SyncCore(profile)); }
         finally { _justShared = null; }
+    }
+
+    // Sync problems go to the log too (repeats are folded there), so they can be found after the window closed.
+    private static SyncReport Logged(SyncReport report)
+    {
+        foreach (var p in report.Problems) AppLog.Warn($"Sync: {p}");
+        return report;
     }
 
     private string? _justShared;
@@ -85,6 +92,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
             {
                 all.Problems.Add($"{name}: could not sync: {e.Message}");
+                AppLog.Warn($"Sync: {name}: could not sync: {e.Message}");
             }
         }
         return all;
@@ -339,16 +347,18 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     {
         try
         {
-            var disk = ConfigStore.Load(paths);
-            if (disk == null || !disk.Profiles.TryGetValue(profile, out var de) || Providers.Of(de) != Providers.Vertex)
-                return false;
-            changes.RemoveAll(c => (de.Vertex is { } dv ? c.Model.Get(dv) : null)
-                != (entry.Vertex is { } v ? c.Model.Get(v) : null));
-            if (changes.Count == 0) return false;
-            de.Vertex ??= new VertexSettings();
-            foreach (var (m, value) in changes) m.Set(de.Vertex, value);
-            ConfigStore.Save(paths, disk);
-            return true;
+            if (!File.Exists(paths.ConfigFile)) return false;
+            return ConfigStore.UpdateWhen(paths, disk =>
+            {
+                if (!disk.Profiles.TryGetValue(profile, out var de) || Providers.Of(de) != Providers.Vertex)
+                    return false;
+                changes.RemoveAll(c => (de.Vertex is { } dv ? c.Model.Get(dv) : null)
+                    != (entry.Vertex is { } v ? c.Model.Get(v) : null));
+                if (changes.Count == 0) return false;
+                de.Vertex ??= new VertexSettings();
+                foreach (var (m, value) in changes) m.Set(de.Vertex, value);
+                return true;
+            });
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
         {

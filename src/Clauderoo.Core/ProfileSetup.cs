@@ -17,24 +17,17 @@ public partial class ProfileManager
     /// </summary>
     public void SetStartDir(string name, string? dir)
     {
-        var cfg = Config;
-        var entry = Entry(cfg, name);
-        if (dir == null)
+        string? full = null;
+        if (dir != null)
         {
-            entry.StartDir = null;
-        }
-        else
-        {
-            string full;
             try { full = FolderMap.Normalize(dir); }
             catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
             {
                 throw new ClauderooException($"Not a valid folder path: {dir}");
             }
             if (!Directory.Exists(full)) throw new ClauderooException($"Folder not found: {full}");
-            entry.StartDir = full;
         }
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c => { Entry(c, name).StartDir = full; });
     }
 
     /// <summary>
@@ -76,8 +69,11 @@ public partial class ProfileManager
         // An owned folder starts empty, so the sync leaves it alone instead of linking it to home.
         foreach (var item in entry.Overrides.Where(SharedItems.IsDir))
             Directory.CreateDirectory(Path.Combine(dir, item));
-        cfg.Profiles[name] = entry;
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"A profile named '{name}' already exists.");
+            c.Profiles[name] = entry;
+        });
         return new CloneResult(NewSyncer(cfg).Sync(name), secretToSet);
     }
 
@@ -109,11 +105,14 @@ public partial class ProfileManager
             throw new ClauderooException(
                 $"{full} doesn't look like a Claude config folder (it has no settings.json, .credentials.json, projects or plugins).");
 
-        var oldHome = cfg.HomeDir;
         var homeJson = SamePath(full, paths.DefaultHomeDir) ? paths.DefaultHomeJson : Path.Combine(full, ".claude.json");
-        cfg.HomeDir = full;
-        cfg.HomeJson = homeJson;
-        ConfigStore.Save(paths, cfg);
+        string oldHome = "";
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            oldHome = c.HomeDir;
+            c.HomeDir = full;
+            c.HomeJson = homeJson;
+        });
 
         var report = new SyncReport();
         if (!SamePath(oldHome, full))

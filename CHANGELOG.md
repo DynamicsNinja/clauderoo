@@ -12,9 +12,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `cr startdir <name> [<dir> | --clear]` sets the folder **Start session** opens a profile in; `cr list` (and `--json`) shows it, and the profile manager has a **Start folder** field with **Browse…**.
 - `cr clone <source> <new>` (also `cr add <new> --from <source>` and **Duplicate…** in the profile manager) copies a profile's provider, Vertex settings, environment variables, owned items and start folder. Never the sign-in, conversations or API key/token.
 - `cr home [<path>]` shows the home Claude folder, or points clauderoo at it after `~/.claude` moved, re-linking every profile.
+- `config.json` has a `schemaVersion`, with step-by-step upgrades of older files. A file from a newer clauderoo is still read, but changes are refused instead of overwriting settings this version doesn't understand.
+- A log file at `~/.clauderoo/logs/clauderoo.log` (1 MB, three files) for warnings, errors, sync problems, auto-switch decisions and settings saves, from the CLI, the tray app and the MCP server. Secrets are never written to it.
+- `cr logs [--path] [--tail N]` shows the end of the log, or where it is.
 
 ### Fixed
 - A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.
+- Settings changed at the same time by the CLI, the tray app, the MCP server and `cr auto --once` no longer overwrite each other: every change to `config.json` now takes a machine-wide lock, re-reads the file and saves it in one go.
 
 ## [0.1.0] - 2026-11-17
 
