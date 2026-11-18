@@ -3,6 +3,7 @@ using Clauderoo.Tray;
 namespace Clauderoo.Core.Tests;
 
 // The Sharing window (#4): it shows ProfileManager.SharingOf and calls Own / Share / SetExclusions, nothing more.
+[Collection(WinFormsCollection.Name)]
 public class SharingDialogTests
 {
     private static (ProfileManager pm, TempHome home) Make()

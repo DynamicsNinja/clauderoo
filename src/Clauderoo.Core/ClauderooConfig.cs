@@ -70,6 +70,8 @@ public class ClauderooConfig
     /// <summary>Folders and files of the home profile shared on top of the built-in ones (see SharedItems).</summary>
     public List<string> ExtraSharedDirs { get; set; } = [];
     public List<string> ExtraSharedFiles { get; set; } = [];
+    /// <summary>Days after saving a Claude token before clauderoo warns that it expires soon (default 335; tokens last a year).</summary>
+    public int? TokenWarnAfterDays { get; set; }
 
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
@@ -93,7 +95,7 @@ public static partial class ConfigStore
         if (!File.Exists(p.ConfigFile)) return null;
         try
         {
-            return Parse(p, File.ReadAllText(p.ConfigFile));
+            return Parse(p, AtomicFile.ReadAllTextShared(p.ConfigFile));
         }
         catch (JsonException)
         {

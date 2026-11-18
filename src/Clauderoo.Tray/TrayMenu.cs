@@ -40,6 +40,7 @@ internal sealed class TrayMenuActions
     public Action ShowProfiles { get; init; } = () => { };
     public Action NewProfile { get; init; } = () => { };
     public Action ContinueConversation { get; init; } = () => { };
+    public Action CheckThisPc { get; init; } = () => { };
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action UpdateNow { get; init; } = () => { };
@@ -125,6 +126,9 @@ internal static class TrayMenu
         var folder = Item("&Open profiles folder", Neutral(Glyph.Folder, dpi), a.OpenProfilesFolder);
         folder.ToolTipText = "For troubleshooting. Changes made in these folders may be overwritten by sync.";
         advanced.DropDownItems.Add(folder);
+        var doctor = Item("&Check this PC…", null, a.CheckThisPc);
+        doctor.ToolTipText = "Checks Claude Code, PATH, the MCP server and every profile's links (like 'cr doctor'). Changes nothing.";
+        advanced.DropDownItems.Add(doctor);
         var auto = new ToolStripMenuItem("Start with &Windows") { Checked = s.AutoStartOn };
         auto.Click += (_, _) => a.SetAutoStart(!auto.Checked);
         advanced.DropDownItems.Add(auto);

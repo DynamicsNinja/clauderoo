@@ -145,7 +145,7 @@ public class AppLogEndToEndTests
         }
         finally { AppLog.Stop(); }
 
-        var text = string.Concat(Directory.GetFiles(Path.Combine(home.Paths.Root, "logs")).Select(File.ReadAllText));
+        var text = string.Concat(Directory.GetFiles(Path.Combine(home.Paths.Root, "logs")).Select(Clauderoo.Core.AtomicFile.ReadAllTextShared));
         Assert.Contains("Profile work added.", text);
         Assert.Contains("Default profile set to work.", text);
         Assert.Contains("Settings saved (SetDefault)", text);

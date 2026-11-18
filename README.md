@@ -147,7 +147,7 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `removed`, `purge`, `shared` and `config` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
+`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `env <name>`, `doctor`, `auto --once`, `removed`, `purge`, `shared` and `config` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
@@ -215,8 +215,8 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 | Command | What it does |
 | --- | --- |
 | `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token` |
-| `env <name> [set A=1 B=2 \| unset A]` | Show, set or unset a profile's environment variables |
-| `check <name> [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. Exits with code 1 if anything fails |
+| `env <name> [set A=1 B=2 \| unset A] [--json]` | Show, set or unset a profile's environment variables. `env <name> --json` prints `{"schemaVersion":1,"profile":…,"env":{"NAME":"value"}}` with the names exactly as set |
+| `check <name> [--live] [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. For an API-key or Claude-token profile, `--live` tests the secret for real (see [Checking keys and tokens](#checking-keys-and-tokens)). Exits with code 1 if anything fails |
 | `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
 
 ### Export and import
@@ -238,11 +238,11 @@ Folder mappings in the file are added for new and existing profiles alike, even 
 
 An import only ever adds owned items. It never gives a profile's own copies back to home, with or without `--force`. A start folder that doesn't exist on this machine is left out and reported. The summary lists what was created, updated and mapped, the names (never the values) of the environment variables that arrived, and anything skipped.
 
-The manager window has the same two actions under the profile list. **Export…** exports every profile except home: it asks whether to include environment variables (with a plain-text warning), then where to save `clauderoo-profiles.json`. To share a single profile, use `cr export <file> <name>`. **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
+The manager window has the same two actions under the profile list. **Export…** asks whether to export every profile except home or only the selected one, and whether to include environment variables (with a plain-text warning), then where to save the file (`clauderoo-profiles.json`, or `clauderoo-<name>.json` for one profile). **Import…** opens a file, asks "Update profiles that already exist? Choose No to skip them.", and then shows the same summary.
 
 **Onboarding a colleague on Vertex.**
 
-1. Export the Vertex profile with `cr export vertex.json work`. (**Export…** in the window exports every profile except home.)
+1. Export the Vertex profile with `cr export vertex.json work`, or select it and choose **Export…** › **Only work** in the window.
 2. Your colleague imports it (`cr import vertex.json`, or **Import…** in the window).
 3. They sign in to gcloud (**Sign in to Google…** in the window, or `gcloud auth application-default login`).
 4. They run **Check setup** (`cr check <name>`) to confirm everything works.
@@ -266,15 +266,17 @@ In the manager window, select a profile and choose **Sharing…** to see how eac
 | Command | What it does |
 | --- | --- |
 | `manage` | Open the profile manager window |
-| `status [--json]` | Show the default profile and any problems, including a missing home Claude folder |
+| `status [--json]` | Show the default profile and any problems (including a missing home Claude folder or a Claude token near the end of its one-year life) |
 | `home [<path>]` | Show the home profile's Claude folder, or point clauderoo at `<path>` after `~/.claude` moved. The folder must look like a Claude config folder (`settings.json`, `.credentials.json`, `projects`, `plugins`…). clauderoo only reads it: every profile's shared links are moved to it and synced again |
 | `logs [--path] [--tail N]` | Show the last N lines of the clauderoo log (default 50), or with `--path` just where it is. See [Log file](#log-file) |
+| `doctor [--json]` | Check this machine's setup without changing anything. See [Doctor](#doctor) |
+| `completion powershell\|bash` | Print a tab-completion script. See [Shell completion](#shell-completion) |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |
 | `version` | Print the installed version (`--version` works too) |
 | `upgrade [--check]` | Install the latest GitHub release after verifying its SHA256. `--check` only says whether a newer one exists. Builds not made from a release can't upgrade |
-| `uninstall [--yes]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept. Quit the tray app first |
+| `uninstall [--yes] [--purge]` | Turn off autostart, remove clauderoo from `PATH` and delete the install folder. Asks whether to clear the default profile; `--yes` clears it without asking. Profile data is kept unless you add `--purge`, which also deletes `%USERPROFILE%\.clauderoo` after you type `delete` to confirm (`--yes` skips that). Purge removes junctions as links, never what they point to, and never touches `~/.claude`. Quit the tray app and close clauderoo's Claude sessions first |
 | `mcp` | Run clauderoo's MCP server over stdio. Claude Code starts it; you don't run it yourself. See [MCP server](#mcp-server) |
 | `mcp install` | Print the `claude mcp add` command that registers the server, and copy it to the clipboard. It never runs it |
 
@@ -339,6 +341,17 @@ The checks run in parallel and the list updates as each one finishes. Each line 
   <img src="docs/images/check-setup-progress.png" width="560" alt="Check setup running with live progress">
 </p>
 
+### Checking keys and tokens
+
+Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live`:
+
+- **API key:** one authenticated request to the Anthropic API's models list (`GET /v1/models`), with a 10-second timeout. It uses no quota. A profile that sets `ANTHROPIC_BASE_URL` is tested against that address; the key is only sent over `https` (or plain `http` to this computer).
+- **Claude token:** a token from `claude setup-token` can only make model requests, so there's no free way to test it. clauderoo runs `claude -p` with the token, the Haiku model and a one-line prompt, which uses a few tokens of the account's quota.
+
+The key or token is never printed, logged or included in `--json` output; error text is scrubbed of it.
+
+**Token expiry.** Claude tokens last one year. clauderoo records when each key and token was saved (in a small `.meta` file next to the encrypted secret; for secrets saved before this, the encrypted file's date is used). From 335 days after a token was saved, `cr status`, `cr check`, the tray's Problems list and the manager window warn that it expires soon, and after a year that it has probably expired. Change the warning point with `"tokenWarnAfterDays": <days>` in `%USERPROFILE%\.clauderoo\config.json`. clauderoo can't read a token's real expiry date, so the date is counted from when you saved it in clauderoo.
+
 ### Usage limits
 
 For Claude-login profiles (home included), clauderoo shows how much of the subscription's 5-hour and 7-day windows is used, plus any per-model limits:
@@ -357,7 +370,7 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 
 ### MCP server
 
-`cr mcp` is an MCP server (stdio, JSON-RPC 2.0) that gives Claude Code four clauderoo tools:
+`cr mcp` is an MCP server (stdio, JSON-RPC 2.0) that gives Claude Code these clauderoo tools:
 
 | Tool | What it does |
 | --- | --- |
@@ -365,6 +378,9 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 | `usage {profile?}` | 5-hour and 7-day usage for one profile or all of them. Uses no quota. A reading under 2 minutes old is reused, each profile is checked at most once every 2 minutes, and a rate limit is waited out for at least 10 minutes |
 | `set_default {profile}` | Make a profile the default for new terminals. It counts as choosing the default yourself, so auto-switch leaves it alone |
 | `delegate {profile, prompt, cwd?}` | Run a one-shot `claude -p` under another profile and return its output |
+| `which_profile` | Which profile this session runs under, and how that was decided (like `cr which`). Uses no quota |
+| `list_sessions {profile?, limit?}` | Running sessions started by clauderoo and recent conversations (id, profile, folder, time, first prompt), newest first; `limit` is 1 to 200, default 20. Uses no quota |
+| `check_profile {profile, live?}` | The read-only sign-in check (like `cr check`). A Vertex profile gets the full checklist, which sends one tiny prompt per model; `live: true` tests an API key (no quota) or a Claude token (a few tokens). One check runs at a time |
 
 **Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or click **Use from Claude…** in the profile manager, and you get this command to run once in a terminal:
 
@@ -404,7 +420,7 @@ Auto-switch changes the default profile when the default reaches a share of its 
 - **What the tray tells you:** a balloon such as "personal is at 92% of its 5-hour limit. New terminals now use work." When no other profile has room, a balloon says so once each time the default crosses the threshold. When the profile it switched away from has room again, a balloon says "personal has room again". Click it to make that profile the default again.
 - **In the tray menu:** a usage window at or above the threshold is shown in amber, or red from 90%. While auto-switch is off, only windows at 90% or more are coloured.
 
-The tray decides each time it checks usage, every 2 to 5 minutes. When the tray isn't running, `cr auto --once` fetches usage, decides and switches once. Schedule it in Task Scheduler, for example every 10 minutes, and check its exit code:
+The tray decides each time it checks usage, every 2 to 5 minutes. When the tray isn't running, `cr auto --once` fetches usage, decides and switches once. To run it on a schedule, use `cr auto --schedule on [--every <minutes>]` (default every 10 minutes). It creates a Task Scheduler task named `clauderoo auto-switch` for your user only: no administrator rights, no stored password, and it runs only while you're signed in. The task runs `clauderoow.exe --auto-once`, which runs `clauderoo auto --once` without opening a console window. Its exit code shows as the task's **Last Run Result**. `cr auto --schedule off` removes the task. The exit codes are:
 
 | Exit code | Meaning |
 | --- | --- |
@@ -416,6 +432,40 @@ The tray decides each time it checks usage, every 2 to 5 minutes. When the tray 
 Every clauderoo command, `cr auto --once` included, also exits with 2 on an unexpected error (a bug or an unforeseen failure), with the message on stderr. To tell that apart from "nothing to do", check that stderr is empty, or use `--json`: a real result is a JSON document on stdout with an `action` of `switched`, `none` or `noTarget`, and an error is `{"schemaVersion":1,"error":"…"}` on stderr.
 
 `--json` prints `{"schemaVersion": 1, "action", "from", "to", "reason"}` instead of plain text. The switch state (last switch time, which profile it switched from, and a profile chosen by hand) is kept in `%USERPROFILE%\.clauderoo\autoswitch.json`.
+
+### Doctor
+
+`cr doctor`, or **Advanced › Check this PC…** in the tray, runs a read-only checklist of the machine and clauderoo's own state. It changes nothing: no sync, no config write, and the only program it runs is `claude --version`.
+
+1. clauderoo is set up and `config.json` can be read.
+2. Claude Code is on `PATH`, and its version.
+3. Windows Terminal (`wt.exe`) is installed. Without it, `--tab` and the tray open a plain console window.
+4. gcloud is installed (only checked when a profile uses Vertex AI).
+5. clauderoo is installed in `%LOCALAPPDATA%\clauderoo`, and that folder is on your user `PATH`.
+6. The home profile's folder exists.
+7. clauderoo's MCP server is registered in the home profile's `.claude.json`, and points to a program that exists.
+8. The default profile exists, and new terminals use it (`CLAUDE_CONFIG_DIR`).
+9. For each profile, every shared-folder junction resolves to the home profile's folder. A broken (dangling) link is a failure.
+
+The checks run in parallel and each line prints as it finishes, like `cr check`. `--json` prints `{"schemaVersion":1,"ok","message","items":[{"key","label","status","hint","detail"}]}`. The exit code is 1 if anything failed.
+
+### Shell completion
+
+`cr completion powershell` and `cr completion bash` print a script that completes commands, their flags and your profile names (the script asks `cr` for the names each time, so new profiles appear straight away).
+
+**PowerShell:** add this line to your profile (`notepad $PROFILE`):
+
+```powershell
+cr completion powershell | Out-String | Invoke-Expression
+```
+
+**Git Bash:** add this line to `~/.bashrc`:
+
+```bash
+eval "$(cr completion bash | tr -d '\r')"
+```
+
+Open a new terminal afterwards. Both work for `cr`, `clauderoo`, `cr.exe` and `clauderoo.exe`.
 
 ### Profiles that own their settings.json
 
@@ -497,7 +547,13 @@ Removed profiles are moved to `%USERPROFILE%\.clauderoo\profiles\_removed\<name>
 
 To clean them up, use `cr removed` to see what's there and `cr purge` to delete copies permanently (for example `cr purge --older-than 30d`), or **Removed…** in the profile manager window. Both remove junctions as links and never touch what they point to.
 
-If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders.
+If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders. To remove all of clauderoo's data when uninstalling, use `cr uninstall --purge`, which never follows junctions.
+</details>
+
+<details>
+<summary><strong>Something isn't working and you don't know why</strong></summary>
+
+Run `cr doctor` (or **Advanced › Check this PC…** in the tray). It checks Claude Code, `PATH`, the MCP server, the default profile and every profile's shared-folder links, and says how to fix what it finds.
 </details>
 
 <details>

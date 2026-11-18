@@ -371,6 +371,7 @@ public partial class ProfileManager
             && !defEntry.Home && Providers.Of(defEntry) == Providers.Token)
             problems.Add($"{cfg.DefaultProfile} signs in with a token; start it with 'cr start {cfg.DefaultProfile}' " +
                          "(plain 'claude' isn't signed in).");
+        problems.AddRange(TokenAgeProblems().Select(p => p.Detail));
         return new StatusReport(cfg.DefaultProfile, userValue, matches, problems);
     }
 

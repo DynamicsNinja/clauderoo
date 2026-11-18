@@ -16,6 +16,12 @@ public sealed class ReleaseHooks
     public string? InstallDir { get; set; }
     public UninstallOptions? Uninstall { get; set; }
     public Func<string?>? ReadLine { get; set; }
+    /// <summary>Seams for `doctor`.</summary>
+    public DoctorOptions? Doctor { get; set; }
+    /// <summary>Runs schtasks.exe for `auto --schedule`.</summary>
+    public ITaskScheduler? Scheduler { get; set; }
+    /// <summary>The tray exe the scheduled task runs (default: the installed clauderoow.exe, else the one next to cr).</summary>
+    public string? TrayExe { get; set; }
 }
 
 internal static class ReleaseCommands
@@ -111,14 +117,51 @@ internal static class ReleaseCommands
         return p.ExitCode;
     }
 
-    public static int Uninstall(List<string> pos, TextWriter output, ClauderooPaths paths, SessionTracker sessions, ReleaseHooks? hooks)
+    public static int Uninstall(List<string> pos, TextWriter output, ClauderooPaths paths, SessionTracker sessions, ReleaseHooks? hooks,
+        Func<string?>? homeDir = null)
     {
         var yes = pos.Remove("--yes");
-        if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo uninstall [--yes]");
+        var purge = pos.Remove("--purge");
+        if (pos.Count > 0) throw new ClauderooException("Usage: clauderoo uninstall [--yes] [--purge]");
 
         var env = hooks?.Env ?? new WindowsEnvStore();
         var installDir = hooks?.InstallDir ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "clauderoo");
+        var data = hooks?.Uninstall?.DataDir ?? paths.Root;
+
+        if (purge)
+        {
+            // Everything is checked and confirmed before anything changes.
+            string? home = null;
+            try { home = homeDir?.Invoke(); }
+            catch (ClauderooException) { /* no or unreadable config: ~/.claude is still protected below */ }
+            var keep = new[] { paths.DefaultHomeDir, home };
+            Uninstaller.AssertSafeToPurge(data, keep);
+            if (sessions.Running().Count > 0)
+                throw new ClauderooException("Claude sessions started by clauderoo are still running. Close them, then run uninstall --purge again. Nothing was changed.");
+            if (!yes)
+            {
+                output.WriteLine($"--purge permanently deletes {data}:");
+                output.WriteLine("  every profile's sign-in, saved API keys and tokens, settings, history and removed profiles.");
+                output.WriteLine($"  Your home profile ({home ?? paths.DefaultHomeDir}) is not touched.");
+                output.Write("Type 'delete' to confirm: ");
+                var answer = (hooks?.ReadLine ?? Console.In.ReadLine)()?.Trim();
+                if (!string.Equals(answer, "delete", StringComparison.Ordinal))
+                {
+                    output.WriteLine("Not confirmed. Nothing was changed.");
+                    return 1;
+                }
+            }
+            var user = env.GetUser("CLAUDE_CONFIG_DIR");
+            var clear = !string.IsNullOrEmpty(user) && (Path.GetFullPath(user).TrimEnd('\\', '/') + "\\")
+                .StartsWith(Path.GetFullPath(data).TrimEnd('\\', '/') + "\\", StringComparison.OrdinalIgnoreCase);
+            Uninstaller.Run(env, clear, installDir, hooks?.Uninstall);
+            output.WriteLine($"Uninstalled: autostart is off, {installDir} is off your PATH and will be removed in a few seconds.");
+            if (clear) output.WriteLine("The default profile setting (CLAUDE_CONFIG_DIR) was cleared.");
+            Uninstaller.Purge(data, keep);
+            output.WriteLine($"Deleted {data}. Your home profile was not touched.");
+            return 0;
+        }
 
         var clearDefault = yes;
         if (!yes && !string.IsNullOrEmpty(env.GetUser("CLAUDE_CONFIG_DIR")))
@@ -131,7 +174,6 @@ internal static class ReleaseCommands
 
         Uninstaller.Run(env, clearDefault, installDir, hooks?.Uninstall);
 
-        var data = hooks?.Uninstall?.DataDir ?? paths.Root;
         output.WriteLine($"Uninstalled: autostart is off, {installDir} is off your PATH and will be removed in a few seconds.");
         if (sessions.Running().Count > 0)
             output.WriteLine($"Close running Claude sessions started by clauderoo; if {installDir} is still there afterwards, delete it.");

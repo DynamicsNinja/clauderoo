@@ -156,7 +156,7 @@ public static partial class ConfigStore
         try
         {
             if (!File.Exists(p.ConfigFile)) return 0;
-            return JsonNode.Parse(File.ReadAllText(p.ConfigFile)) is JsonObject o ? VersionOf(o) : 0;
+            return JsonNode.Parse(AtomicFile.ReadAllTextShared(p.ConfigFile)) is JsonObject o ? VersionOf(o) : 0;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ClauderooException) { return 0; }
     }

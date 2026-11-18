@@ -4,6 +4,7 @@ using Clauderoo.Tray;
 namespace Clauderoo.Core.Tests;
 
 // The Profiles window's write-gate follow-ups, driven through its internal test accessors.
+[Collection(WinFormsCollection.Name)]
 public class ProfilesFormMinorTests
 {
     private static (ProfileManager pm, TempHome home) Make()

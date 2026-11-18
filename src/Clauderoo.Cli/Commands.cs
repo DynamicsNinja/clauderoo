@@ -3,7 +3,7 @@ using Clauderoo.Core;
 
 namespace Clauderoo.Cli;
 
-public static class Commands
+public static partial class Commands
 {
     private const string Usage = @"Usage: clauderoo <command> [options]   (short form: cr <command>)
 
@@ -39,11 +39,14 @@ public static class Commands
                                       use Claude on Google Vertex AI
   provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
   provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
-  env <name> [set A=1 B=2 | unset A]  show, set or unset a profile's environment variables
+  env <name> [set A=1 B=2 | unset A] [--json]
+                                      show, set or unset a profile's environment variables
   export <file> [names...] [--no-env] [--force]
                                       save profile settings to a file (no secrets or logins)
   import <file> [--force]             create profiles from an export (--force updates existing ones)
-  check <name>                        check the profile's sign-in (Vertex: full setup checklist)
+  check <name> [--live]               check the profile's sign-in (Vertex: full setup checklist;
+                                      --live tests an API key or Claude token for real)
+  doctor [--json]                     check this machine's setup (claude, PATH, MCP, links); changes nothing
   apikey <name>                       print the profile's API key (used by Claude's apiKeyHelper)
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
@@ -53,19 +56,23 @@ public static class Commands
   wt-profiles [--remove]              add (or remove) a Windows Terminal profile for each clauderoo profile
   code [name] [dir] [--cursor | --editor <exe>]
                                       open VS Code (or Cursor) with the profile, for the Claude Code extension
+  auto --schedule on|off [--every N]  run 'auto --once' every N minutes (default 10) as a Task Scheduler task
   status                              show the default profile and any problems
   home [<path>]                       show the home profile's Claude folder, or point it at <path> after ~/.claude moved
   logs [--path] [--tail N]            show the last N lines (default 50) of the clauderoo log, or its path
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
-  --json                              list, status, maps, which, check, usage, sessions, removed, purge and auto --once: print JSON for scripts
+  --json                              list, status, maps, which, check, usage, sessions, env, doctor, removed, purge,
+                                      shared, config and auto --once: print JSON for scripts
+  completion powershell|bash          print a tab-completion script (see the README to install it)
   tray                                start the tray app
   manage                              open the profile manager window
   autostart on|off                    start the tray app at login
   install                             copy clauderoo to %LOCALAPPDATA%\clauderoo and add it to PATH
   version | --version                 print the clauderoo version
   upgrade [--check]                   install the latest GitHub release (--check only reports)
-  uninstall [--yes]                   remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
+  uninstall [--yes] [--purge]         remove clauderoo from PATH and autostart; your ~/.clauderoo data is kept
+                                      unless --purge (never ~/.claude)
   help                                show this help";
 
     public static int Run(string[] args, TextWriter output, TextWriter err, ProfileManager pm,
@@ -113,7 +120,14 @@ public static class Commands
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
     private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "removed", "purge",
-        "shared", "config"];
+        "shared", "config", "env", "doctor"];
+
+    /// <summary>Every command Dispatch accepts. "__complete" is hidden: the completion scripts call it.</summary>
+    public static readonly string[] KnownCommands = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
+        "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
+        "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "doctor", "completion",
+        "removed", "purge", "logs", "config", "wt-profiles", "code", .. SetupCommands.Names, .. SharingCommands.Names,
+        "__complete"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -131,12 +145,7 @@ public static class Commands
         }
 
         var cmd = args[0] == "--version" ? "version" : args[0];
-        string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-            "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "removed", "purge", "logs",
-            "config", "wt-profiles", "code",
-            .. SharingCommands.Names];
-        if (!known.Contains(cmd) && !SetupCommands.Names.Contains(cmd))
+        if (!KnownCommands.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
         var (pos, claudeArgs) = Split(args.Skip(1).ToArray());
@@ -148,7 +157,8 @@ public static class Commands
         // 'status' syncs itself. A failing pre-sync must never make a command fail.
         // 'mcp' owns stdout for the protocol, so it never pre-syncs (its notices would corrupt the stream).
         if (cmd is not ("init" or "install" or "autostart" or "tray" or "manage" or "status" or "apikey"
-            or "version" or "upgrade" or "uninstall" or "mcp" or "home" or "logs"))
+            or "version" or "upgrade" or "uninstall" or "mcp" or "home" or "logs"
+            or "doctor" or "completion" or "__complete"))
         {
             // With --json stdout carries only the payload, so sync notices go to stderr.
             try { Print(pm.SyncAll(), json ? err : output, err, "warning: "); }
@@ -442,19 +452,36 @@ public static class Commands
             case "mcp":
                 return McpCmd(pos, claudeArgs, output, err, pm, claudePath, usage, clipboard, mcpInput);
             case "auto":
+                if (pos.Contains("--schedule")) return AutoScheduleCmd(pos, json, output, err, pm, hooks);
                 return AutoCmd(pos, json, output, err, pm, hookCancel, usage, clock);
+            case "doctor":
+                return DoctorCmd(pos, json, output, err, pm, hookCancel, hooks);
+            case "completion":
+                return CompletionCmd(pos, output);
+            case "__complete":
+                return CompleteCmd(pos, output, pm);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
+                if (json) return EnvJsonCmd(pos, output, pm);
                 return EnvCmd(pos, output, err, pm);
             case "check":
             {
-                var name = Need(pos, 1, "clauderoo check <name>")[0];
-                if (pm.Get(name).Provider != Providers.Vertex)
+                var live = pos.Remove("--live");
+                var name = Need(pos, 1, "clauderoo check <name> [--live] [--json]")[0];
+                var checkedProvider = pm.Get(name).Provider;
+                if (live && checkedProvider is Providers.ApiKey or Providers.Token)
+                    return CheckSecretCmd(name, json, output, err, pm, hookCancel);
+                if (checkedProvider != Providers.Vertex)
                 {
                     var r = pm.Check(name);
-                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, Items = Array.Empty<object>() });
-                    else output.WriteLine(r.Message);
+                    if (json) JsonOut.Write(output, new { r.Ok, r.Verified, r.Message, r.Warning, Items = Array.Empty<object>() });
+                    else
+                    {
+                        output.WriteLine(r.Message);
+                        if (r is { Ok: true, Verified: false })
+                            output.WriteLine($"Run 'cr check {name} --live' to test it now.");
+                    }
                     return r.Ok ? 0 : 1;
                 }
                 // The model probes run inside CheckSetupAsync, so announce them first.
@@ -519,7 +546,7 @@ public static class Commands
             case "upgrade":
                 return ReleaseCommands.Upgrade(pos, output, err, hooks);
             case "uninstall":
-                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks);
+                return ReleaseCommands.Uninstall(pos, output, pm.Paths, pm.Sessions, hooks, () => pm.Config.HomeDir);
             case "install":
             {
                 var dir = Installer.Install(AppContext.BaseDirectory);

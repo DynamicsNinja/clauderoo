@@ -82,6 +82,23 @@ public class ConfigLockingTests
         Assert.Equal(dirs.Count, maps.Count);
     }
 
+    [Theory]
+    [InlineData(FileShare.Read)]
+    [InlineData(FileShare.ReadWrite | FileShare.Delete)]
+    public async Task Update_WhileAReaderHasTheFileOpen_WaitsAndSaves(FileShare share)
+    {
+        using var home = Initialised();
+        // Windows won't replace a file another process has open, whatever it shares: the save retries until the
+        // reader lets go instead of failing with access denied.
+        var reader = new FileStream(home.Paths.ConfigFile, FileMode.Open, FileAccess.Read, share);
+        var released = new TaskCompletionSource();
+        // Its own thread, so a busy thread pool can't hold the file past the retries.
+        new Thread(() => { Thread.Sleep(150); reader.Dispose(); released.SetResult(); }) { IsBackground = true }.Start();
+        ConfigStore.Update(home.Paths, c => { c.Folders[@"C:\a"] = "personal"; });
+        await released.Task;
+        Assert.Equal("personal", ConfigStore.Load(home.Paths)!.Folders[@"C:\a"]);
+    }
+
     [Fact]
     public void Update_ReadsTheFileFresh_NotTheCallersCopy()
     {

@@ -37,6 +37,7 @@ sealed class TrayContext : ApplicationContext
     private ProfilesForm? _profilesForm;
     private ProblemsForm? _problemsForm;
     private ConversationsForm? _conversationsForm;
+    private DoctorForm? _doctorForm;
 
     // Current state: kept between syncs, shown by the icon, tooltip, menu and Problems window.
     private IReadOnlyList<Problem> _problems = [];
@@ -212,7 +213,7 @@ sealed class TrayContext : ApplicationContext
     {
         var first = !_seeded;
         RefreshProfiles();
-        SetProblems(report.ProblemItems);
+        SetProblems(WithTokenAge(report.ProblemItems));
         // The first sync's notices are what changed while the tray wasn't running: no balloon at startup, but kept
         // for the Problems window's "Recent messages".
         if (first) AddRecent(report.Notices);
@@ -332,6 +333,7 @@ sealed class TrayContext : ApplicationContext
             ShowProfiles = () => Guard(ShowProfiles),
             NewProfile = () => _ = NewProfileAsync(),
             ContinueConversation = () => Guard(ShowConversations),
+            CheckThisPc = () => Guard(ShowDoctor),
             OpenProfilesFolder = () => Guard(OpenProfilesFolder),
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
@@ -526,6 +528,28 @@ sealed class TrayContext : ApplicationContext
             if (unknown) AddRecent([TrayText.RecentError(e.Message)]);
             throw new ClauderooException(text);
         }
+    }
+
+    // A Claude token near or past its one-year life is listed with the sync problems (no Fix: it needs a new token).
+    private IReadOnlyList<Problem> WithTokenAge(IReadOnlyList<Problem> problems)
+    {
+        try { return [.. problems, .. _pm.TokenAgeProblems()]; }
+        catch (Exception e) when (e is ClauderooException or IOException or UnauthorizedAccessException) { return problems; }
+    }
+
+    // The read-only `cr doctor` checklist in a window; one at a time.
+    private void ShowDoctor()
+    {
+        if (_doctorForm is not { IsDisposed: false } form)
+        {
+            form = new DoctorForm(_paths, _pm.Env);
+            var created = form;
+            form.FormClosed += (_, _) => { if (_doctorForm == created) _doctorForm = null; created.Dispose(); };
+            _doctorForm = form;
+            form.Show();
+        }
+        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+        form.Activate();
     }
 
     private void ShowProblems()
@@ -962,6 +986,7 @@ sealed class TrayContext : ApplicationContext
             _profilesForm?.Dispose();
             _problemsForm?.Dispose();
             _conversationsForm?.Dispose();
+            _doctorForm?.Dispose();
             _manageSignal.Dispose();
             _poller.Dispose();      // stops the loop first, then the client it uses
             _usageClient.Dispose();
