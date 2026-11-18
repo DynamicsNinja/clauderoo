@@ -82,6 +82,9 @@ public partial class ProfileManager
         return report;
     }
 
+    /// <summary>The start of the problem for a link <see cref="RemoveShared"/> couldn't remove (see ProblemTranslator).</summary>
+    internal const string CouldNotUnlinkText = "could not unlink";
+
     /// <summary>
     /// Stops sharing an extra item. Each profile's link to home's folder is removed (never what it points to); a copied
     /// file, or a folder the profile owns, stays as the profile's own. Built-in items can't be removed.
@@ -118,7 +121,7 @@ public partial class ProfileManager
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ClauderooException)
                 {
-                    report.Problems.Add($"{p}: could not unlink {item}: {ex.Message}");
+                    report.Problems.Add($"{p}: {CouldNotUnlinkText} {item}: {ex.Message}");
                 }
             }
             else if (fileName != null && File.Exists(Path.Combine(paths.ProfileDir(p), item)))

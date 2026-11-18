@@ -171,7 +171,7 @@ public partial class ProfileManager
                         // A folder with exclusions holds one link per entry into the old home: clear clauderoo's links
                         // so the sync builds it again from the new home. Anything of the profile's own stays and is reported.
                         else if (FilteredDir.IsFiltered(link) && !FilteredDir.TryRemove(link, Path.Combine(oldHome, d)))
-                            report.Problems.Add($"{name}: {d} holds files of its own, so its links into {oldHome} weren't moved");
+                            report.Problems.Add($"{name}: {d} {LinksNotMovedText} {oldHome} weren't moved");
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                     {
@@ -185,6 +185,9 @@ public partial class ProfileManager
         report.Problems.AddRange(sync.Problems);
         return new HomeResult(report, full, homeJson, File.Exists(homeJson));
     }
+
+    /// <summary>The stable part of the problem for a folder whose links into the old home stayed (see ProblemTranslator).</summary>
+    internal const string LinksNotMovedText = "holds files of its own, so its links into";
 
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
