@@ -333,13 +333,24 @@ public partial class ProfileManager
             added = true;
         }
 
-        // A profile that holds a stored secret never has its provider changed: switching would delete the secret.
-        var holdsSecret = exists && (HasApiKey(name) || HasToken(name));
-        if (holdsSecret && provider != Providers.Of(current!))
-            log.Kept.Add($"{name}: kept its {(Providers.Of(current!) == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
+        // A profile signed in with a stored secret keeps its sign-in: an import never changes how it signs in.
+        var currentProvider = exists ? Providers.Of(current!) : Providers.Login;
+        var holdsSecret = currentProvider switch
+        {
+            Providers.ApiKey => HasApiKey(name),
+            Providers.Token => HasToken(name),
+            _ => false,
+        };
+        if (holdsSecret && provider != currentProvider)
+            log.Kept.Add($"{name}: kept its {(currentProvider == Providers.ApiKey ? "API key" : "token")}; change the provider yourself");
         switch (provider)
         {
             case var _ when holdsSecret:
+                break;
+            // A secret kept from before a provider switch is used again.
+            case Providers.ApiKey when exists && HasApiKey(name):
+            case Providers.Token when exists && HasToken(name):
+                log.Collect(SetProvider(name, provider));
                 break;
             case Providers.ApiKey or Providers.Token:
                 log.Collect(SetProvider(name, Providers.Login));

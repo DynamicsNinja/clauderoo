@@ -214,10 +214,11 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 
 | Command | What it does |
 | --- | --- |
-| `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token` |
+| `provider <name> login\|vertex\|apikey\|token` | Choose how a profile signs in. `vertex` takes `--project`, `--region` and optionally `--sonnet`, `--opus` and `--haiku`. `apikey` prompts for the key. `token` prompts for a token from `claude setup-token`. A key or token saved earlier is kept when you switch provider: an empty answer or `--keep` uses it again, `--new` always asks for a new one |
+| `forget <name> apikey\|token` | Delete the profile's saved API key or Claude token (and its saved-at file). The provider isn't changed |
 | `env <name> [set A=1 B=2 \| unset A] [--json]` | Show, set or unset a profile's environment variables. `env <name> --json` prints `{"schemaVersion":1,"profile":…,"env":{"NAME":"value"}}` with the names exactly as set |
 | `check <name> [--live] [--json]` | Check that the profile's sign-in works. For a Vertex profile it runs the full setup checklist. For an API-key or Claude-token profile, `--live` tests the secret for real (see [Checking keys and tokens](#checking-keys-and-tokens)). Exits with code 1 if anything fails |
-| `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs |
+| `apikey <name>` | Print the profile's API key. This is what Claude's `apiKeyHelper` runs. A key kept from before a provider switch isn't printed |
 
 ### Export and import
 
@@ -228,13 +229,13 @@ The longest mapped folder wins. Mappings follow a profile when it's renamed and 
 
 Import only files from people you trust: environment variables and folder mappings take effect in new sessions.
 
-Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`.
+Exports never contain API keys, tokens, logins, usage data or the home flag. Environment values are written as plain text, so check the file before sharing it, or leave them out with `--no-env`. API-key and token profiles are imported with the Claude login; the import lists them, and you set the secret with `cr provider <name> apikey` or `cr provider <name> token`. With `--force`, an existing profile that has a matching key or token kept from an earlier provider switch uses it again.
 
 Folder mappings in the file are added for new and existing profiles alike, even without `--force`; a folder already mapped to another profile is skipped. With `--force`, an import also:
 
 - updates the settings of profiles that already exist (provider, Vertex project and models, environment, start folder);
 - re-points folders that are already mapped to another profile;
-- keeps the provider of a profile that holds an API key or token, so the secret is never deleted.
+- keeps the provider of a profile that signs in with an API key or token, so its sign-in never changes under you.
 
 An import only ever adds owned items. It never gives a profile's own copies back to home, with or without `--force`. A start folder that doesn't exist on this machine is left out and reported. The summary lists what was created, updated and mapped, the names (never the values) of the environment variables that arrived, and anything skipped.
 
@@ -305,6 +306,17 @@ cr env work unset HTTPS_PROXY
 cr check work
 ```
 
+**Switching provider keeps the saved key or token.** Move a profile from API key or Claude token to another provider and its secret stays saved (encrypted, unused), so switching back doesn't mean pasting it again:
+
+```powershell
+cr provider work token           # with a token saved: "Token (Enter keeps the saved one, saved on 2026-03-01):"
+cr provider work token --keep    # use the saved one without asking (for scripts; fails if none is saved)
+cr provider work token --new     # always ask for a new one
+cr forget work token             # delete the saved token (or `apikey`) for good
+```
+
+Piping a value in (`... | cr provider work apikey`) replaces the saved one; empty input keeps it. Only the provider in use counts: a kept secret isn't handed to Claude, `cr apikey` doesn't print a kept key, and `cr status` and `cr check` don't warn about a kept token's age. Removing a profile deletes its saved key and token, kept or not. In the manager window, a saved key or token shows as "saved — leave empty to use it" when you pick its provider, and **Forget the saved key** (or token) deletes it.
+
 If you accept a model update from inside Claude (for example, moving Opus to a newer version), clauderoo saves the new model to the profile. It isn't reverted on the next sync.
 
 ### Setting up Vertex AI
@@ -343,12 +355,12 @@ The checks run in parallel and the list updates as each one finishes. Each line 
 
 ### Checking keys and tokens
 
-Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live`:
+Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live` (or **Live check** ticked next to **Check setup** in the window, which shows the results as the same checklist):
 
 - **API key:** one authenticated request to the Anthropic API's models list (`GET /v1/models`), with a 10-second timeout. It uses no quota. A profile that sets `ANTHROPIC_BASE_URL` is tested against that address; the key is only sent over `https` (or plain `http` to this computer).
 - **Claude token:** a token from `claude setup-token` can only make model requests, so there's no free way to test it. clauderoo runs `claude -p` with the token, the Haiku model and a one-line prompt, which uses a few tokens of the account's quota.
 
-The key or token is never printed, logged or included in `--json` output; error text is scrubbed of it.
+The key or token is never printed, logged or included in `--json` output; error text is scrubbed of it. The window's live check runs `clauderoo check <name> --live --json` without a console window and shows its rows, so the tray app itself never decrypts the secret.
 
 **Token expiry.** Claude tokens last one year. clauderoo records when each key and token was saved (in a small `.meta` file next to the encrypted secret; for secrets saved before this, the encrypted file's date is used). From 335 days after a token was saved, `cr status`, `cr check`, the tray's Problems list and the manager window warn that it expires soon, and after a year that it has probably expired. Change the warning point with `"tokenWarnAfterDays": <days>` in `%USERPROFILE%\.clauderoo\config.json`. clauderoo can't read a token's real expiry date, so the date is counted from when you saved it in clauderoo.
 

@@ -37,8 +37,13 @@ public static partial class Commands
   provider <name> login               use the profile's own Claude login (default)
   provider <name> vertex --project <p> --region <r> [--sonnet <m>] [--opus <m>] [--haiku <m>]
                                       use Claude on Google Vertex AI
-  provider <name> apikey              use an Anthropic API key (read from stdin or prompted)
-  provider <name> token               use a Claude token from 'claude setup-token' (read from stdin or prompted)
+  provider <name> apikey [--new|--keep]
+                                      use an Anthropic API key (read from stdin or prompted)
+  provider <name> token [--new|--keep]
+                                      use a Claude token from 'claude setup-token' (read from stdin or prompted)
+                                      a key or token saved earlier is kept when you switch provider: an empty
+                                      answer or --keep uses it again, --new always asks for a new one
+  forget <name> apikey|token          delete the profile's saved API key or Claude token
   env <name> [set A=1 B=2 | unset A] [--json]
                                       show, set or unset a profile's environment variables
   export <file> [names...] [--no-env] [--force]
@@ -126,7 +131,7 @@ public static partial class Commands
 
     /// <summary>Every command Dispatch accepts. "__complete" is hidden: the completion scripts call it.</summary>
     public static readonly string[] KnownCommands = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
-        "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
+        "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "forget", "manage", "map", "unmap", "maps", "which",
         "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "doctor", "completion",
         "removed", "purge", "logs", "config", "wt-profiles", "code", .. SetupCommands.Names, .. SharingCommands.Names,
         "__complete"];
@@ -462,6 +467,8 @@ public static partial class Commands
                 return CompletionCmd(pos, output);
             case "__complete":
                 return CompleteCmd(pos, output, pm);
+            case "forget":
+                return ForgetCmd(pos, output, pm);
             case "provider":
                 return ProviderCmd(pos, output, err, pm, readSecret);
             case "env":
@@ -593,25 +600,81 @@ public static partial class Commands
                 report = pm.SetProvider(name, Providers.Vertex, v);
                 break;
             }
-            case Providers.ApiKey:
+            case Providers.ApiKey or Providers.Token:
             {
-                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var key = readSecret("API key: ");
-                report = pm.SetProvider(name, Providers.ApiKey, null, string.IsNullOrWhiteSpace(key) ? null : key.Trim());
-                break;
-            }
-            case Providers.Token:
-            {
-                if (rest.Count > 0) throw new ClauderooException($"Usage: {usage}");
-                var token = readSecret("Token: ");
-                report = pm.SetProvider(name, Providers.Token, token: string.IsNullOrWhiteSpace(token) ? null : token.Trim());
-                break;
+                var secret = ReadProviderSecret(name, kind, rest, usage, pm, readSecret, out var reused);
+                report = kind == Providers.ApiKey
+                    ? pm.SetProvider(name, Providers.ApiKey, null, secret)
+                    : pm.SetProvider(name, Providers.Token, token: secret);
+                Print(report, output, err);
+                output.WriteLine($"'{name}' now uses {kind}.");
+                if (reused != null) output.WriteLine(reused);
+                // A reused token may be near the end of its year: say so now rather than at the next status.
+                if (kind == Providers.Token && secret == null)
+                    foreach (var p in pm.TokenAgeProblems().Where(p => p.Profile == name)) err.WriteLine("warning: " + p.Detail);
+                return 0;
             }
             default:
                 throw new ClauderooException($"Unknown provider '{kind}'. Known: {ProfileManager.KnownProviders}.");
         }
         Print(report, output, err);
         output.WriteLine($"'{name}' now uses {kind}.");
+        return 0;
+    }
+
+    /// <summary>
+    /// The new secret for `provider apikey|token`, or null to use the saved one (then <paramref name="reused"/> says so).
+    /// With a saved one, an empty answer (or end of input) keeps it; --keep keeps it without reading anything; --new
+    /// always wants a new one. Never echoes or prints the secret.
+    /// </summary>
+    private static string? ReadProviderSecret(string name, string kind, List<string> rest, string usage, ProfileManager pm,
+        Func<string, string?> readSecret, out string? reused)
+    {
+        reused = null;
+        var fresh = rest.Remove("--new");
+        var keep = rest.Remove("--keep");
+        if (rest.Count > 0 || (fresh && keep)) throw new ClauderooException($"Usage: {usage}");
+        var word = ProfileManager.SecretWord(kind);
+        var savedAt = pm.SecretSavedAt(name, kind); // also refuses an unknown or the home profile before any prompt
+        var saved = kind == Providers.ApiKey ? pm.HasApiKey(name) : pm.HasToken(name);
+        var on = savedAt is { } t ? $", saved on {t.ToLocalTime():yyyy-MM-dd}" : "";
+        string? secret = null;
+        if (keep)
+        {
+            if (!saved)
+                throw new ClauderooException($"No {word} is saved for '{name}'. Run 'cr provider {name} {kind}' to enter one.");
+        }
+        else
+        {
+            var label = kind == Providers.ApiKey ? "API key" : "Token";
+            secret = readSecret(saved && !fresh ? $"{label} (Enter keeps the saved one{on}): " : $"{label}: ")?.Trim();
+            if (string.IsNullOrEmpty(secret))
+            {
+                secret = null;
+                if (fresh || !saved)
+                    throw new ClauderooException(kind == Providers.ApiKey
+                        ? "Enter an API key."
+                        : "Enter a Claude token. Create one with 'claude setup-token'.");
+            }
+        }
+        if (secret == null) reused = $"Using the saved {word}{on}.";
+        return secret;
+    }
+
+    private static int ForgetCmd(List<string> pos, TextWriter output, ProfileManager pm)
+    {
+        const string usage = "Usage: clauderoo forget <name> apikey|token";
+        if (pos.Count != 2 || pos[1] is not (Providers.ApiKey or Providers.Token)) throw new ClauderooException(usage);
+        var (name, kind) = (pos[0], pos[1]);
+        var word = ProfileManager.SecretWord(kind);
+        if (!pm.ForgetSecret(name, kind))
+        {
+            output.WriteLine($"No {word} is saved for '{name}'. Nothing was changed.");
+            return 0;
+        }
+        output.WriteLine($"Deleted the saved {word} for '{name}'.");
+        if (Providers.Of(pm.Get(name)) == kind)
+            output.WriteLine($"'{name}' still uses {kind}: set a new one with 'cr provider {name} {kind}', or switch provider.");
         return 0;
     }
 

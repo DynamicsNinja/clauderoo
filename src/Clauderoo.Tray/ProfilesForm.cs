@@ -88,7 +88,10 @@ sealed class ProfilesForm : Form
                "isn't signed in with it.",
         ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6),
     };
-    private const string TokenSavedCue = "(saved — leave empty to keep)";
+    private const string TokenSavedCue = "(saved — leave empty to use it, or paste a new one)";
+    private const string KeySavedCue = "•••• saved — leave empty to use it, or paste a new one";
+    // Shown under a saved key or token, whichever provider is in use: switching provider keeps it.
+    private readonly LinkLabel _forget = new() { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
     private const string TokenCue = "Paste the token (sk-ant-oat…)";
 
     // Folders that `cr start` maps to this profile; changed right away (not part of Save).
@@ -143,6 +146,9 @@ sealed class ProfilesForm : Form
     private readonly Button _check = Btn(CheckText);
     private readonly Button _copy = Btn("Cop&y results");
     private readonly Button _signIn = Btn("Sign &in to Google…");
+    // No access key: every letter of "Live check" is taken by another control.
+    private readonly CheckBox _liveCheck = new() { Text = "Live check", AutoSize = true, Margin = new Padding(6, 4, 6, 0) };
+    private readonly WrapLabel _liveNote = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6) };
     private readonly GlyphLabel _checkStatus = new() { Margin = new Padding(0, 0, 0, 6) };
     private readonly CheckListView _checkList = new()
     {
@@ -211,6 +217,7 @@ sealed class ProfilesForm : Form
     private string? _undoName;     // removed profile the status line offers to restore
     private bool _showRestart;     // the last action saved the current profile (the restart note may apply)
     private string? _checkingFor;  // profile a check is running for (one at a time)
+    private string? _checkingProvider; // the provider a checklist check (Vertex, live check) is running for
     private int _checkSeq;         // bumped when a check is cancelled: its result is dropped
     private CancellationTokenSource? _checkCts; // the running setup check, if any
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
@@ -339,7 +346,7 @@ sealed class ProfilesForm : Form
 
         _checkRow = Flow(FlowDirection.LeftToRight);
         _checkRow.Margin = new Padding(0, 0, 0, 4);
-        _checkRow.Controls.AddRange([_check, _copy, _signIn]);
+        _checkRow.Controls.AddRange([_check, _liveCheck, _copy, _signIn]);
 
         var envButtons = _envButtons = Flow(FlowDirection.LeftToRight);
         envButtons.Controls.Add(_envDelete);
@@ -354,8 +361,8 @@ sealed class ProfilesForm : Form
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Control[] topRows =
         [
-            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
-            _usageGroup, _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
+            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _forget, _loginPanel,
+            _usageGroup, _fieldError, _checkRow, _liveNote, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
             _startDirLabel, _startDirRow,
             _sharing,
             _envLabel, _envHint,
@@ -427,6 +434,7 @@ sealed class ProfilesForm : Form
 
         // Size the window from its content, measured with the largest provider panel and every optional line showing.
         _homePanel.Visible = _apiKeyPanel.Visible = _tokenPanel.Visible = _tokenHelp.Visible = _loginPanel.Visible = false;
+        _forget.Visible = _liveCheck.Visible = _liveNote.Visible = false;
         _unsaved.Visible = true;
         var rightWidth = Math.Max(_vertexPanel.GetPreferredSize(Size.Empty).Width, _env.MinimumSize.Width);
         foreach (var w in new[] { _vertexHelp, _foldersHint, _envHint }) w.WrapTo(rightWidth - w.Margin.Horizontal);
@@ -444,7 +452,7 @@ sealed class ProfilesForm : Form
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
 
         // Status labels wrap to the width of their column.
-        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _fieldError, _checkStatus, _checkList,
+        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _liveNote, _fieldError, _checkStatus, _checkList,
             _foldersHint, _envHint, _usageInfo, _usageStatus);
         WrapTo(right, _envError);
         WrapTo(root, _result);
@@ -498,6 +506,8 @@ sealed class ProfilesForm : Form
         _env.RowsAdded += (_, _) => OnEdited();
         _env.RowsRemoved += (_, _) => OnEdited();
         _check.Click += (_, _) => RunCheck();
+        _liveCheck.CheckedChanged += (_, _) => { UpdateLiveNote(); EnsureFits(); };
+        _forget.LinkClicked += (_, _) => Guard(ForgetSecret);
         _copy.Click += (_, _) => CopyResults();
         _signIn.Click += (_, _) => Guard(_gcloud.OpenSignIn);
         _envDelete.Click += (_, _) => DeleteEnvRows();
@@ -812,11 +822,11 @@ sealed class ProfilesForm : Form
                         _opus.Text = v.OpusModel ?? "";
                         _haiku.Text = v.HaikuModel ?? "";
                     }
+                    // Kept across provider switches, so a key or token saved earlier is reused when its provider is
+                    // picked again. The secret itself is never read here: only whether there is one.
                     _hasSavedKey = _pm.HasApiKey(info.Name);
-                    if (_hasSavedKey) _apiKey.PlaceholderText = "•••• saved (type to replace)";
-                    // The saved token itself is never read here: only whether there is one.
                     _hasSavedToken = _pm.HasToken(info.Name);
-                    if (_hasSavedToken) _token.PlaceholderText = TokenSavedCue;
+                    ShowSavedCues();
                     foreach (var kv in _pm.GetEnv(info.Name).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
                         _env.Rows.Add(kv.Key, kv.Value);
                 }
@@ -1016,6 +1026,9 @@ sealed class ProfilesForm : Form
         _fieldError.Visible = _checkRow.Visible = _checkStatus.Visible = editable;
         _sharing.Visible = editable;
         _signIn.Visible = p == Providers.Vertex;
+        _liveCheck.Visible = LiveCheckShown;
+        UpdateLiveNote();
+        UpdateForgetLink();
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
         _save.Visible = editable;
         _env.AllowUserToAddRows = editable;
@@ -1153,22 +1166,7 @@ sealed class ProfilesForm : Form
         }
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (n, v) in EnvRows()) env[n] = v;
-        try
-        {
-            if (provider != Providers.ApiKey && _pm.HasApiKey(name) &&
-                MessageBox.Show(this, $"Switching {name} away from API key deletes its saved key. Continue?", "clauderoo",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                return false;
-            if (provider != Providers.Token && _pm.HasToken(name) &&
-                MessageBox.Show(this, $"This deletes the saved token for {name}.{Environment.NewLine}{Environment.NewLine}Continue?",
-                    "clauderoo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                return false;
-        }
-        catch (Exception e)
-        {
-            ShowError(e.Message);
-            return false;
-        }
+        // Switching provider keeps a saved key or token (Forget deletes one), so there is nothing to confirm.
 
         var notices = new List<string>();
         var problems = new List<string>();
@@ -1301,6 +1299,60 @@ sealed class ProfilesForm : Form
         _checkProgress?.Cancel();
     }
 
+    // ---------- saved key / token ----------
+
+    // The key and token boxes say when a saved one will be used (also one kept from before a provider switch).
+    private void ShowSavedCues()
+    {
+        _apiKey.PlaceholderText = _hasSavedKey ? KeySavedCue : "Paste the key (sk-ant-…)";
+        _token.PlaceholderText = _hasSavedToken ? TokenSavedCue : TokenCue;
+    }
+
+    // "Forget the saved key/token": under the selected provider's box when one is saved.
+    private void UpdateForgetLink()
+    {
+        _forget.Text = SelectedProvider == Providers.Token ? "Forget the saved token" : "Forget the saved key";
+        _forget.Visible = ForgetShown;
+    }
+
+    // Deletes the saved key or token right away (not part of Save), after asking.
+    private void ForgetSecret()
+    {
+        if (_current == null || _currentIsHome) return;
+        var name = _current;
+        var kind = SelectedProvider;
+        if (kind is not (Providers.ApiKey or Providers.Token)) return;
+        var word = kind == Providers.Token ? "Claude token" : "API key";
+        var inUse = _currentInfo?.Provider == kind;
+        var question = $"Delete the saved {word} for {name}?" + Environment.NewLine + Environment.NewLine +
+                       (inUse ? $"{name} uses it now: its sessions can't sign in until you paste a new one."
+                              : "You'll need to paste it again to use it.");
+        if (MessageBox.Show(this, question, "clauderoo", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+        ClearResult();
+        Write(() => _pm.ForgetSecret(name, kind));
+        if (kind == Providers.Token) _hasSavedToken = false; else _hasSavedKey = false;
+        ShowSavedCues();
+        UpdateForgetLink();
+        OnEdited(); // an API-key profile now needs a key to save
+        SetResult($"Deleted the saved {word} for {name}.", SystemColors.ControlText);
+    }
+
+    // The note under Live check: what it does with the secret, and what it costs.
+    private void UpdateLiveNote()
+    {
+        _liveNote.Text = SelectedProvider == Providers.Token
+            ? "Live check sends one tiny prompt with the token, so it uses a little of its quota."
+            : "Live check tries the key against the Anthropic API (it uses no quota).";
+        _liveNote.Visible = LiveNoteShown;
+    }
+
+    // The window's own state, not Control.Visible (which reads false until the window is shown).
+    private bool LiveCheckShown => _current != null && !_currentIsHome && SelectedProvider is Providers.ApiKey or Providers.Token;
+    private bool LiveNoteShown => LiveCheckShown && _liveCheck.Checked;
+    private bool ForgetShown => _current != null && !_currentIsHome &&
+                                ((SelectedProvider == Providers.ApiKey && _hasSavedKey) || (SelectedProvider == Providers.Token && _hasSavedToken));
+
     // ---------- checks ----------
 
     private void RunCheck()
@@ -1320,7 +1372,12 @@ sealed class ProfilesForm : Form
         var provider = SelectedProvider;
         if (provider == Providers.Vertex)
         {
-            RunSetupCheck(name);
+            RunChecklist(name, provider, (ct, progress) => _pm.CheckSetupAsync(name, ct, progress));
+            return;
+        }
+        if (_liveCheck.Checked && provider is Providers.ApiKey or Providers.Token)
+        {
+            RunChecklist(name, provider, (ct, progress) => LiveCheckAsync(name, provider, ct, progress));
             return;
         }
 
@@ -1353,10 +1410,32 @@ sealed class ProfilesForm : Form
     private static string SignInWords(string s) =>
         s.Replace("Not logged in", "Not signed in").Replace("Logged in", "Signed in").Replace("logged in", "signed in");
 
-    // Vertex: the full checklist (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model).
-    private void RunSetupCheck(string name)
+    private string? _liveExe;            // tests: the exe the live check runs (null: the installed clauderoo.exe)
+    private LiveCheck.Runner? _liveRun;  // tests: how it runs (null: a hidden process)
+
+    internal void UseLiveCheckRunnerForTest(string exe, LiveCheck.Runner run) => (_liveExe, _liveRun) = (exe, run);
+
+    // The live check of an API key or token, through the hidden CLI (the tray never reads a secret itself). The CLI
+    // reports at the end only, so the planned rows wait as Pending and the test itself as Running until then.
+    private async Task<IReadOnlyList<CheckItem>> LiveCheckAsync(string name, string provider, CancellationToken ct,
+        IProgress<CheckItem> progress)
+    {
+        var plan = ProfileManager.SecretCheckPlan(provider);
+        foreach (var (key, label) in plan)
+            progress.Report(new CheckItem(key == "live" ? CheckStatus.Running : CheckStatus.Pending, label, null) { Key = key });
+        var (items, error) = await LiveCheck.RunAsync(name, ct, _liveExe, _liveRun).ConfigureAwait(false);
+        if (items == null) throw new ClauderooException(error ?? "The check couldn't run.");
+        foreach (var item in items) progress.Report(item);
+        return items;
+    }
+
+    // A checklist check: Vertex's full setup (gcloud, sign-in, IAM, leftover vars, a tiny prompt per model), or the
+    // live check of a key or token. Rows fill in as reported; the result is filed under the profile and provider.
+    private void RunChecklist(string name, string provider,
+        Func<CancellationToken, IProgress<CheckItem>, Task<IReadOnlyList<CheckItem>>> run)
     {
         var seq = _checkSeq;
+        _checkingProvider = provider;
         var cts = _checkCts = new CancellationTokenSource();
         var ct = cts.Token;
         var live = _checkProgress = new CheckProgressModel();
@@ -1374,7 +1453,7 @@ sealed class ProfilesForm : Form
         {
             IReadOnlyList<CheckItem>? items = null;
             string? error = null;
-            try { items = await _pm.CheckSetupAsync(name, ct, progress).ConfigureAwait(false); }
+            try { items = await run(ct, progress).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception e) { error = e.Message; }
             try
@@ -1386,8 +1465,8 @@ sealed class ProfilesForm : Form
                     cts.Dispose();
                     if (seq != _checkSeq) return; // cancelled: drop the result
                     if (_checkProgress == live) _checkProgress = null;
-                    if (items != null) LastChecks[name] = Summarise(items);
-                    else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, Providers.Vertex, CheckStatus.Fail, error, null);
+                    if (items != null) LastChecks[name] = Summarise(items, provider);
+                    else if (error != null) LastChecks[name] = new CheckRecord(DateTime.Now, provider, CheckStatus.Fail, error, null);
                     CheckFinished(name);
                 });
             }
@@ -1414,7 +1493,7 @@ sealed class ProfilesForm : Form
         if (_current == name) ShowCheckRecord();
     }
 
-    private static CheckRecord Summarise(IReadOnlyList<CheckItem> items)
+    private static CheckRecord Summarise(IReadOnlyList<CheckItem> items, string provider)
     {
         var fails = items.Count(i => i.Status == CheckStatus.Fail);
         var warns = items.Count(i => i.Status == CheckStatus.Warn);
@@ -1422,7 +1501,7 @@ sealed class ProfilesForm : Form
             fails > 0 ? (CheckStatus.Fail, fails == 1 ? "1 problem found." : $"{fails} problems found.")
             : warns > 0 ? (CheckStatus.Warn, warns == 1 ? "Works, with 1 warning." : $"Works, with {warns} warnings.")
             : (CheckStatus.Ok, "Setup looks good.");
-        return new CheckRecord(DateTime.Now, Providers.Vertex, status, message, items);
+        return new CheckRecord(DateTime.Now, provider, status, message, items);
     }
 
     // The current profile's check: running, or the last result if it was made for the provider now selected.
@@ -1436,7 +1515,7 @@ sealed class ProfilesForm : Form
         }
         if (_checkingFor == _current)
         {
-            if (SelectedProvider == Providers.Vertex && _checkProgress is { Total: > 0 } live)
+            if (SelectedProvider == _checkingProvider && _checkProgress is { Total: > 0 } live)
             {
                 _checkStatus.Show(Glyph.Info, StatusColors.Muted, live.StatusText);
                 ShowCheckList(live.Rows, live: true);
@@ -1509,7 +1588,7 @@ sealed class ProfilesForm : Form
         _duplicate.Enabled = _current != null;
         _setDefault.Enabled = _current != null && !_currentIsDefault;
         _remove.Enabled = _current != null && !_currentIsHome && !_currentIsDefault && !checkingHere;
-        _check.Enabled = _checkingFor == null;
+        _check.Enabled = _liveCheck.Enabled = _checkingFor == null;
         _copy.Enabled = _current != null && !checkingHere && RecordFor(_current, SelectedProvider) != null;
         // A disabled button shows no tooltip itself: put the reason on its panel too.
         var why = _current == null ? null
@@ -1986,6 +2065,27 @@ sealed class ProfilesForm : Form
     internal void OfferUndoForTest(string name, Action link) { _undoName = name; _resultLink = link; }
     internal DataGridView EnvGridForTest => _env;
     internal Button SetDefaultButtonForTest => _setDefault;
+    internal CheckBox LiveCheckBoxForTest => _liveCheck;
+    internal Label LiveNoteForTest => _liveNote;
+    internal LinkLabel ForgetLinkForTest => _forget;
+    internal bool LiveCheckShownForTest => LiveCheckShown;
+    internal bool LiveNoteShownForTest => LiveNoteShown;
+    internal bool ForgetShownForTest => ForgetShown;
+    internal TextBox ApiKeyBoxForTest => _apiKey;
+    internal TextBox TokenBoxForTest => _token;
+    internal void SelectProviderForTest(string provider) =>
+        (provider switch
+        {
+            Providers.Vertex => _rbVertex,
+            Providers.ApiKey => _rbApiKey,
+            Providers.Token => _rbToken,
+            _ => _rbLogin,
+        }).Checked = true;
+    internal void RunCheckForTest() => RunCheck();
+    internal bool CheckRunningForTest => _checkingFor != null;
+    internal IReadOnlyList<CheckItem>? LastCheckItemsForTest(string name) =>
+        LastChecks.TryGetValue(name, out var r) ? r.Items : null;
+    internal string? LastCheckMessageForTest(string name) => LastChecks.TryGetValue(name, out var r) ? r.Message : null;
     internal bool CurrentIsDefaultForTest => _currentIsDefault;
     internal IReadOnlyList<ProfileInfo> ListedProfilesForTest => _list.Items.Cast<ListItem>().Select(i => i.Info).ToList();
     internal void UndoRemoveForTest() => UndoRemove();
