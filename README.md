@@ -154,7 +154,9 @@ All commands work with either `clauderoo` or `cr`.
 | Command | What it does |
 | --- | --- |
 | `init [--name <n>] [--home <path>]` | Set up clauderoo around your existing `~/.claude` |
-| `add <name>` | Create a profile (names may use `a-z`, `0-9` and `-`) |
+| `add <name> [--from <profile>]` | Create a profile (names may use `a-z`, `0-9` and `-`). `--from` copies another profile's settings, as `clone` does |
+| `clone <source> <new>` | Create a profile with the same provider, Vertex settings, environment variables, owned items and start folder. The sign-in, conversations, folder mappings and any API key or token are never copied, and owned items start empty: an API-key or token profile's copy uses the Claude login until you set its secret with `cr provider <new> apikey\|token`. The profile manager's **Duplicate…** does the same |
+| `startdir <name> [<dir> \| --clear]` | Show, set or clear the folder that **Start session** (tray and profile manager) opens the profile in. The folder must exist. Without one, sessions open in your user folder. `list` shows it |
 | `list [--json]` | List profiles and the account each one is logged in with, plus the last known 5h/7d usage of Claude-login profiles |
 | `usage [name] [--json]` | Show 5-hour and 7-day usage, reset times, plan and per-model limits for every profile, or just `name`. Fetches live and falls back to the last reading ("as of hh:mm") when offline or rate-limited. Vertex, API-key and Claude-token profiles show "Usage isn't tracked for …". `--json` prints `{profiles:[{name, status, plan, fetchedAt, windows:[{name, percent, resetsAt}], message}]}` |
 | `rename <old> <new> [--force]` | Rename a profile. Its folder, config, secrets and env var move together. Close the profile's Claude sessions first and restart them with `cr start <new>`. `--force` skips the shared-plugin-records and running-session checks. Only sessions started by clauderoo are detected |
@@ -236,7 +238,8 @@ The manager window has the same two actions under the profile list. **Export…*
 | Command | What it does |
 | --- | --- |
 | `manage` | Open the profile manager window |
-| `status [--json]` | Show the default profile and any problems |
+| `status [--json]` | Show the default profile and any problems, including a missing home Claude folder |
+| `home [<path>]` | Show the home profile's Claude folder, or point clauderoo at `<path>` after `~/.claude` moved. The folder must look like a Claude config folder (`settings.json`, `.credentials.json`, `projects`, `plugins`…). clauderoo only reads it: every profile's shared links are moved to it and synced again |
 | `tray` | Start the tray app |
 | `autostart on\|off` | Start the tray app when you log in, or stop doing so |
 | `install` | Copy clauderoo to `%LOCALAPPDATA%\clauderoo` and add it to `PATH` |

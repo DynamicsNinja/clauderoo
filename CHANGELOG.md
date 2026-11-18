@@ -4,6 +4,14 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- `cr startdir <name> [<dir> | --clear]` sets the folder **Start session** opens a profile in; `cr list` (and `--json`) shows it, and the profile manager has a **Start folder** field with **Browse…**.
+- `cr clone <source> <new>` (also `cr add <new> --from <source>` and **Duplicate…** in the profile manager) copies a profile's provider, Vertex settings, environment variables, owned items and start folder. Never the sign-in, conversations or API key/token.
+- `cr home [<path>]` shows the home Claude folder, or points clauderoo at it after `~/.claude` moved, re-linking every profile.
+
+### Fixed
+- A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.
+
 ## [0.1.0] - 2026-11-17
 
 First public release.
