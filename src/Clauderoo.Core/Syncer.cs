@@ -45,6 +45,9 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
         var dir = paths.ProfileDir(profile);
         Directory.CreateDirectory(dir);
+        // Without home nothing can be shared, and links into it dangle: say so rather than skip silently.
+        if (!Directory.Exists(cfg.HomeDir))
+            report.Problems.Add($"{profile}: {HomeMissingText} {cfg.HomeDir}; shared items aren't synced (run 'clauderoo home <path>' if it moved)");
         SyncDirs(profile, entry, dir, report);
         SyncState state;
         try { state = SyncState.Load(dir); }
@@ -93,10 +96,16 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         {
             if (entry.Overrides.Contains(d)) continue;
             var source = Path.Combine(cfg.HomeDir, d);
-            if (!Directory.Exists(source)) continue;
-
             var link = Path.Combine(dir, d);
             var target = Junction.GetTarget(link);
+            if (!Directory.Exists(source))
+            {
+                // A link left pointing at a home folder that's gone (a missing home is reported once, above).
+                if (target != null && Directory.Exists(cfg.HomeDir) && SameDir(target, source))
+                    report.Problems.Add($"{profile}: {d} is linked to {source}, which no longer exists");
+                continue;
+            }
+
             if (target == null)
             {
                 if (File.Exists(link))
@@ -113,10 +122,16 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                 }
                 continue;
             }
-            if (!string.Equals(Path.TrimEndingDirectorySeparator(target), Path.TrimEndingDirectorySeparator(source), StringComparison.OrdinalIgnoreCase))
+            if (!SameDir(target, source))
                 report.Problems.Add($"{profile}: {d} is linked to {target}, not to {source}");
         }
     }
+
+    /// <summary>The start of the problem reported when the home folder is missing (see ProblemTranslator).</summary>
+    internal const string HomeMissingText = "the home Claude folder is missing:";
+
+    private static bool SameDir(string a, string b) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
 
     private static void CopyAtomic(string source, string target)
     {
