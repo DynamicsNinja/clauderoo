@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-18
+
 ### Added
 - `cr removed` lists removed copies of profiles with when they were removed and their size (`--json` too).
 - `cr restore <name> --at <id>` restores a specific removed copy instead of the newest. A restore now also brings back the profile's isolated folder.
@@ -75,5 +77,6 @@ First public release.
 - `cr version`, `cr upgrade` and `cr uninstall`.
 - Release builds from GitHub Actions, with a draft winget manifest.
 
-[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DynamicsNinja/clauderoo/releases/tag/v0.1.0
