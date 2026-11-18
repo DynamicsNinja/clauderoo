@@ -29,6 +29,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `cr auto --schedule on|off [--every N]` creates or removes a per-user Task Scheduler task that runs `auto --once` without a console window.
 - `cr uninstall --purge` also deletes `~/.clauderoo` after you confirm, removing junctions as links only and never touching `~/.claude`.
 - The manager's **Export…** can export only the selected profile.
+- Switching a profile away from an API key or Claude token keeps the saved secret, so switching back reuses it: `cr provider <name> apikey|token` takes an empty answer (or `--keep`) to use it and `--new` to replace it, and the manager says the saved one will be used. `cr forget <name> apikey|token` and the manager's **Forget the saved key/token** delete one. Removing a profile still deletes both. A kept secret is never used, printed by `cr apikey` or warned about. `import --force` reuses a kept secret too.
+- **Live check** in the profile manager tests an API key or Claude token for real, like `cr check --live`, with the same progress checklist as the Vertex check.
 
 ### Fixed
 - A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.
