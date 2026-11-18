@@ -67,7 +67,7 @@ sealed class TrayContext : ApplicationContext
         if (SynchronizationContext.Current == null)
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         _ui = SynchronizationContext.Current!;
-        _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now);
+        _pm = new ProfileManager(_paths, new WindowsEnvStore(), () => DateTime.Now) { WtFragmentFile = WtFragment.DefaultFile() };
         _owner = new OwnerWindow(() => Guard(() => UpdateStatus(forceIcon: true)));
 
         var version = typeof(TrayContext).Assembly.GetName().Version?.ToString(3) ?? "0";
@@ -345,6 +345,9 @@ sealed class TrayContext : ApplicationContext
             Exit = () => Guard(Exit),
             RefreshUsage = () => _ = RefreshUsageAsync(),
             SetAutoSwitch = on => _ = SetAutoSwitchAsync(on),
+            OpenInCode = name => Guard(() => OpenInCode(name)),
+            SetTerminal = t => _ = SetLaunchSettingsAsync(t, null),
+            SetShell = sh => _ = SetLaunchSettingsAsync(null, sh),
         };
 
         var cfg = LoadConfig();
@@ -365,7 +368,9 @@ sealed class TrayContext : ApplicationContext
         var newer = releaseBuild ? UpdateCheck.NewerThan(_updateState, AppVersion.Current) : null;
         TrayMenu.Build(_menu, new TrayMenuState(_profiles, _problems, _running, autoOn, _recent.Count,
             newer?.ToString(), _updateState.CheckEnabled, releaseBuild,
-            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch), actions);
+            _usage.Readings, _usage.Results, DateTimeOffset.Now, cfg?.AutoSwitch,
+            cfg is null ? TerminalChoice.Wt : TerminalChoice.TerminalOf(cfg),
+            cfg is null ? TerminalChoice.Cmd : TerminalChoice.ShellOf(cfg)), actions);
     }
 
     // The fetch runs on a worker thread; the result comes back through the poller's Updated event.
@@ -600,6 +605,54 @@ sealed class TrayContext : ApplicationContext
         dir ??= _pm.Get(name).StartDir
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         using var _ = Launcher.Start(Launcher.NewWindow(cfg, _paths, name, dir, [], Launcher.WtAvailable(), isolated: isolated));
+    }
+
+    // Runs `clauderoo code <name> <dir>` (hidden): the CLI is the only place a token profile's token is read, and it
+    // starts VS Code with the profile's environment. Its error, if any, comes back as a balloon.
+    private void OpenInCode(string name)
+    {
+        if (RequireConfig() is null) return;
+        var dir = _pm.Get(name).StartDir;
+        if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+        {
+            using var dlg = new FolderBrowserDialog { Description = $"Open a folder in VS Code with '{name}'" };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+            dir = dlg.SelectedPath;
+        }
+        var exe = HelperExePath.Resolve();
+        if (!File.Exists(exe)) throw new ClauderooException("clauderoo isn't installed properly — reinstall it.");
+        var psi = new System.Diagnostics.ProcessStartInfo(exe)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
+            WorkingDirectory = dir,
+        };
+        foreach (var a in new[] { "code", name, dir }) psi.ArgumentList.Add(a);
+        var p = System.Diagnostics.Process.Start(psi) ?? throw new ClauderooException("Couldn't start clauderoo.");
+        _ = Task.Run(async () =>
+        {
+            using (p)
+            {
+                var errText = p.StandardError.ReadToEndAsync();
+                await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                var msg = (await errText).Trim();
+                if (p.ExitCode != 0)
+                    Post(() => ReportError(new ClauderooException(msg.Length > 0 ? msg : "VS Code couldn't be opened.")));
+            }
+        });
+    }
+
+    private async Task SetLaunchSettingsAsync(string? terminal, string? shell)
+    {
+        try
+        {
+            if (RequireConfig() == null) return;
+            await _gate.RunAsync(() => { _pm.SetLaunchSettings(terminal, shell); return true; });
+            var cfg = _pm.Config;
+            QueueNotices([$"New sessions open in {TerminalChoice.TerminalName(TerminalChoice.TerminalOf(cfg))} with "
+                          + $"{TerminalChoice.ShellName(TerminalChoice.ShellOf(cfg))}."], now: true);
+        }
+        catch (Exception e) { ReportError(e); }
     }
 
     // The Profiles window shows a failed start in a message box: give it the plain words too.

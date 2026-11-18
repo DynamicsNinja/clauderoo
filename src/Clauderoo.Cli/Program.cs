@@ -4,7 +4,7 @@ using Clauderoo.Core;
 Console.OutputEncoding = System.Text.Encoding.UTF8; // so ✓ ⚠ ✗ render
 
 var paths = ClauderooPaths.ForCurrentUser();
-var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now);
+var pm = new ProfileManager(paths, new WindowsEnvStore(), () => DateTime.Now) { WtFragmentFile = WtFragment.DefaultFile() };
 
 var version = typeof(Commands).Assembly.GetName().Version?.ToString(3) ?? "0";
 using var usageHandler = UsageClient.CreateHandler();

@@ -41,6 +41,11 @@ public static class Commands
   usage [name] [--json]               show 5-hour and 7-day usage limits (Claude-login profiles)
   auto [on|off] [--threshold N] [--order a,b,c] [--once] [--json]
                                       switch the default profile when its usage reaches the threshold
+  config [terminal wt|conhost] [shell cmd|pwsh|powershell]
+                                      show or set where new tabs open and which shell runs them
+  wt-profiles [--remove]              add (or remove) a Windows Terminal profile for each clauderoo profile
+  code [name] [dir] [--cursor | --editor <exe>]
+                                      open VS Code (or Cursor) with the profile, for the Claude Code extension
   status                              show the default profile and any problems
   mcp                                 run the MCP server (stdio) that gives Claude the clauderoo tools
   mcp install                         print (and copy) the 'claude mcp add' command that registers it
@@ -67,8 +72,10 @@ public static class Commands
         try
         {
             Func<string, string?> secretReader = readSecret is null ? ReadSecretFromConsole : _ => readSecret();
-            return Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
+            var code = Dispatch(args, output, err, pm, startNewWindow, runInPlace, wtAvailable, claudePath, secretReader,
                 hookCancel ?? HookConsoleCancel, hooks, usage, clock ?? (() => DateTimeOffset.UtcNow), clipboard, mcpInput);
+            if (code == 0) TerminalCommands.AfterCommand(args, pm);
+            return code;
         }
         catch (SessionsRunningException e)
         {
@@ -90,7 +97,7 @@ public static class Commands
     }
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "config"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -110,7 +117,8 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp",
+            "config", "wt-profiles", "code"];
         if (!known.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -253,6 +261,12 @@ public static class Commands
                 else output.WriteLine(WhichProfile.Describe(which));
                 return 0;
             }
+            case "config":
+                return TerminalCommands.Config(pos, json, output, pm);
+            case "wt-profiles":
+                return TerminalCommands.WtProfiles(pos, output, pm);
+            case "code":
+                return TerminalCommands.Code(pos, claudeArgs, output, pm, startNewWindow);
             case "sessions":
                 return SessionsCmd(pos, output, pm, json);
             case "resume":

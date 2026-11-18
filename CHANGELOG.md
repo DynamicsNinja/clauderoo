@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- `cr config terminal wt|conhost` and `cr config shell cmd|pwsh|powershell` choose where `--tab` and the tray open sessions and which shell runs them. The `terminal` setting is now honoured (`conhost` forces a console window). With PowerShell, prompts and folders may contain `" % ! ;`. Also in the tray under **Advanced › New sessions open in**.
+- `cr wt-profiles [--remove]` adds a "Claude · <name>" Windows Terminal profile for each profile, kept up to date as profiles change.
+- `cr code [name] [dir]` opens VS Code (or Cursor with `--cursor`, or `--editor <exe>`) with the profile's environment, so the Claude Code extension uses that profile. The tray has **Open in VS Code…** for each profile.
+
 ## [0.1.0] - 2026-11-17
 
 First public release.
