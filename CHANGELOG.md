@@ -4,6 +4,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- `cr check <name> --live` tests an API key (one free call to the Anthropic models list) or a Claude token (one tiny `claude -p` prompt, since a setup token can only make model requests). clauderoo now records when each key and token was saved, and `cr status`, `cr check`, the tray's Problems list and the manager warn when a Claude token nears or passes its one-year life (`tokenWarnAfterDays` in `config.json`, default 335).
+- `cr doctor [--json]` and the tray's **Advanced › Check this PC…**: a read-only, parallel checklist of Claude Code and its version, Windows Terminal, gcloud (with Vertex profiles), the install folder and `PATH`, the MCP server registration, the home folder, the default profile and every profile's shared-folder links.
+- `cr completion powershell|bash` prints a tab-completion script for commands, flags and profile names.
+- MCP tools `which_profile`, `list_sessions` and `check_profile` (all read-only).
+- `cr env <name> --json`.
+- `cr auto --schedule on|off [--every N]` creates or removes a per-user Task Scheduler task that runs `auto --once` without a console window.
+- `cr uninstall --purge` also deletes `~/.clauderoo` after you confirm, removing junctions as links only and never touching `~/.claude`.
+- The manager's **Export…** can export only the selected profile.
+
 ## [0.1.0] - 2026-11-17
 
 First public release.
