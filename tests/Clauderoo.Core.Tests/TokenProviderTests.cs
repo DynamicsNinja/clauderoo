@@ -87,25 +87,34 @@ public class TokenProviderTests
     }
 
     [Fact]
-    public void SwitchToLogin_DeletesToken()
+    public void SwitchToLogin_KeepsToken_ButNeverInjectsIt()
     {
         var (pm, home, tokens, _) = Make(); using var _h = home;
         pm.SetProvider("work", Providers.Token, token: Token);
         pm.SetProvider("work", Providers.Login);
-        Assert.Null(tokens.Load(home.Paths.ProfileDir("work")));
-        Assert.Null(pm.GetToken("work"));
+        Assert.Equal(Token, tokens.Load(home.Paths.ProfileDir("work")));
+        Assert.True(pm.HasToken("work"));
+        var r = Run(pm, null, true, "run", "work", home.Dir);
+        Assert.Equal(0, r.code);
+        Assert.False(r.inPlace!.ExtraEnv?.ContainsKey(TokenVar) ?? false);
     }
 
     [Fact]
-    public void SwitchToApiKey_DeletesToken_AndTokenDeletesApiKey()
+    public void SwitchBetweenApiKeyAndToken_KeepsBoth_AndReusesEach()
     {
         var (pm, home, tokens, keys) = Make(); using var _h = home;
         var dir = home.Paths.ProfileDir("work");
         pm.SetProvider("work", Providers.Token, token: Token);
         pm.SetProvider("work", Providers.ApiKey, apiKey: "sk-ant-api03-k");
-        Assert.Null(tokens.Load(dir));
-        pm.SetProvider("work", Providers.Token, token: Token);
-        Assert.Null(keys.Load(dir));
+        Assert.Equal(Token, tokens.Load(dir));
+        pm.SetProvider("work", Providers.Token); // no token given: the kept one
+        Assert.Equal("sk-ant-api03-k", keys.Load(dir));
+        Assert.Equal(Token, pm.GetToken("work"));
+        Assert.Null(pm.GetApiKey("work")); // kept, not handed out while the token is in use
+        pm.SetProvider("work", Providers.ApiKey);
+        Assert.Equal("sk-ant-api03-k", pm.GetApiKey("work"));
+        Assert.Empty(tokens.Deleted);
+        Assert.Empty(keys.Deleted);
     }
 
     [Fact]

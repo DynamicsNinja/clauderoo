@@ -45,7 +45,8 @@ public partial class ProfileManager
                 throw new ClauderooException($"Unknown provider '{provider}'. Known: {KnownProviders}.");
         }
 
-        // Save the new secret before deleting the other one: if saving fails, the old secret is still there.
+        // The other provider's secret is kept (unused), so switching back reuses it. Only a new secret, ForgetSecret
+        // or removing the profile deletes one.
         if (provider == Providers.ApiKey && !string.IsNullOrWhiteSpace(apiKey))
         {
             Directory.CreateDirectory(dir);
@@ -56,8 +57,6 @@ public partial class ProfileManager
             Directory.CreateDirectory(dir);
             tokens.Save(dir, token);
         }
-        if (provider != Providers.ApiKey) secrets.Delete(dir);
-        if (provider != Providers.Token) tokens.Delete(dir);
 
         cfg = ConfigStore.Update(paths, c =>
         {
@@ -112,12 +111,38 @@ public partial class ProfileManager
         return NewSyncer(cfg).Sync(name);
     }
 
-    /// <summary>The profile's saved API key, or null. Throws for an unknown profile or the home profile.</summary>
+    /// <summary>
+    /// The profile's saved API key, or null; null too when the profile doesn't use an API key now (a key kept from
+    /// before a provider switch is never handed out). Throws for an unknown profile or the home profile.
+    /// </summary>
     public string? GetApiKey(string name)
     {
-        NonHome(Config, name);
-        return secrets.Load(paths.ProfileDir(name));
+        var entry = NonHome(Config, name);
+        return Providers.Of(entry) == Providers.ApiKey ? secrets.Load(paths.ProfileDir(name)) : null;
     }
+
+    /// <summary>
+    /// Deletes the profile's saved API key (<paramref name="kind"/> apikey) or Claude token (token), with its saved-at
+    /// file; false when none was saved. The provider isn't changed: a profile that still uses it needs a new one.
+    /// </summary>
+    public bool ForgetSecret(string name, string kind)
+    {
+        NonHome(Config, name);
+        var store = kind switch
+        {
+            Providers.ApiKey => secrets,
+            Providers.Token => tokens,
+            _ => throw new ClauderooException($"Only a saved API key (apikey) or Claude token (token) can be forgotten, not '{kind}'."),
+        };
+        var dir = paths.ProfileDir(name);
+        if (!store.Exists(dir)) return false;
+        store.Delete(dir);
+        AppLog.Info($"Profile {name}: its saved {SecretWord(kind)} was deleted.");
+        return true;
+    }
+
+    /// <summary>"API key" or "Claude token", for messages.</summary>
+    internal static string SecretWord(string kind) => kind == Providers.Token ? "Claude token" : "API key";
 
     internal const string TokenPrefix = "sk-ant-oat";
     internal const string TokenEnvVar = "CLAUDE_CODE_OAUTH_TOKEN";

@@ -65,18 +65,29 @@ public partial class ProfileManager
 
     private DateTimeOffset NowUtc => new DateTimeOffset(now()).ToUniversalTime();
 
-    /// <summary>When the profile's API key or token was saved, or null (none saved, or unknown).</summary>
-    public DateTimeOffset? SecretSavedAt(string name)
+    /// <summary>When the API key or token the profile uses now was saved, or null (none saved, or unknown).</summary>
+    public DateTimeOffset? SecretSavedAt(string name) => SecretSavedAt(name, Providers.Of(NonHome(Config, name)));
+
+    /// <summary>
+    /// When the profile's saved <paramref name="kind"/> secret (apikey or token) was saved, whether or not the profile
+    /// uses it now (a kept one); null when none is saved or the time is unknown, and for any other kind.
+    /// </summary>
+    public DateTimeOffset? SecretSavedAt(string name, string kind)
     {
-        var entry = NonHome(Config, name);
+        NonHome(Config, name);
         var dir = paths.ProfileDir(name);
-        return Providers.Of(entry) switch
+        return kind switch
         {
             Providers.Token => tokens.SavedAt(dir),
             Providers.ApiKey => secrets.SavedAt(dir),
             _ => null,
         };
     }
+
+    /// <summary>The rows <see cref="CheckSecretAsync"/> reports, in order, for an apikey or token profile.</summary>
+    public static IReadOnlyList<(string Key, string Label)> SecretCheckPlan(string provider) => provider == Providers.Token
+        ? [("saved", "Claude token saved"), ("age", "Token age"), ("claude", "Claude Code installed"), ("live", "Token answers a test prompt")]
+        : [("saved", "API key saved"), ("live", "Anthropic API accepts the key")];
 
     private static int WarnAfterDays(ClauderooConfig cfg) =>
         cfg.TokenWarnAfterDays is { } d and > 0 ? d : DefaultTokenWarnAfterDays;
@@ -147,9 +158,7 @@ public partial class ProfileManager
         var dir = paths.ProfileDir(name);
         var token = provider == Providers.Token;
 
-        var plan = token
-            ? new[] { ("saved", "Claude token saved"), ("age", "Token age"), ("claude", "Claude Code installed"), ("live", "Token answers a test prompt") }
-            : new[] { ("saved", "API key saved"), ("live", "Anthropic API accepts the key") };
+        var plan = SecretCheckPlan(provider);
         foreach (var (key, label) in plan) progress?.Report(new CheckItem(CheckStatus.Pending, label, null) { Key = key });
         var rows = new List<CheckItem>();
         void Put(CheckItem item) { rows.Add(item); progress?.Report(item); }

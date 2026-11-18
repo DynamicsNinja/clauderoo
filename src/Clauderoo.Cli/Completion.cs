@@ -13,7 +13,7 @@ public static class Completion
     /// <summary>Commands that complete a profile name as an argument.</summary>
     public static readonly HashSet<string> TakesProfile =
     [
-        "start", "run", "map", "default", "own", "share", "remove", "rename", "provider", "env", "check", "apikey",
+        "start", "run", "map", "default", "own", "share", "remove", "rename", "provider", "env", "check", "apikey", "forget",
         "usage", "sessions", "resume", "export", "clone", "startdir", "removed", "purge", "code", "exclude", "include",
         "add",
     ];
@@ -50,7 +50,8 @@ public static class Completion
         ["remove"] = ["--force"],
         ["restore"] = ["--at"],
         ["rename"] = ["--force"],
-        ["provider"] = ["login", "vertex", "apikey", "token", "--project", "--region", "--sonnet", "--opus", "--haiku"],
+        ["provider"] = ["login", "vertex", "apikey", "token", "--project", "--region", "--sonnet", "--opus", "--haiku", "--new", "--keep"],
+        ["forget"] = ["apikey", "token"],
         ["env"] = ["set", "unset", "--json"],
         ["export"] = ["--no-env", "--force"],
         ["import"] = ["--force"],
