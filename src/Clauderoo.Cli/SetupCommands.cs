@@ -39,7 +39,7 @@ public static class SetupCommands
         foreach (var n in r.Report.Notices) output.WriteLine(n);
         foreach (var p in r.Report.Problems) err.WriteLine(p);
         output.WriteLine($"Created '{name}' from '{source}' with its provider, environment variables, owned items and start folder.");
-        output.WriteLine("Not copied: the sign-in, conversations, API key or token, and folder mappings. Owned items start empty.");
+        output.WriteLine("Not copied: the sign-in, conversations, API key or token, and folder mappings. Owned items are copied from the source.");
         if (r.SecretToSet is { } secret)
             output.WriteLine(secret == Providers.ApiKey
                 ? $"'{source}' uses an API key: '{name}' uses the Claude login until you set its key with 'cr provider {name} apikey'."

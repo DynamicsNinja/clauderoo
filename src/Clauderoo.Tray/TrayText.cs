@@ -72,7 +72,7 @@ internal static class TrayText
     public static string Duplicated(string source, string name, string? secretToSet)
     {
         var text = $"Profile '{name}' created from '{source}' with its provider, environment variables, owned items and start folder. " +
-                   "Its sign-in, conversations, API key or token and folder mappings weren't copied, and owned items start empty.";
+                   "Its sign-in, conversations, API key or token and folder mappings weren't copied. Its owned items were.";
         return secretToSet switch
         {
             Providers.ApiKey => text + $" {name} uses the Claude login until you choose API key and paste a key.",

@@ -165,12 +165,36 @@ public class ProfileSetupTests
         Assert.False(File.Exists(Path.Combine(dst, ".credentials.json")));
         Assert.False(Directory.Exists(Path.Combine(dst, "projects")));
         Assert.DoesNotContain("me@x.com", File.Exists(Path.Combine(dst, ".claude.json")) ? File.ReadAllText(Path.Combine(dst, ".claude.json")) : "");
-        // The owned folder starts empty and is not a link; shared folders are linked to home.
+        // The owned folder is a real copy of the source's own version, not a link; shared folders are linked to home.
         Assert.Null(Junction.GetTarget(Path.Combine(dst, "skills")));
-        Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(dst, "skills")));
+        Assert.Equal("own skill", File.ReadAllText(Path.Combine(dst, "skills", "mine.md")));
+        File.WriteAllText(Path.Combine(dst, "skills", "mine.md"), "changed in copy");
+        Assert.Equal("own skill", File.ReadAllText(Path.Combine(src, "skills", "mine.md")));
         Assert.NotNull(Junction.GetTarget(Path.Combine(dst, "plugins")));
         // Folder mappings stay with the source.
         Assert.Equal("gcp", pm.Config.Folders.Single().Value);
+    }
+
+    [Fact]
+    public void Clone_OwnedFileAndMcpServers_CopiesOnlyThoseNotSignIn()
+    {
+        var (pm, h, _, _) = Make(); using var _h = h;
+        pm.Add("a");
+        pm.Own("a", "CLAUDE.md");
+        pm.Own("a", SharedItems.McpServers);
+        var src = h.Paths.ProfileDir("a");
+        File.WriteAllText(Path.Combine(src, "CLAUDE.md"), "a's own notes");
+        File.WriteAllText(Path.Combine(src, ".claude.json"),
+            "{\"oauthAccount\":{\"emailAddress\":\"me@x.com\"},\"mcpServers\":{\"mine\":{\"command\":\"x\"}}}");
+
+        pm.Clone("a", "b");
+
+        var dst = h.Paths.ProfileDir("b");
+        Assert.Equal("a's own notes", File.ReadAllText(Path.Combine(dst, "CLAUDE.md")));
+        var json = File.ReadAllText(Path.Combine(dst, ".claude.json"));
+        Assert.Contains("\"mine\"", json);
+        Assert.DoesNotContain("me@x.com", json);
+        Assert.DoesNotContain("oauthAccount", json);
     }
 
     [Theory]

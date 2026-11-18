@@ -33,7 +33,8 @@ public partial class ProfileManager
     /// <summary>
     /// Creates <paramref name="name"/> with <paramref name="source"/>'s settings: provider, Vertex settings, environment
     /// variables, owned items and start folder. Never the login, conversations, API key or token, folder mappings or
-    /// any file from either profile's folder: owned items start empty. A source that signs in with an API key or a
+    /// anything from home's folder. Owned items are copied from the source's own versions (see
+    /// <see cref="CopyOwnedItems"/>); nothing else in its folder is. A source that signs in with an API key or a
     /// token gives a copy on the Claude login (see <see cref="CloneResult.SecretToSet"/>). Cloning the home profile
     /// copies only its start folder.
     /// </summary>
@@ -66,15 +67,53 @@ public partial class ProfileManager
         }
 
         Directory.CreateDirectory(dir);
-        // An owned folder starts empty, so the sync leaves it alone instead of linking it to home.
-        foreach (var item in entry.Overrides.Where(SharedItems.IsDir))
-            Directory.CreateDirectory(Path.Combine(dir, item));
-        cfg = ConfigStore.Update(paths, c =>
+        try
         {
-            if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"A profile named '{name}' already exists.");
-            c.Profiles[name] = entry;
-        });
+            CopyOwnedItems(paths.ProfileDir(source), dir, entry.Overrides);
+            cfg = ConfigStore.Update(paths, c =>
+            {
+                if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"A profile named '{name}' already exists.");
+                c.Profiles[name] = entry;
+            });
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException or System.Text.Json.JsonException)
+        {
+            DeleteOwnCopy(dir);
+            throw e as ClauderooException ?? new ClauderooException($"Could not copy '{source}' to '{name}': {e.Message}");
+        }
         return new CloneResult(NewSyncer(cfg).Sync(name), secretToSet);
+    }
+
+    /// <summary>
+    /// Copies the source profile's own versions of the items it owns, so the sync leaves them alone instead of linking
+    /// them to home. Folders are copied without following links; owned files are copied as they are; for mcpServers
+    /// only that key of .claude.json is copied, never the rest (it holds the sign-in). A missing item starts empty.
+    /// </summary>
+    private static void CopyOwnedItems(string srcDir, string dstDir, IEnumerable<string> owned)
+    {
+        foreach (var item in owned)
+        {
+            var from = Path.Combine(srcDir, item);
+            var to = Path.Combine(dstDir, item);
+            if (SharedItems.IsDir(item))
+            {
+                if (Directory.Exists(from) && Junction.GetTarget(from) == null) CopyDir(from, to);
+                else Directory.CreateDirectory(to);
+            }
+            else if (item == SharedItems.McpServers)
+            {
+                var srcJson = Path.Combine(srcDir, ".claude.json");
+                var servers = File.Exists(srcJson)
+                    ? (System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(srcJson)) as System.Text.Json.Nodes.JsonObject)?[SharedItems.McpServers]?.DeepClone()
+                    : null;
+                var root = new System.Text.Json.Nodes.JsonObject { [SharedItems.McpServers] = servers ?? new System.Text.Json.Nodes.JsonObject() };
+                File.WriteAllText(Path.Combine(dstDir, ".claude.json"), root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            }
+            else if (File.Exists(from))
+            {
+                File.Copy(from, to, overwrite: false);
+            }
+        }
     }
 
     private static readonly string[] ClaudeDirMarkers =
