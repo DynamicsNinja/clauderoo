@@ -58,6 +58,9 @@ public class ClauderooConfig
     /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
     public Dictionary<string, string> Folders { get; set; } = new();
 
+    /// <summary>Days after saving a Claude token before clauderoo warns that it expires soon (default 335; tokens last a year).</summary>
+    public int? TokenWarnAfterDays { get; set; }
+
     /// <summary>Fields this version doesn't know (written by a newer clauderoo); kept so saving doesn't drop them.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }

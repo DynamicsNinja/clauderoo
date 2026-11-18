@@ -1,8 +1,9 @@
 namespace Clauderoo.Core;
 
 /// <summary><see cref="Verified"/> is false when Ok only means "nothing is wrong that we can see" (e.g. a saved API key
-/// that was never tried); the UI shows such results neutrally instead of as a success.</summary>
-public record CheckResult(bool Ok, string Message, bool Verified = true);
+/// that was never tried); the UI shows such results neutrally instead of as a success. <see cref="Warning"/> is set when
+/// something needs attention soon (e.g. a Claude token near the end of its one-year life); Message includes it.</summary>
+public record CheckResult(bool Ok, string Message, bool Verified = true, string? Warning = null);
 
 public partial class ProfileManager
 {
@@ -179,11 +180,11 @@ public partial class ProfileManager
                 return new CheckResult(false, $"Google sign-in failed: {line}");
             case Providers.ApiKey:
                 return secrets.Exists(dir)
-                    ? new CheckResult(true, "Key saved — not verified. Start a session to test it.", Verified: false)
+                    ? SecretSaved(cfg, name, dir, token: false)
                     : new CheckResult(false, "No API key saved.");
             case Providers.Token:
                 return tokens.Exists(dir)
-                    ? new CheckResult(true, "Token saved — not verified. Start a session to test it.", Verified: false)
+                    ? SecretSaved(cfg, name, dir, token: true)
                     : new CheckResult(false, $"No Claude token saved. Set one with 'cr provider {name} token'.");
             default:
                 var json = entry.Home ? cfg.HomeJson : Path.Combine(dir, ".claude.json");

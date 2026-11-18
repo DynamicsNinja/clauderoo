@@ -1299,7 +1299,8 @@ sealed class ProfilesForm : Form
                 {
                     if (seq != _checkSeq) return; // cancelled (profile renamed/removed, window closing)
                     LastChecks[name] = new CheckRecord(DateTime.Now, provider,
-                        !result.Ok ? CheckStatus.Fail : result.Verified ? CheckStatus.Ok : null, SignInWords(result.Message), null);
+                        !result.Ok ? CheckStatus.Fail : result.Warning != null ? CheckStatus.Warn : result.Verified ? CheckStatus.Ok : null,
+                        SignInWords(result.Message), null);
                     CheckFinished(name);
                 });
             }
@@ -1497,12 +1498,14 @@ sealed class ProfilesForm : Form
     private const string ExportEnvWarning =
         "Environment variables are saved as plain text in the file. Check it before sharing it.";
 
-    // Export every profile except home: a small options dialog first, then the save dialog.
+    // Export every profile except home, or only the selected one: a small options dialog first, then the save dialog.
     private void ExportProfiles()
     {
         if (!ConfirmLeave()) return;
         ClearResult();
         bool includeEnv;
+        var single = _current != null && !_currentIsHome ? _current : null;
+        string? only = null;
         using (var options = new Form
         {
             Text = "Export profiles", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
@@ -1510,6 +1513,8 @@ sealed class ProfilesForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12),
         })
         {
+            var all = new RadioButton { Text = "All profiles (except home)", AutoSize = true, Checked = true, Margin = new Padding(0, 0, 0, 2) };
+            var one = new RadioButton { Text = $"Only {single}", AutoSize = true, Margin = new Padding(0, 0, 0, 8), UseMnemonic = false };
             var env = new CheckBox { Text = "Include environment variables", AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var note = new WrapLabel { Text = ExportEnvWarning, Margin = new Padding(0, 0, 0, 10) };
             var ok = new Button { Text = "Continue", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 0) };
@@ -1518,9 +1523,15 @@ sealed class ProfilesForm : Form
             buttons.Dock = DockStyle.Fill;
             buttons.Controls.AddRange([cancel, ok]);
             var table = Table(1);
-            table.Controls.Add(env, 0, 0);
-            table.Controls.Add(note, 0, 1);
-            table.Controls.Add(buttons, 0, 2);
+            var row = 0;
+            if (single != null)
+            {
+                table.Controls.Add(all, 0, row++);
+                table.Controls.Add(one, 0, row++);
+            }
+            table.Controls.Add(env, 0, row++);
+            table.Controls.Add(note, 0, row++);
+            table.Controls.Add(buttons, 0, row);
             table.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
             options.Controls.Add(table);
             options.AcceptButton = ok;
@@ -1528,17 +1539,19 @@ sealed class ProfilesForm : Form
             options.Font = Font;
             if (options.ShowDialog(this) != DialogResult.OK) return;
             includeEnv = env.Checked;
+            if (single != null && one.Checked) only = single;
         }
 
         using var dialog = new SaveFileDialog
         {
-            Title = "Export profiles", FileName = "clauderoo-profiles.json", DefaultExt = "json",
+            Title = only == null ? "Export profiles" : $"Export {only}",
+            FileName = only == null ? "clauderoo-profiles.json" : $"clauderoo-{only}.json", DefaultExt = "json",
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*", OverwritePrompt = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         // The save dialog has already confirmed any overwrite.
         // Gated too, so the export reads a config no tray write is halfway through.
-        Write(() => _pm.ExportToFile(dialog.FileName, null, includeEnv, force: true));
+        Write(() => _pm.ExportToFile(dialog.FileName, only == null ? null : [only], includeEnv, force: true));
         SetResult($"Exported to {dialog.FileName}." + (includeEnv ? " " + ExportEnvWarning : ""), SystemColors.ControlText);
     }
 

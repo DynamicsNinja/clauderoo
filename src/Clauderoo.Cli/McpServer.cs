@@ -43,6 +43,9 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
 
     /// <summary>The most delegated runs in progress at once; one more is refused with a tool error.</summary>
     public const int MaxDelegates = 2;
+    private int _checks;
+    /// <summary>check_profile runs one at a time (a Vertex check starts a claude process per model).</summary>
+    public const int MaxChecks = 1;
 
     // Relaxed escaping keeps apostrophes and non-ASCII readable; quotes and control characters are still escaped, so
     // every message stays on one line. stdout is UTF-8.
@@ -125,13 +128,16 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 continue;
             }
 
-            if (method == "tools/call" && prms?["name"] is JsonValue nv && nv.TryGetValue<string>(out var tn) && tn == "delegate")
+            if (method == "tools/call" && prms?["name"] is JsonValue nv && nv.TryGetValue<string>(out var tn)
+                && tn is "delegate" or "check_profile")
             {
+                var isDelegate = tn == "delegate";
                 // At most MaxDelegates runs at once: each is a whole claude process on another account's quota.
-                if (Volatile.Read(ref _delegates) >= MaxDelegates)
+                if (isDelegate ? Volatile.Read(ref _delegates) >= MaxDelegates : Volatile.Read(ref _checks) >= MaxChecks)
                 {
-                    await Send(output, Result(id, ToolJson(new ToolResult(
-                        $"{MaxDelegates} delegated runs are already in progress; try again when one finishes.", true))), stop)
+                    await Send(output, Result(id, ToolJson(new ToolResult(isDelegate
+                        ? $"{MaxDelegates} delegated runs are already in progress; try again when one finishes."
+                        : "A profile check is already in progress; try again when it finishes.", true))), stop)
                         .ConfigureAwait(false);
                     continue;
                 }
@@ -140,7 +146,12 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                 var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 JsonObject? immediate = null;
                 Task<ToolResult>? work = null;
-                try { work = StartDelegate(prms["arguments"] as JsonObject, cts.Token); }
+                try
+                {
+                    work = isDelegate
+                        ? StartDelegate(prms["arguments"] as JsonObject, cts.Token)
+                        : StartCheck(prms["arguments"] as JsonObject, cts.Token);
+                }
                 catch (Exception e) { immediate = ToolErrorResponse(id, e); }
                 if (work == null)
                 {
@@ -149,7 +160,7 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                     continue;
                 }
                 _inflight.TryAdd(key, cts); // the key was checked free above, and only this loop adds
-                Interlocked.Increment(ref _delegates);
+                if (isDelegate) Interlocked.Increment(ref _delegates); else Interlocked.Increment(ref _checks);
                 running.RemoveAll(t => t.IsCompleted);
                 running.Add(Task.Run(async () =>
                 {
@@ -160,7 +171,7 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                     finally
                     {
                         _inflight.TryRemove(new KeyValuePair<string, CancellationTokenSource>(key, cts));
-                        Interlocked.Decrement(ref _delegates);
+                        if (isDelegate) Interlocked.Decrement(ref _delegates); else Interlocked.Decrement(ref _checks);
                         cancelled = cts.IsCancellationRequested;
                         cts.Dispose();
                     }
@@ -201,6 +212,8 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                     "list_profiles" => ListProfiles(),
                     "usage" => await UsageTool(OptionalString(args, "profile"), ct).ConfigureAwait(false),
                     "set_default" => SetDefault(RequiredString(args, "profile")),
+                    "which_profile" => WhichProfileTool(),
+                    "list_sessions" => ListSessions(OptionalString(args, "profile"), OptionalInt(args, "limit", 1, 200) ?? 20),
                     _ => throw new InvalidParamsException($"Unknown tool '{name}'."),
                 };
                 return Result(id, ToolJson(result));
@@ -268,6 +281,37 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
                         "anything inside those, and network folders."),
                 },
                 "profile", "prompt"),
+            Tool("which_profile",
+                "Show which clauderoo profile this Claude session runs under, and how that was decided (started by " +
+                "clauderoo, CLAUDE_CONFIG_DIR, the default for new terminals, or the home profile). Uses no quota.",
+                new JsonObject()),
+            Tool("list_sessions",
+                "List running Claude sessions started by clauderoo, and recent conversations across profiles (newest " +
+                "first: id, profile, folder, time and the first prompt). Read only; uses no quota.",
+                new JsonObject
+                {
+                    ["profile"] = Str("Only this profile. Leave out for every profile."),
+                    ["limit"] = new JsonObject
+                    {
+                        ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 200,
+                        ["description"] = "Most conversations to return (default 20).",
+                    },
+                }),
+            Tool("check_profile",
+                "Check a profile's sign-in without changing anything. A Vertex profile gets the full setup checklist, " +
+                "which sends one tiny prompt per configured model. With live=true an API-key profile is tested against " +
+                "the Anthropic API (no quota) and a Claude-token profile answers one tiny prompt (a few tokens of its " +
+                "quota). One check runs at a time.",
+                new JsonObject
+                {
+                    ["profile"] = Str("Profile name."),
+                    ["live"] = new JsonObject
+                    {
+                        ["type"] = "boolean",
+                        ["description"] = "Test an API key or Claude token for real (default false: only checks one is saved).",
+                    },
+                },
+                "profile"),
         ];
     }
 
@@ -406,6 +450,84 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
     {
         try { return new UsageCache(pm.Paths).Load(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return new Dictionary<string, UsageReading>(); }
+    }
+
+    // ---- which_profile ----
+
+    private ToolResult WhichProfileTool()
+    {
+        var w = WhichProfile.Resolve(pm.Config, pm.Paths, _getEnv, pm.Env);
+        return new ToolResult(new JsonObject
+        {
+            ["profile"] = w.Profile, ["source"] = w.Source, ["isolated"] = w.Isolated, ["description"] = WhichProfile.Describe(w),
+        }.ToJsonString(Compact), false);
+    }
+
+    // ---- list_sessions ----
+
+    // FilePath and any message content beyond the first prompt are never included (as with `cr sessions --json`).
+    private ToolResult ListSessions(string? profile, int limit)
+    {
+        if (profile != null) pm.Get(profile);
+        var running = new JsonArray(pm.Sessions.Running(profile).Select(s => (JsonNode)new JsonObject
+        {
+            ["profile"] = s.Profile, ["pid"] = s.Pid, ["started"] = Iso(new DateTimeOffset(s.Started)),
+        }).ToArray());
+        var all = ConversationIndex.List(pm, profile);
+        var conversations = new JsonArray(all.Take(limit).Select(c => (JsonNode)new JsonObject
+        {
+            ["id"] = c.Id, ["profile"] = c.Profile, ["isolated"] = c.Isolated, ["folder"] = c.Cwd,
+            ["when"] = Iso(c.When), ["firstPrompt"] = c.FirstPrompt,
+        }).ToArray());
+        return new ToolResult(new JsonObject
+        {
+            ["running"] = running, ["conversations"] = conversations, ["totalConversations"] = all.Count,
+        }.ToJsonString(Compact), false);
+    }
+
+    // ---- check_profile ----
+
+    private Task<ToolResult> StartCheck(JsonObject? args, CancellationToken ct)
+    {
+        var profile = RequiredString(args, "profile");
+        var live = OptionalBool(args, "live") ?? false;
+        var entry = pm.Get(profile); // unknown profile: a plain error
+        var provider = entry.Home ? Providers.Login : Providers.Of(entry);
+        return RunCheck(profile, provider, live, ct);
+    }
+
+    private async Task<ToolResult> RunCheck(string profile, string provider, bool live, CancellationToken ct)
+    {
+        IReadOnlyList<CheckItem> items;
+        try
+        {
+            if (provider == Providers.Vertex) items = await pm.CheckSetupAsync(profile, ct).ConfigureAwait(false);
+            else if (live && provider is Providers.ApiKey or Providers.Token) items = await pm.CheckSecretAsync(profile, ct).ConfigureAwait(false);
+            else
+            {
+                var r = await Task.Run(() => pm.Check(profile), ct).ConfigureAwait(false);
+                return new ToolResult(new JsonObject
+                {
+                    ["profile"] = profile, ["provider"] = provider, ["ok"] = r.Ok, ["verified"] = r.Verified,
+                    ["message"] = r.Message, ["warning"] = r.Warning, ["items"] = new JsonArray(),
+                }.ToJsonString(Compact), !r.Ok);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return new ToolResult($"The check of {profile} was cancelled.", true);
+        }
+        var failed = items.Count(i => i.Status == CheckStatus.Fail);
+        return new ToolResult(new JsonObject
+        {
+            ["profile"] = profile, ["provider"] = provider, ["ok"] = failed == 0, ["verified"] = true,
+            ["message"] = failed > 0 ? $"{failed} check(s) failed." : "All checks passed.",
+            ["items"] = new JsonArray(items.Select(i => (JsonNode)new JsonObject
+            {
+                ["key"] = i.Key, ["label"] = i.Label, ["status"] = i.Status.ToString().ToLowerInvariant(),
+                ["hint"] = i.Hint, ["detail"] = i.Detail,
+            }).ToArray()),
+        }.ToJsonString(Compact), failed > 0);
     }
 
     // ---- set_default ----
@@ -688,6 +810,22 @@ public sealed class McpServer(ProfileManager pm, UsageClient usage,
         return node is JsonValue v && v.TryGetValue<string>(out var s)
             ? s
             : throw new InvalidParamsException($"'{name}' must be a string.");
+    }
+
+    private static bool? OptionalBool(JsonObject? args, string name)
+    {
+        if (args?[name] is not { } node) return null;
+        return node is JsonValue v && v.TryGetValue<bool>(out var b)
+            ? b
+            : throw new InvalidParamsException($"'{name}' must be true or false.");
+    }
+
+    private static int? OptionalInt(JsonObject? args, string name, int min, int max)
+    {
+        if (args?[name] is not { } node) return null;
+        if (node is JsonValue v && v.TryGetValue<int>(out var i) && i >= min && i <= max) return i;
+        if (node is JsonValue d && d.TryGetValue<double>(out var x) && x == Math.Floor(x) && x >= min && x <= max) return (int)x;
+        throw new InvalidParamsException($"'{name}' must be a whole number from {min} to {max}.");
     }
 
     private static string RequiredString(JsonObject? args, string name) =>
