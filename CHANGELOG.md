@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- `cr removed` lists removed copies of profiles with when they were removed and their size (`--json` too).
+- `cr restore <name> --at <id>` restores a specific removed copy instead of the newest. A restore now also brings back the profile's isolated folder.
+- `cr purge [name] [--at <id>] [--older-than <age>] [--all] [--yes]` permanently deletes removed copies, after showing what goes and the space freed. It removes junctions as links and never touches their targets.
+- **Removed…** in the profile manager window lists removed copies, with **Restore** and **Delete permanently**.
+
 ## [0.1.0] - 2026-11-17
 
 First public release.

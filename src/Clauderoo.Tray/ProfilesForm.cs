@@ -46,6 +46,7 @@ sealed class ProfilesForm : Form
     private readonly Button _autoSwitch = Btn("Auto-s&witch…");
     private readonly Button _export = Btn("E&xport…");
     private readonly Button _import = Btn("Import…");
+    private readonly Button _removedCopies = Btn("Removed…");
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -227,7 +228,7 @@ sealed class ProfilesForm : Form
         leftButtons.Controls.AddRange([_new, _rename, _remove]);
         var transferButtons = Flow(FlowDirection.LeftToRight);
         transferButtons.Margin = new Padding(0, 6, 0, 0);
-        transferButtons.Controls.AddRange([_export, _import]);
+        transferButtons.Controls.AddRange([_export, _import, _removedCopies]);
         // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
         _autoSwitch.Margin = new Padding(0, 6, 6, 0);
         _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
@@ -439,6 +440,8 @@ sealed class ProfilesForm : Form
         _autoSwitch.Click += async (_, _) => await EditAutoSwitchAsync();
         _export.Click += (_, _) => Guard(ExportProfiles);
         _import.Click += (_, _) => Guard(ImportProfiles);
+        _removedCopies.Click += (_, _) => Guard(ShowRemovedCopies);
+        _tips.SetToolTip(_removedCopies, "Restore or permanently delete removed profiles.");
         foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
             rb.CheckedChanged += (_, _) =>
             {
@@ -502,7 +505,7 @@ sealed class ProfilesForm : Form
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
                      (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
                      (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
-                     (_export, Glyph.Save), (_import, Glyph.FolderOpen),
+                     (_export, Glyph.Save), (_import, Glyph.FolderOpen), (_removedCopies, Glyph.Undo),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -1600,7 +1603,7 @@ sealed class ProfilesForm : Form
         var name = _current;
         if (BlockIfRunning(name, "removed")) return;
         if (MessageBox.Show(this, $"Remove profile '{name}'?{Environment.NewLine}{Environment.NewLine}" +
-                                  "You can undo this here until you do something else.", "clauderoo",
+                                  "You can undo this here until you do something else, or restore it later from Removed….", "clauderoo",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
         StopCheckAndWait(name);
         try
@@ -1638,6 +1641,17 @@ sealed class ProfilesForm : Form
         ClearResult();
         Reload(name);
         ShowResult(report, $"Restored {name}.");
+    }
+
+    // The removed copies in profiles\_removed: restore one (here, like Undo) or delete some permanently (in the dialog).
+    private void ShowRemovedCopies()
+    {
+        ClearResult();
+        var copy = RemovedProfilesDialog.Pick(this, () => _pm.ListRemoved(), sel => RunWriteAsync(() => _pm.Purge(sel)));
+        if (copy == null || !ConfirmLeave()) return;
+        var report = Write(() => _pm.Restore(copy.Name, copy.Id));
+        Reload(copy.Name);
+        ShowResult(report, $"Restored {copy.Name} (removed {RemovedText.When(copy)}).");
     }
 
     // True (after saying why) when clauderoo-started sessions of the profile are running, or when that can't be told.
