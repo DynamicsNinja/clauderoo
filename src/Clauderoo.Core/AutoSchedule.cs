@@ -62,6 +62,9 @@ public static class AutoSchedule
         if (exit != 0) throw new ClauderooException($"Couldn't create the scheduled task: {Last(output)}");
     }
 
+    /// <summary>Whether the scheduled task exists (read-only).</summary>
+    public static bool IsScheduled(ITaskScheduler s) => s.Run(QueryArgs()).exit == 0;
+
     /// <returns>False when there was no task to remove.</returns>
     public static bool Disable(ITaskScheduler s)
     {

@@ -211,8 +211,22 @@ public class ScriptingTests
         Assert.Equal(["/Delete", "/TN", AutoSchedule.TaskName, "/F"], s.Calls[^1]);
     }
 
+    [Fact]
+    public void Schedule_NoOnOff_SaysWhetherTheTaskExists()
+    {
+        var (pm, home) = Make(); using var _h = home;
+        var s = new FakeScheduler();
+        var r = Run(pm, new ReleaseHooks { Scheduler = s }, "auto", "--schedule");
+        Assert.Equal(0, r.code);
+        Assert.Contains("No scheduled task", r.o);
+        s.Exists = true;
+        r = Run(pm, new ReleaseHooks { Scheduler = s }, "auto", "--schedule");
+        Assert.Contains("is set up", r.o);
+        Assert.All(s.Calls, c => Assert.Equal("/Query", c[0])); // read-only
+    }
+
     [Theory]
-    [InlineData("--schedule")]
+    [InlineData("--schedule", "--every", "5")]
     [InlineData("--schedule", "maybe")]
     [InlineData("--schedule", "on", "--every", "0")]
     [InlineData("--schedule", "on", "--every", "x")]

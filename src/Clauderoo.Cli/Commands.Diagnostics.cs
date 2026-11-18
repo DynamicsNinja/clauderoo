@@ -97,7 +97,7 @@ public static partial class Commands
 
     private static int AutoScheduleCmd(List<string> pos, bool json, TextWriter output, TextWriter err, ProfileManager pm, ReleaseHooks? hooks)
     {
-        const string usage = "Usage: clauderoo auto --schedule on|off [--every <minutes>]";
+        const string usage = "Usage: clauderoo auto --schedule [on|off] [--every <minutes>]";
         if (json) throw new ClauderooException("--json only applies to 'auto --once'.");
         bool? on = null;
         var minutes = AutoSchedule.DefaultMinutes;
@@ -108,6 +108,8 @@ public static partial class Commands
                 case "--schedule" when i + 1 < pos.Count && pos[i + 1] is "on" or "off":
                     on = pos[++i] == "on";
                     break;
+                case "--schedule":
+                    break;
                 case "--every" when i + 1 < pos.Count:
                     if (!int.TryParse(pos[++i], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out minutes))
                         throw new ClauderooException("--every must be a whole number of minutes from 1 to 1439.");
@@ -115,8 +117,15 @@ public static partial class Commands
                 default: throw new ClauderooException(usage);
             }
         }
-        if (on == null) throw new ClauderooException(usage);
         var scheduler = hooks?.Scheduler ?? new SchtasksScheduler();
+        if (on == null)
+        {
+            if (pos.Contains("--every")) throw new ClauderooException(usage);
+            output.WriteLine(AutoSchedule.IsScheduled(scheduler)
+                ? $"The scheduled task '{AutoSchedule.TaskName}' is set up; it runs 'clauderoo auto --once'. 'cr auto --schedule off' removes it."
+                : $"No scheduled task. 'cr auto --schedule on' runs 'clauderoo auto --once' every {AutoSchedule.DefaultMinutes} minutes.");
+            return 0;
+        }
         if (on == false)
         {
             output.WriteLine(AutoSchedule.Disable(scheduler)

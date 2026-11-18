@@ -56,7 +56,9 @@ public static partial class Commands
   wt-profiles [--remove]              add (or remove) a Windows Terminal profile for each clauderoo profile
   code [name] [dir] [--cursor | --editor <exe>]
                                       open VS Code (or Cursor) with the profile, for the Claude Code extension
-  auto --schedule on|off [--every N]  run 'auto --once' every N minutes (default 10) as a Task Scheduler task
+  auto --schedule [on|off] [--every N]
+                                      run 'auto --once' every N minutes (default 10) as a Task Scheduler task;
+                                      with neither on nor off, say whether the task is set up
   status                              show the default profile and any problems
   home [<path>]                       show the home profile's Claude folder, or point it at <path> after ~/.claude moved
   logs [--path] [--tail N]            show the last N lines (default 50) of the clauderoo log, or its path

@@ -26,7 +26,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `cr completion powershell|bash` prints a tab-completion script for commands, flags and profile names.
 - MCP tools `which_profile`, `list_sessions` and `check_profile` (all read-only).
 - `cr env <name> --json`.
-- `cr auto --schedule on|off [--every N]` creates or removes a per-user Task Scheduler task that runs `auto --once` without a console window.
+- `cr auto --schedule on|off [--every N]` creates or removes a per-user Task Scheduler task that runs `auto --once` without a console window. `cr auto --schedule` on its own says whether the task is set up.
 - `cr uninstall --purge` also deletes `~/.clauderoo` after you confirm, removing junctions as links only and never touching `~/.claude`.
 - The manager's **Export…** can export only the selected profile.
 
