@@ -104,6 +104,7 @@ internal static class TrayText
     {
         ProblemFix.ShareAgain => "&Share it again",
         ProblemFix.RecreateLink => "&Repair the link",
+        ProblemFix.KeepOwn => "&Keep its own copy",
         _ => "&Sync again",
     };
 
@@ -113,6 +114,7 @@ internal static class TrayText
     public static string Explain(Problem p)
     {
         var who = p.Profile.Length > 0 ? p.Profile : "this profile";
+        if (p.Hint is { Length: > 0 } hint) return hint;
         var item = ItemPattern.Match(p.Detail) is { Success: true } m ? m.Groups["d"].Value : "shared";
         return p.Fix switch
         {
@@ -120,6 +122,8 @@ internal static class TrayText
                 $"Share it again replaces {who}'s own {item} folder with the shared one; clauderoo keeps a backup of the old folder.",
             ProblemFix.RecreateLink =>
                 $"Repair the link points {who}'s {item} folder back at the shared one. Nothing in the shared folder is changed.",
+            ProblemFix.KeepOwn =>
+                $"Keep its own copy makes {who}'s {item} folder its own: what it shares from home is copied in and nothing is deleted.",
             ProblemFix.Resync =>
                 $"Sync again retries the update for {who}. If another program is using Claude's files, close it first.",
             _ when p.Title.Contains("home Claude folder") =>

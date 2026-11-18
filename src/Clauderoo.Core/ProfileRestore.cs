@@ -64,6 +64,16 @@ public partial class ProfileManager
             }
             case ProblemFix.Resync:
                 return Sync(p.Profile);
+            case ProblemFix.KeepOwn:
+            {
+                // The same as `clauderoo own`: home's shared entries are copied in; nothing is deleted.
+                var cfg = Config;
+                Entry(cfg, p.Profile);
+                var item = ItemFor(p);
+                if (!SharedItems.IsDir(cfg, item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
+                Own(p.Profile, item);
+                return Sync(p.Profile);
+            }
             default:
                 throw new ClauderooException("There is nothing clauderoo can fix automatically for this problem.");
         }

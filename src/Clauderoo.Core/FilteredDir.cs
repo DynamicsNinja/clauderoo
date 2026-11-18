@@ -14,6 +14,12 @@ public static class FilteredDir
 {
     public const string MarkerName = ".clauderoo-filtered.json";
 
+    /// <summary>The stable part of the problem for an entry the profile has of its own (see ProblemTranslator).</summary>
+    internal const string OwnEntryText = "is the profile's own, so";
+
+    private static string OwnEntryProblem(string profile, string item, string n) =>
+        $"{profile}: {item}\\{n} {OwnEntryText} {item}\\{n} from home isn't shared";
+
     private const string Note =
         "clauderoo keeps this folder in step with the home profile's, leaving out what this profile excludes. " +
         "Entries listed here are clauderoo's; anything else in the folder is the profile's own.";
@@ -114,7 +120,7 @@ public static class FilteredDir
                 }
                 if (target != null || Directory.Exists(p) || File.Exists(p))
                 {
-                    report.Problems.Add($"{profile}: {item}\\{n} is the profile's own, so {item}\\{n} from home isn't shared");
+                    report.Problems.Add(OwnEntryProblem(profile, item, n));
                     continue;
                 }
                 Junction.Create(p, src); // new, or put back after a remove/restore unlinked it
@@ -144,14 +150,14 @@ public static class FilteredDir
                     else if (Directory.Exists(p))
                     {
                         m.Copies.Remove(n);
-                        report.Problems.Add($"{profile}: {item}\\{n} is the profile's own, so {item}\\{n} from home isn't shared");
+                        report.Problems.Add(OwnEntryProblem(profile, item, n));
                         continue;
                     }
                 }
                 else if (File.Exists(p) || Directory.Exists(p))
                 {
                     if (File.Exists(p) && Hash(p) == srcHash) { m.Copies[n] = srcHash; continue; } // an earlier copy
-                    report.Problems.Add($"{profile}: {item}\\{n} is the profile's own, so {item}\\{n} from home isn't shared");
+                    report.Problems.Add(OwnEntryProblem(profile, item, n));
                     continue;
                 }
                 Copy(src, p);

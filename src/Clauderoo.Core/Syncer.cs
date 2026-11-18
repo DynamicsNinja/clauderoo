@@ -145,6 +145,15 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     /// <summary>The start of the problem reported when the home folder is missing (see ProblemTranslator).</summary>
     internal const string HomeMissingText = "the home Claude folder is missing:";
 
+    /// <summary>The stable part of the problem for a filtered folder that can't become one link again.</summary>
+    internal const string MixedFolderText = "holds files of its own next to the shared ones";
+
+    /// <summary>The stable part of the problem for plugin exclusions that can't apply to an owned settings.json.</summary>
+    internal const string PluginsStayOnText = "the plugins it excludes stay on, because it owns settings.json";
+
+    /// <summary>The stable part of the problem for a home settings.json whose enabledPlugins is damaged.</summary>
+    internal const string EnabledPluginsDamagedText = "home settings.json \"enabledPlugins\" is not an object";
+
     private static bool SameDir(string a, string b) =>
         string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
 
@@ -180,7 +189,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                     Junction.Create(link, source);
                     return;
                 }
-                report.Problems.Add($"{profile}: {d} holds files of its own next to the shared ones, so it can't go back to " +
+                report.Problems.Add($"{profile}: {d} {MixedFolderText}, so it can't go back to " +
                                     $"being one shared folder; move them out, or run 'clauderoo own {profile} {d}'");
             }
             FilteredDir.Sync(profile, d, link, source, excluded, Stamp, report);
@@ -430,7 +439,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         if (owned)
         {
             if (pluginsOff.Count > 0)
-                report.Problems.Add($"{profile}: the plugins it excludes stay on, because it owns settings.json; turn them " +
+                report.Problems.Add($"{profile}: {PluginsStayOnText}; turn them " +
                                     $"off in its settings.json, or run 'clauderoo share {profile} settings.json'");
             if (noOverlay) return; // owned and nothing to manage: untouched, as today
             SyncOwnedSettings(profile, dir, overlay, state, report);
@@ -498,7 +507,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         {
             if (generated["enabledPlugins"] != null)
             {
-                report.Problems.Add($"{profile}: home settings.json \"enabledPlugins\" is not an object; excluded plugins not turned off");
+                report.Problems.Add($"{profile}: {EnabledPluginsDamagedText}; excluded plugins not turned off");
                 return;
             }
             generated["enabledPlugins"] = enabled = new JsonObject();

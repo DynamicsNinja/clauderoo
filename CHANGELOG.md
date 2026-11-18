@@ -33,6 +33,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ### Fixed
 - A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.
 - Settings changed at the same time by the CLI, the tray app, the MCP server and `cr auto --once` no longer overwrite each other: every change to `config.json` now takes a machine-wide lock, re-reads the file and saves it in one go.
+- The tray's Problems list now explains every problem a sync or sharing change can report, instead of showing some under "Something needs attention": an entry a profile has of its own, a folder with its own files mixed into shared ones (with **Keep its own copy**), excluded plugins that stay on because the profile owns `settings.json` (with **Share it again**), links left in the old home folder, and a link that couldn't be removed when an item stopped being shared.
 - Saving settings no longer fails with "Access to the path is denied" when another clauderoo window, an editor or antivirus has `config.json` open at that moment: the save waits briefly and tries again.
 
 ## [0.1.0] - 2026-11-17
