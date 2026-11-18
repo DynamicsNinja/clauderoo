@@ -48,7 +48,7 @@ public partial class ProfileManager
             case ProblemFix.ShareAgain:
             {
                 var item = ItemFor(p);
-                if (!SharedItems.IsKnown(item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
+                if (!SharedItems.IsKnown(Config, item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
                 return Share(p.Profile, item);
             }
             case ProblemFix.RecreateLink:
@@ -56,7 +56,7 @@ public partial class ProfileManager
                 var cfg = Config;
                 Entry(cfg, p.Profile);
                 var item = ItemFor(p);
-                if (!SharedItems.IsDir(item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
+                if (!SharedItems.IsDir(cfg, item)) throw new ClauderooException("Couldn't tell which folder this problem is about.");
                 var link = Path.Combine(paths.ProfileDir(p.Profile), item);
                 // Non-recursive: removes only the junction, never what it points to.
                 if (Junction.GetTarget(link) != null) Directory.Delete(link);
@@ -105,10 +105,10 @@ public partial class ProfileManager
         var entry = ConfigStore.ReadEntry(entryFile) ?? new ProfileEntry();
         entry.Home = false;
         // Remove unlinked the shared-folder junctions; a real folder left behind was the profile's own copy.
-        foreach (var d in SharedItems.Dirs)
+        foreach (var d in SharedItems.DirsOf(cfg))
         {
             var sub = Path.Combine(dir, d);
-            if (Directory.Exists(sub) && Junction.GetTarget(sub) == null && !entry.Overrides.Contains(d))
+            if (Directory.Exists(sub) && Junction.GetTarget(sub) == null && !FilteredDir.IsFiltered(sub) && !entry.Overrides.Contains(d))
                 entry.Overrides.Add(d);
         }
         try

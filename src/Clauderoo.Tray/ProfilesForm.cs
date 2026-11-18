@@ -20,7 +20,9 @@ sealed class ProfilesForm : Form
         "•  plugins, skills, hooks, agents, commands and output styles\n" +
         "•  MCP servers\n\n" +
         "Each profile keeps its own sign-in, provider and environment variables. Change a shared thing in your home " +
-        "profile and every profile gets it.";
+        "profile and every profile gets it.\n\n" +
+        "To give a profile its own copy of something, or leave single skills, MCP servers or plugins out of it, select " +
+        "the profile and choose Sharing….";
 
     /// <summary>A profile's last check, kept for the life of the tray process (closing the window keeps it).</summary>
     private sealed record CheckRecord(DateTime At, string Provider, CheckStatus? Status, string Message, IReadOnlyList<CheckItem>? Items);
@@ -104,6 +106,9 @@ sealed class ProfilesForm : Form
     };
     private readonly Button _addFolder = Btn("Add folder…");
     private readonly Button _removeFolder = Btn("Remove folder");
+    // Own / Share again / what's left out, per shared item (SharingDialog).
+    private readonly Button _sharing = Btn("Sharin&g…");
+    internal Button SharingButtonForTest => _sharing;
 
     // Start folder: where Start session (here and in the tray) opens; saved right away, like folder mappings.
     private readonly Label _startDirLabel = new() { Text = "Start folder (used by Start session)", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
@@ -351,7 +356,9 @@ sealed class ProfilesForm : Form
         [
             _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _loginPanel,
             _usageGroup, _fieldError, _checkRow, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
-            _startDirLabel, _startDirRow, _envLabel, _envHint,
+            _startDirLabel, _startDirRow,
+            _sharing,
+            _envLabel, _envHint,
         ];
         top.RowCount = topRows.Length;
         for (var i = 0; i < topRows.Length; i++)
@@ -479,6 +486,9 @@ sealed class ProfilesForm : Form
         _folders.SelectedIndexChanged += (_, _) => _removeFolder.Enabled = _folders.SelectedIndex >= 0;
         _addFolder.Click += (_, _) => Guard(AddFolder);
         _removeFolder.Click += (_, _) => Guard(RemoveFolder);
+        _sharing.Margin = new Padding(0, LogicalToDeviceUnits(2), 0, LogicalToDeviceUnits(6));
+        _tips.SetToolTip(_sharing, "Choose what this profile shares with your home profile, owns, or leaves out.");
+        _sharing.Click += (_, _) => Guard(() => { if (_current != null) SharingDialog.ShowFor(this, _pm, _current, w => RunWriteAsync(w)); });
         // Commit each keystroke so validation and the Save state follow typing in the grid.
         _env.CurrentCellDirtyStateChanged += (_, _) =>
         {
@@ -1004,6 +1014,7 @@ sealed class ProfilesForm : Form
         _foldersLabel.Visible = _foldersHint.Visible = _foldersRow.Visible = _current != null;
         _startDirLabel.Visible = _startDirRow.Visible = _current != null;
         _fieldError.Visible = _checkRow.Visible = _checkStatus.Visible = editable;
+        _sharing.Visible = editable;
         _signIn.Visible = p == Providers.Vertex;
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
         _save.Visible = editable;

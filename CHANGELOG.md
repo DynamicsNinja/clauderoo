@@ -15,6 +15,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `config.json` has a `schemaVersion`, with step-by-step upgrades of older files. A file from a newer clauderoo is still read, but changes are refused instead of overwriting settings this version doesn't understand.
 - A log file at `~/.clauderoo/logs/clauderoo.log` (1 MB, three files) for warnings, errors, sync problems, auto-switch decisions and settings saves, from the CLI, the tray app and the MCP server. Secrets are never written to it.
 - `cr logs [--path] [--tail N]` shows the end of the log, or where it is.
+- `cr exclude <profile> <item>/<entry>` and `cr include` leave single entries of a shared item out of one profile: a skill, agent, command, hook or output style, an MCP server (`mcpServers/<name>`) or a plugin (`plugins/<name>[@marketplace]`). `cr exclude <profile>` and `cr list` show what each profile leaves out, and exports carry it.
+- `cr shared list`, `cr shared add <name> [--dir|--file]` and `cr shared remove <name>` share more files and folders of the home profile. Sign-ins, `.claude.json`, conversations, history and sessions can't be added, and the built-in items can't be removed.
+- The profile manager has a **Sharing…** window per profile: each shared item's state (shared, own copy, or what's left out), with **Own**, **Share again** and **Choose what's shared…**.
 
 ### Fixed
 - A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.

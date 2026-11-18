@@ -345,6 +345,40 @@ public class ProfileSetupTests
     }
 
     [Fact]
+    public void SetHome_FilteredFolder_RelinksEntriesToNewHome()
+    {
+        var (pm, h, _, _) = Make(); using var _h = h;
+        var oldSkills = Path.Combine(h.Paths.DefaultHomeDir, "skills");
+        Directory.CreateDirectory(Path.Combine(oldSkills, "keep"));
+        Directory.CreateDirectory(Path.Combine(oldSkills, "drop"));
+        File.WriteAllText(Path.Combine(oldSkills, "keep", "s.md"), "old");
+        pm.Add("work");
+        pm.Exclude("work", "skills/drop");
+        var link = Path.Combine(h.Paths.ProfileDir("work"), "skills");
+        Assert.Equal(Path.Combine(oldSkills, "keep"), Junction.GetTarget(Path.Combine(link, "keep"))!.TrimEnd('\\'));
+        var moved = MovedHome(h);
+        Directory.CreateDirectory(Path.Combine(moved, "skills", "keep"));
+        Directory.CreateDirectory(Path.Combine(moved, "skills", "drop"));
+
+        var r = pm.SetHome(moved);
+
+        Assert.Empty(r.Report.Problems);
+        Assert.Equal(Path.Combine(moved, "skills", "keep"), Junction.GetTarget(Path.Combine(link, "keep"))!.TrimEnd('\\'));
+        Assert.False(Directory.Exists(Path.Combine(link, "drop")));
+        Assert.Equal("old", File.ReadAllText(Path.Combine(oldSkills, "keep", "s.md")));
+    }
+
+    [Fact]
+    public void Clone_CarriesExclusions()
+    {
+        var (pm, h, _, _) = Make(); using var _h = h;
+        pm.Add("a");
+        pm.Exclude("a", "mcpServers/github");
+        pm.Clone("a", "b");
+        Assert.Equal(["mcpServers/github"], pm.Get("b").Exclude);
+    }
+
+    [Fact]
     public void SetHome_NeverWritesIntoNewHome()
     {
         var (pm, h, _, _) = Make(); using var _h = h;

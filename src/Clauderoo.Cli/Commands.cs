@@ -27,6 +27,7 @@ public static class Commands
   default <name> | --clear            set (or clear) the default profile for plain 'claude'
   own <name> <item>                   keep a profile's own copy of a shared item
   share <name> <item>                 go back to sharing an item from the home profile
+" + SharingCommands.Usage + @"
   remove <name> [--force]             remove a profile (its folder is moved, not deleted)
   restore <name> [--at <id>]          bring back a removed profile (newest copy, or the one 'removed' lists as <id>)
   removed [name]                      list removed copies of profiles, with when they were removed and their size
@@ -104,7 +105,8 @@ public static class Commands
     private static string Cmd(string[] args) => args.Length > 0 ? args[0] : "";
 
     /// <summary>The commands that take --json. Any other command given --json gets a plain usage error.</summary>
-    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "removed", "purge"];
+    private static readonly string[] JsonCommands = ["list", "status", "maps", "which", "check", "usage", "sessions", "auto", "removed", "purge",
+        "shared"];
 
     // --json before any "--" belongs to clauderoo; after it, it belongs to claude.
     private static bool WantsJson(string[] args) =>
@@ -124,7 +126,8 @@ public static class Commands
         var cmd = args[0] == "--version" ? "version" : args[0];
         string[] known = ["init", "add", "list", "start", "run", "default", "own", "share", "remove", "restore", "rename",
             "status", "tray", "autostart", "install", "provider", "env", "check", "apikey", "manage", "map", "unmap", "maps", "which",
-            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "removed", "purge", "logs"];
+            "version", "upgrade", "uninstall", "usage", "auto", "export", "import", "sessions", "resume", "mcp", "removed", "purge", "logs",
+            .. SharingCommands.Names];
         if (!known.Contains(cmd) && !SetupCommands.Names.Contains(cmd))
             throw new ClauderooException($"Unknown command '{cmd}'. Run 'clauderoo help'.");
 
@@ -189,6 +192,7 @@ public static class Commands
                             Detail = i.ProviderDetail,
                             i.Overrides,
                             i.StartDir,
+                            Exclude = i.Exclude ?? [],
                         }),
                     });
                     return 0;
@@ -338,6 +342,8 @@ public static class Commands
                 output.WriteLine($"{a[0]} now owns {a[1]}.");
                 return 0;
             }
+            case "exclude" or "include" or "shared":
+                return SharingCommands.Run(cmd, pos, json, output, err, pm);
             case "share":
             {
                 var a = Need(pos, 2, "clauderoo share <name> <item>");
@@ -776,6 +782,8 @@ public static class Commands
             var tail = i.IsHome ? "(home)"
                 : i.Overrides.Count > 0 ? "overrides: " + string.Join(", ", i.Overrides) : "";
             if (i.StartDir != null) tail = (tail + "  starts in " + i.StartDir).TrimStart();
+            if (!i.IsHome && i.Exclude is { Count: > 0 } ex)
+                tail = (tail.Length > 0 ? tail + "  " : "") + "excludes: " + string.Join(", ", ex);
             yield return $"{(i.IsDefault ? "*" : " ")} {i.Name.PadRight(nameW)}  {Who(i).PadRight(emailW)}  {(useW > 0 ? Use(i).PadRight(useW) + "  " : "")}{tail}".TrimEnd();
         }
     }

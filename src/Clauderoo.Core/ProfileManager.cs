@@ -4,7 +4,8 @@ namespace Clauderoo.Core;
 
 public record ProfileInfo(string Name, bool IsHome, bool IsDefault, string? Email,
     IReadOnlyList<string> Overrides, string Dir, string Provider = Providers.Login, string? ProviderDetail = null,
-    string? StartDir = null);
+    string? StartDir = null,
+    IReadOnlyList<string>? Exclude = null);
 
 public record StatusReport(string? DefaultProfile, string? UserEnvValue, bool EnvMatchesDefault,
     IReadOnlyList<string> Problems);
@@ -250,7 +251,8 @@ public partial class ProfileManager
             var provider = kv.Value.Home ? Providers.Login : Providers.Of(kv.Value);
             var detail = provider == Providers.Vertex ? kv.Value.Vertex?.Project : null;
             return new ProfileInfo(kv.Key, kv.Value.Home, cfg.DefaultProfile == kv.Key,
-                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail, kv.Value.StartDir);
+                ReadEmail(json), kv.Value.Overrides.ToArray(), dir, provider, detail, kv.Value.StartDir,
+                kv.Value.Exclude.ToArray());
         }).ToList();
     }
 
@@ -268,11 +270,11 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = Entry(cfg, name);
         if (entry.Home) throw new ClauderooException("The home profile owns everything already.");
-        if (!SharedItems.IsKnown(item)) throw new ClauderooException(UnknownItem(item));
+        if (!SharedItems.IsKnown(cfg, item)) throw new ClauderooException(SharedItems.UnknownItem(cfg, item));
 
         if (!entry.Overrides.Contains(item)) entry.Overrides.Add(item);
 
-        if (SharedItems.IsDir(item))
+        if (SharedItems.IsDir(cfg, item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
             var source = Path.Combine(cfg.HomeDir, item);
@@ -295,6 +297,15 @@ public partial class ProfileManager
                     throw new ClauderooException($"Could not copy {item} for '{name}': {e.Message}");
                 }
             }
+            else if (FilteredDir.IsFiltered(link))
+            {
+                // Its links into home become copies, so the owned folder never leads into home.
+                try { FilteredDir.MakeOwned(link, CopyDir); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+                {
+                    throw new ClauderooException($"Could not copy {item} for '{name}': {e.Message}");
+                }
+            }
             else if (!Directory.Exists(link))
             {
                 if (Directory.Exists(source)) CopyDir(source, link);
@@ -313,15 +324,16 @@ public partial class ProfileManager
         var cfg = Config;
         var entry = Entry(cfg, name);
         if (entry.Home) throw new ClauderooException("The home profile is the source of shared items.");
-        if (!SharedItems.IsKnown(item)) throw new ClauderooException(UnknownItem(item));
+        if (!SharedItems.IsKnown(cfg, item)) throw new ClauderooException(SharedItems.UnknownItem(cfg, item));
 
         entry.Overrides.Remove(item);
 
         string? dirBackup = null;
-        if (SharedItems.IsDir(item))
+        if (SharedItems.IsDir(cfg, item))
         {
             var link = Path.Combine(paths.ProfileDir(name), item);
-            if (Directory.Exists(link) && Junction.GetTarget(link) == null)
+            // A filtered folder is already clauderoo's (shared, minus exclusions): the sync below keeps it.
+            if (Directory.Exists(link) && Junction.GetTarget(link) == null && !FilteredDir.IsFiltered(link))
             {
                 dirBackup = $"{item}.bak-{Stamp}";
                 Directory.Move(link, $"{link}.bak-{Stamp}");
@@ -358,9 +370,6 @@ public partial class ProfileManager
 
     private static string Norm(string p) =>
         p.TrimEnd('\\', '/').ToUpperInvariant();
-
-    private static string UnknownItem(string item) =>
-        $"Unknown item '{item}'. Known: {string.Join(", ", SharedItems.Dirs.Concat(SharedItems.Files).Append(SharedItems.McpServers))}.";
 
     private static ProfileEntry Entry(ClauderooConfig cfg, string name) =>
         cfg.Profiles.TryGetValue(name, out var e)

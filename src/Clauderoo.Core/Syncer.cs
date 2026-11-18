@@ -100,7 +100,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private void SyncDirs(string profile, ProfileEntry entry, string dir, SyncReport report)
     {
-        foreach (var d in SharedItems.Dirs)
+        foreach (var d in SharedItems.DirsOf(cfg))
         {
             if (entry.Overrides.Contains(d)) continue;
             var source = Path.Combine(cfg.HomeDir, d);
@@ -114,6 +114,13 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
                 continue;
             }
 
+            // Plugins are left out through settings.json (enabledPlugins), never by filtering the folder.
+            var excluded = d == SharedItems.Plugins ? new HashSet<string>() : SharedItems.ExclusionsOf(entry, d);
+            if (excluded.Count > 0 || FilteredDir.IsFiltered(link))
+            {
+                SyncFiltered(profile, d, link, source, target, excluded, report);
+                continue;
+            }
             if (target == null)
             {
                 if (File.Exists(link))
@@ -141,6 +148,49 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
     private static bool SameDir(string a, string b) =>
         string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// A shared folder with exclusions (or one that just lost its last exclusion): see <see cref="FilteredDir"/>. Only
+    /// a missing folder, a junction to home's folder or a folder clauderoo filters is changed; anything else is reported.
+    /// </summary>
+    private void SyncFiltered(string profile, string d, string link, string source, string? target, ISet<string> excluded,
+        SyncReport report)
+    {
+        if (target != null && !SameDir(target, source))
+        {
+            report.Problems.Add($"{profile}: {d} is linked to {target}, not to {source}");
+            return;
+        }
+        if (target == null && File.Exists(link))
+        {
+            report.Problems.Add($"{profile}: {d} is a file, not a shared folder");
+            return;
+        }
+        if (target == null && Directory.Exists(link) && !FilteredDir.IsFiltered(link))
+        {
+            report.Problems.Add($"{profile}: {d} is a real folder, not shared (run 'clauderoo share {profile} {d}' to share it)");
+            return;
+        }
+        try
+        {
+            if (excluded.Count == 0 && target == null && Directory.Exists(link))
+            {
+                // No exclusions left: back to one junction, unless the folder holds something of the profile's own.
+                if (FilteredDir.TryRemove(link, source))
+                {
+                    Junction.Create(link, source);
+                    return;
+                }
+                report.Problems.Add($"{profile}: {d} holds files of its own next to the shared ones, so it can't go back to " +
+                                    $"being one shared folder; move them out, or run 'clauderoo own {profile} {d}'");
+            }
+            FilteredDir.Sync(profile, d, link, source, excluded, Stamp, report);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ClauderooException)
+        {
+            report.Problems.Add($"{profile}: could not sync {d}: {e.Message}");
+        }
+    }
+
     private static void CopyAtomic(string source, string target)
     {
         var tmp = AtomicFile.TmpName(target);
@@ -166,7 +216,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
     private void SyncFiles(string profile, ProfileEntry entry, string dir, SyncState state, SyncReport report)
     {
-        foreach (var f in SharedItems.Files)
+        foreach (var f in SharedItems.FilesOf(cfg))
         {
             try
             {
@@ -376,8 +426,12 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         var noOverlay = overlay.Env.Count == 0 && overlay.Top.Count == 0
             && state.ManagedEnv.Count == 0 && state.ManagedTop.Count == 0;
 
+        var pluginsOff = SharedItems.ExclusionsOf(entry, SharedItems.Plugins);
         if (owned)
         {
+            if (pluginsOff.Count > 0)
+                report.Problems.Add($"{profile}: the plugins it excludes stay on, because it owns settings.json; turn them " +
+                                    $"off in its settings.json, or run 'clauderoo share {profile} settings.json'");
             if (noOverlay) return; // owned and nothing to manage: untouched, as today
             SyncOwnedSettings(profile, dir, overlay, state, report);
             return;
@@ -386,7 +440,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
         var source = Path.Combine(cfg.HomeDir, Settings);
         var homeExists = File.Exists(source);
-        if (noOverlay)
+        if (noOverlay && pluginsOff.Count == 0)
         {
             if (!homeExists) return;
             // Byte-identical to home (today's behaviour) unless home carries provider-reserved keys to drop.
@@ -424,6 +478,7 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
             report.Problems.Add($"{profile}: home settings.json \"env\" is not an object; settings not synced");
             return;
         }
+        if (pluginsOff.Count > 0) TurnOffPlugins(profile, home, generated, pluginsOff, report);
 
         var bytes = SerializeSettings(generated);
         var target = Path.Combine(dir, Settings);
@@ -432,6 +487,28 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
         SyncShared(profile, Settings, dir, HashBytes(bytes), () => AtomicFile.WriteAllBytes(target, bytes), state, report,
             noBackup: onlyModelsChanged);
         RecordManaged(state, overlay);
+    }
+
+    /// <summary>Writes "enabledPlugins": { id: false } into the profile's generated settings for each excluded plugin.</summary>
+    private void TurnOffPlugins(string profile, JsonObject home, JsonObject generated, ISet<string> excluded, SyncReport report)
+    {
+        var ids = PluginExclusions.Resolve(excluded, PluginExclusions.KnownIds(cfg.HomeDir, home));
+        if (ids.Count == 0) return;
+        if (generated["enabledPlugins"] is not JsonObject enabled)
+        {
+            if (generated["enabledPlugins"] != null)
+            {
+                report.Problems.Add($"{profile}: home settings.json \"enabledPlugins\" is not an object; excluded plugins not turned off");
+                return;
+            }
+            generated["enabledPlugins"] = enabled = new JsonObject();
+        }
+        foreach (var id in ids)
+        {
+            // Keep the key's spelling when home already lists it.
+            var key = enabled.Select(kv => kv.Key).FirstOrDefault(k => string.Equals(k, id, StringComparison.OrdinalIgnoreCase)) ?? id;
+            enabled[key] = false;
+        }
     }
 
     /// <summary>Test hook: runs just before an owned settings.json is replaced.</summary>
@@ -563,6 +640,15 @@ public class Syncer(ClauderooConfig cfg, ClauderooPaths paths, Func<DateTime> no
 
         var homeMcp = ReadHomeMcp(profile, report, out var ok);
         if (!ok) return;
+        // Servers the profile excludes are left out of its copy (home's file is only ever read).
+        var skip = SharedItems.ExclusionsOf(entry, key);
+        if (skip.Count > 0 && homeMcp is JsonObject all)
+        {
+            var kept = new JsonObject();
+            foreach (var (k, v) in all)
+                if (!skip.Contains(k)) kept[k] = v?.DeepClone();
+            homeMcp = kept;
+        }
         var homeHash = McpHash(homeMcp);
 
         var file = Path.Combine(dir, ".claude.json");

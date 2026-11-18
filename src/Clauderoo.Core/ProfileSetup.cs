@@ -63,13 +63,14 @@ public partial class ProfileManager
                     SonnetModel = v.SonnetModel, OpusModel = v.OpusModel, HaikuModel = v.HaikuModel,
                 };
             entry.Env = new Dictionary<string, string>(src.Env, StringComparer.Ordinal);
-            entry.Overrides = src.Overrides.Where(SharedItems.IsKnown).Distinct().ToList();
+            entry.Overrides = src.Overrides.Where(x => SharedItems.IsKnown(cfg, x)).Distinct().ToList();
+            entry.Exclude = [.. src.Exclude.Distinct()];
         }
 
         Directory.CreateDirectory(dir);
         try
         {
-            CopyOwnedItems(paths.ProfileDir(source), dir, entry.Overrides);
+            CopyOwnedItems(cfg, paths.ProfileDir(source), dir, entry.Overrides);
             cfg = ConfigStore.Update(paths, c =>
             {
                 if (c.Profiles.ContainsKey(name)) throw new ClauderooException($"A profile named '{name}' already exists.");
@@ -89,13 +90,13 @@ public partial class ProfileManager
     /// them to home. Folders are copied without following links; owned files are copied as they are; for mcpServers
     /// only that key of .claude.json is copied, never the rest (it holds the sign-in). A missing item starts empty.
     /// </summary>
-    private static void CopyOwnedItems(string srcDir, string dstDir, IEnumerable<string> owned)
+    private static void CopyOwnedItems(ClauderooConfig cfg, string srcDir, string dstDir, IEnumerable<string> owned)
     {
         foreach (var item in owned)
         {
             var from = Path.Combine(srcDir, item);
             var to = Path.Combine(dstDir, item);
-            if (SharedItems.IsDir(item))
+            if (SharedItems.IsDir(cfg, item))
             {
                 if (Directory.Exists(from) && Junction.GetTarget(from) == null) CopyDir(from, to);
                 else Directory.CreateDirectory(to);
@@ -160,13 +161,17 @@ public partial class ProfileManager
             foreach (var (name, entry) in cfg.Profiles)
             {
                 if (entry.Home) continue;
-                foreach (var d in SharedItems.Dirs.Where(d => !entry.Overrides.Contains(d)))
+                foreach (var d in SharedItems.DirsOf(cfg).Where(d => !entry.Overrides.Contains(d)))
                 {
                     var link = Path.Combine(paths.ProfileDir(name), d);
                     try
                     {
                         if (Junction.GetTarget(link) is { } target && SamePath(target, Path.Combine(oldHome, d)))
                             Directory.Delete(link); // non-recursive: removes only the junction
+                        // A folder with exclusions holds one link per entry into the old home: clear clauderoo's links
+                        // so the sync builds it again from the new home. Anything of the profile's own stays and is reported.
+                        else if (FilteredDir.IsFiltered(link) && !FilteredDir.TryRemove(link, Path.Combine(oldHome, d)))
+                            report.Problems.Add($"{name}: {d} holds files of its own, so its links into {oldHome} weren't moved");
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                     {

@@ -66,6 +66,7 @@ public partial class ProfileManager
                 o["env"] = env;
             }
             o["overrides"] = new JsonArray(e.Overrides.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
+            if (e.Exclude.Count > 0) o["exclude"] = new JsonArray(e.Exclude.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
             o["startDir"] = e.StartDir;
             profiles.Add(o);
         }
@@ -324,7 +325,7 @@ public partial class ProfileManager
         var hasOverrides = p.TryGetProperty("overrides", out var ov) && ov.ValueKind == JsonValueKind.Array;
         if (hasOverrides)
             foreach (var o in ov.EnumerateArray())
-                if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(o.GetString()!)) overrides.Add(o.GetString()!);
+                if (o.ValueKind == JsonValueKind.String && SharedItems.IsKnown(cfg, o.GetString()!)) overrides.Add(o.GetString()!);
 
         if (!exists)
         {
@@ -364,6 +365,15 @@ public partial class ProfileManager
         // Owned items are only added. An import never shares a profile's own copies back, even with force.
         var have = Get(name).Overrides.ToList();
         foreach (var item in overrides.Where(i => !have.Contains(i))) Own(name, item);
+
+        // Exclusions too are only added, never removed.
+        if (p.TryGetProperty("exclude", out var ex) && ex.ValueKind == JsonValueKind.Array)
+            foreach (var x in ex.EnumerateArray())
+            {
+                if (x.ValueKind != JsonValueKind.String || Get(name).Exclude.Contains(x.GetString()!)) continue;
+                try { log.Collect(Exclude(name, x.GetString()!)); }
+                catch (ClauderooException e) { log.Notices.Add($"{name}: {x.GetString()} not excluded: {e.Message}"); }
+            }
 
         // Only a startDir present in the file is applied, and only one that exists on this machine.
         if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("startDir", out var sd)

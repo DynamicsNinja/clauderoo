@@ -234,6 +234,13 @@ The manager window has the same two actions under the profile list. **Export…*
 | --- | --- |
 | `own <name> <item>` | Give a profile its own copy of a shared item |
 | `share <name> <item>` | Go back to sharing that item from the home profile |
+| `exclude <name> <item>/<entry>` | Leave one entry of a shared item out of a profile, e.g. `skills/my-skill`, `agents/reviewer.md`, `mcpServers/github` or `plugins/name@marketplace`. Allowed (with a warning) for an entry home doesn't have yet. `exclude <name>` lists what the profile leaves out |
+| `include <name> <item>/<entry>` | Share an excluded entry with the profile again |
+| `shared [list] [--json]` | List the shared files and folders, built-in and added |
+| `shared add <name> [--dir\|--file]` | Share another file or folder of the home profile (directly inside `~/.claude`) with every profile. `--dir`/`--file` is needed only when it isn't there yet. A profile that already has its own item of that name keeps it |
+| `shared remove <name>` | Stop sharing an added item. Each profile's link is removed; a copied file or an owned folder stays as the profile's own. Built-in items can't be removed |
+
+In the manager window, select a profile and choose **Sharing…** to see how each shared item reaches it (shared from home, its own copy, or shared with some entries left out), and to **Own**, **Share again** or **Choose what's shared…** (the same as `exclude`/`include`).
 
 ### App
 
@@ -424,6 +431,18 @@ The home profile is the source of truth. Other profiles follow it in one directi
 - **MCP servers** (`mcpServers` in `~/.claude.json`) are merged into the profile's `.claude.json`.
 
 If you edit a copied file inside a profile, the next sync replaces it with home's version and keeps a `.bak-<timestamp>` copy next to it. To keep a profile's own version, run `cr own <profile> <item>`, for example with `settings.json`, `skills` or `mcpServers`. `cr share <profile> <item>` goes back to following home.
+
+`cr shared add <name>` shares more of home the same way: an added folder is a junction, an added file is copied. Names must be a single file or folder directly inside `~/.claude`; sign-ins (`.credentials.json`), `.claude.json`, `projects`, `history.jsonl`, `sessions`, `todos` and similar per-account data are refused.
+
+#### Leaving things out of one profile
+
+`cr exclude <profile> <item>/<entry>` keeps the rest of an item shared and leaves out one entry:
+
+- **MCP servers:** the profile gets home's servers minus the excluded ones.
+- **Folders** (`skills`, `agents`, `commands`, `hooks`, `output-styles` and added folders): instead of one junction, the profile's folder becomes a real folder holding a junction for each sub-folder of home's folder and a copy of each file, minus the excluded entries. It follows home on every sync: new entries appear, removed ones go. A `.clauderoo-filtered.json` file in it records what clauderoo put there; clauderoo only ever removes those (links non-recursively), so anything else you put in the folder is left alone. When the last exclusion goes, the folder turns back into one junction, unless it holds files of its own.
+- **Plugins:** Claude Code keeps every installed plugin in the shared `plugins` folder (with `installed_plugins.json`, marketplaces and caches that refer to each other by path) and turns each one on or off with `enabledPlugins` in `settings.json`. So the `plugins` folder stays one junction, and an excluded plugin is written as `"enabledPlugins": { "<name>@<marketplace>": false }` into the profile's copy of `settings.json`. `plugins/<name>` covers that name from every marketplace. A profile that owns its `settings.json` can't have plugins excluded this way: turn them off in its own `settings.json`, or run `cr share <profile> settings.json` first. A project's own `.claude/settings.json` can still turn a plugin back on there.
+
+`cr include <profile> <item>/<entry>` shares it again. `cr own` on a filtered folder turns its links into copies, so the owned folder never leads into home.
 
 ### Safety guarantees
 
