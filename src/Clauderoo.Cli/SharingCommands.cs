@@ -7,13 +7,14 @@ internal static class SharingCommands
 {
     public static readonly string[] Names = ["exclude", "include", "shared"];
 
+    // Verbatim, like Commands' usage text, so both get the same line endings.
     public const string Usage =
-        "  exclude <name> [<item>/<entry>]     leave one entry of a shared item out of a profile, e.g. skills/foo,\n" +
-        "                                      mcpServers/github or plugins/name@marketplace (no entry: list them)\n" +
-        "  include <name> <item>/<entry>       share an excluded entry with the profile again\n" +
-        "  shared [list]                       list the shared files and folders\n" +
-        "  shared add <name> [--dir|--file]    share another file or folder of the home profile with every profile\n" +
-        "  shared remove <name>                stop sharing an item added with 'shared add'";
+@"  exclude <name> [<item>/<entry>]     leave one entry of a shared item out of a profile, e.g. skills/foo,
+                                      mcpServers/github or plugins/name@marketplace (no entry: list them)
+  include <name> <item>/<entry>       share an excluded entry with the profile again
+  shared [list]                       list the shared files and folders
+  shared add <name> [--dir|--file]    share another file or folder of the home profile with every profile
+  shared remove <name>                stop sharing an item added with 'shared add'";
 
     public static int Run(string cmd, List<string> pos, bool json, TextWriter output, TextWriter err, ProfileManager pm)
     {

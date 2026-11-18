@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Sharing
+- `cr exclude <profile> <item>/<entry>` and `cr include` leave single entries of a shared item out of one profile: a skill, agent, command, hook or output style, an MCP server (`mcpServers/<name>`) or a plugin (`plugins/<name>[@marketplace]`). `cr exclude <profile>` and `cr list` show what each profile leaves out, and exports carry it.
+- `cr shared list`, `cr shared add <name> [--dir|--file]` and `cr shared remove <name>` share more files and folders of the home profile. Sign-ins, `.claude.json`, conversations, history and sessions can't be added, and the built-in items can't be removed.
+- The profile manager has a **Sharing…** window per profile: each shared item's state (shared, own copy, or what's left out), with **Own**, **Share again** and **Choose what's shared…**.
+
 ## [0.1.0] - 2026-11-17
 
 First public release.
