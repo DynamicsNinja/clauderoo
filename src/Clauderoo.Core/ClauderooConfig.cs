@@ -54,7 +54,11 @@ public class ClauderooConfig
     public int SchemaVersion { get; set; } = ConfigStore.CurrentSchemaVersion;
 
     public string? DefaultProfile { get; set; }
+    /// <summary>"wt" (default) or "conhost"; see TerminalChoice.</summary>
     public string Terminal { get; set; } = "wt";
+    /// <summary>"cmd" (default when null), "pwsh" or "powershell": the shell new sessions run in. See TerminalChoice.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Shell { get; set; }
     public string HomeDir { get; set; } = "";
     public string HomeJson { get; set; } = "";
     public Dictionary<string, ProfileEntry> Profiles { get; set; } = new();

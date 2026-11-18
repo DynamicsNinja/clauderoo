@@ -49,7 +49,13 @@ public partial class ProfileManager
     public ClauderooPaths Paths => paths;
     public IEnvStore Env => env;
 
-    public SyncReport SyncAll() => NewSyncer(Config).SyncAll();
+    public SyncReport SyncAll()
+    {
+        var cfg = Config;
+        var report = NewSyncer(cfg).SyncAll();
+        RefreshWtFragment(cfg);
+        return report;
+    }
 
     public ClauderooConfig Config =>
         ConfigStore.Load(paths) ?? throw new ClauderooException("Run 'clauderoo init' first.");

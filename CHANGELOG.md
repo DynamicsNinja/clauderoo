@@ -18,6 +18,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `cr exclude <profile> <item>/<entry>` and `cr include` leave single entries of a shared item out of one profile: a skill, agent, command, hook or output style, an MCP server (`mcpServers/<name>`) or a plugin (`plugins/<name>[@marketplace]`). `cr exclude <profile>` and `cr list` show what each profile leaves out, and exports carry it.
 - `cr shared list`, `cr shared add <name> [--dir|--file]` and `cr shared remove <name>` share more files and folders of the home profile. Sign-ins, `.claude.json`, conversations, history and sessions can't be added, and the built-in items can't be removed.
 - The profile manager has a **Sharing…** window per profile: each shared item's state (shared, own copy, or what's left out), with **Own**, **Share again** and **Choose what's shared…**.
+- `cr config terminal wt|conhost` and `cr config shell cmd|pwsh|powershell` choose where `--tab` and the tray open sessions and which shell runs them. The `terminal` setting is now honoured (`conhost` forces a console window). With PowerShell, prompts and folders may contain `" % ! ;`. Also in the tray under **Advanced › New sessions open in**.
+- `cr wt-profiles [--remove]` adds a "Claude · <name>" Windows Terminal profile for each profile, kept up to date as profiles change.
+- `cr code [name] [dir]` opens VS Code (or Cursor with `--cursor`, or `--editor <exe>`) with the profile's environment, so the Claude Code extension uses that profile. The tray has **Open in VS Code…** for each profile.
 
 ### Fixed
 - A missing home Claude folder, or a shared link whose home folder is gone, is now reported as a problem (in `cr status` and the tray) instead of being skipped silently.

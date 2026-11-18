@@ -15,7 +15,9 @@ internal sealed record TrayMenuState(
     IReadOnlyDictionary<string, UsageReading>? Usage = null,
     IReadOnlyDictionary<string, UsageResult>? UsageResults = null,
     DateTimeOffset Now = default,
-    AutoSwitchSettings? AutoSwitch = null)
+    AutoSwitchSettings? AutoSwitch = null,
+    string Terminal = TerminalChoice.Wt,
+    string Shell = TerminalChoice.Cmd)
 {
     /// <summary>Profiles whose usage is tracked: Claude login, home included.</summary>
     public static bool TracksUsage(ProfileInfo p) => p.IsHome || p.Provider == Providers.Login;
@@ -49,6 +51,9 @@ internal sealed class TrayMenuActions
     public Action Exit { get; init; } = () => { };
     public Action RefreshUsage { get; init; } = () => { };
     public Action<bool> SetAutoSwitch { get; init; } = _ => { };
+    public Action<string> OpenInCode { get; init; } = _ => { };
+    public Action<string> SetTerminal { get; init; } = _ => { };
+    public Action<string> SetShell { get; init; } = _ => { };
 }
 
 /// <summary>Builds the tray menu. The default profile is bold (double-click starts it) and marked with a star.</summary>
@@ -128,6 +133,7 @@ internal static class TrayMenu
                                  + "Change the threshold and order in Manage profiles.";
         autoSwitch.Click += (_, _) => a.SetAutoSwitch(!autoSwitch.Checked);
         advanced.DropDownItems.Add(autoSwitch);
+        advanced.DropDownItems.Add(SessionsOpenIn(s, a, dpi));
         if (s.UpdateChecksAvailable)
         {
             var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
@@ -229,6 +235,9 @@ internal static class TrayMenu
         isolated.ToolTipText = "Uses a separate settings folder: no shared plugins, skills, hooks or MCP servers.";
         item.DropDownItems.Add(isolated);
         item.DropDownItems.Add(Item("Start in &folder…", Neutral(Glyph.FolderOpen, dpi), () => a.StartInFolder(name)));
+        var code = Item("Open in &VS Code…", Neutral(Glyph.Code, dpi), () => a.OpenInCode(name));
+        code.ToolTipText = "Opens a new VS Code window whose Claude Code extension uses this profile.";
+        item.DropDownItems.Add(code);
         var setDefault = Item(p.IsDefault ? "Already the default" : "Set as &default",
             p.IsDefault ? Glyphs.Get(Glyph.Star, GlyphSize, dpi, StatusColors.Accent) : Neutral(Glyph.StarOutline, dpi),
             () => a.SetDefault(name));
@@ -248,6 +257,31 @@ internal static class TrayMenu
                 item.DropDownItems.Add(new ToolStripMenuItem(row.Replace("&", "&&")) { Enabled = false });
         }
         return item;
+    }
+
+    /// <summary>Advanced › New sessions open in: the terminal, then the shell, each a radio-style choice.</summary>
+    static ToolStripMenuItem SessionsOpenIn(TrayMenuState s, TrayMenuActions a, int dpi)
+    {
+        var menu = new ToolStripMenuItem("New &sessions open in")
+        {
+            ToolTipText = "Where Start session opens Claude. Same as 'cr config terminal' and 'cr config shell'.",
+        };
+        PrepareDropDown(menu, dpi);
+        ToolStripMenuItem Choice(string text, bool on, Action pick)
+        {
+            var i = new ToolStripMenuItem(text) { Checked = on };
+            i.Click += (_, _) => { if (!on) pick(); };
+            return i;
+        }
+        menu.DropDownItems.Add(Choice("&Windows Terminal", s.Terminal != TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Wt)));
+        menu.DropDownItems.Add(Choice("Console wi&ndow", s.Terminal == TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Conhost)));
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var shell in TerminalChoice.Shells)
+        {
+            var key = shell switch { TerminalChoice.Pwsh => "PowerShell &7", TerminalChoice.PowerShell => "Windows &PowerShell", _ => "&Command Prompt" };
+            menu.DropDownItems.Add(Choice(key, s.Shell == shell, () => a.SetShell(shell)));
+        }
+        return menu;
     }
 
     /// <summary>Menu text: a literal &amp; is doubled so it isn't taken as a mnemonic.</summary>

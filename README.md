@@ -147,7 +147,7 @@ If you'd rather use the window, run `cr manage`. To open a session in a new Wind
 
 All commands work with either `clauderoo` or `cr`.
 
-`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `removed` and `purge` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
+`list`, `status`, `maps`, `which`, `check`, `usage`, `sessions`, `removed`, `purge`, `shared` and `config` take `--json` for scripts; other commands refuse it. The output starts with `"schemaVersion": 1`. `check --json` has the same shape for every provider: `{ok, verified, message, items}`, where `items` is the Vertex checklist and is empty for other providers. An error goes to stderr as `{"schemaVersion":1,"error":"…"}`. Exit codes: 0 = success, 1 = error (including a failed check), 2 = unexpected error.
 
 ### Profiles
 
@@ -173,13 +173,32 @@ All commands work with either `clauderoo` or `cr`.
 | Command | What it does |
 | --- | --- |
 | `start [name] [dir] [-- args]` | Run Claude for a profile in this terminal (`run` does the same). Without a name, the folder's mapping picks the profile, or else the default |
-| `start [name] [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead. Prompts there can't contain `" % ! ;` |
+| `start [name] [dir] --tab [-- args]` | Open it in a new Windows Terminal tab instead (see [Terminals, shells and editors](#terminals-shells-and-editors)). With the default Command Prompt shell, prompts there can't contain `" % ! ;`; with PowerShell any text works |
 | `start [name] [dir] --isolated` | Run with a separate config folder: no shared plugins, skills, hooks or MCP servers. A Claude login profile needs its own `/login` there once; other providers work right away |
 | `which [--json]` | Show which profile this terminal is using, and why |
 | `sessions [profile] [--json]` | List conversations across profiles (home's read-only, isolated folders included), newest first: id, profile, when, folder and your first prompt |
 | `resume <id> --as <profile> [--isolated] [--tab] [-- args]` | Continue a conversation under another profile. The start of the id is enough. It's copied into that profile (a newer or bigger copy there is kept; an older one is saved as `.bak-<time>`), then Claude starts in the conversation's own folder with `--resume`. Anything after `--` is passed on to Claude. It can't copy into the home profile, because clauderoo never writes inside `~/.claude`; `--as <home> --isolated` works, since that folder is clauderoo's |
 
 The tray does the same from **Continue a conversation…**. The window lists conversations across your profiles (when, profile, folder and your first prompt; nothing else of a conversation is shown), with a search box and a profile filter. Pick one, choose **Continue as** and press **Continue**: the conversation is copied into that profile and Claude opens in a new tab, in the conversation's own folder, resumed. The home profile appears only as "(isolated)" there, because clauderoo never writes inside `~/.claude`. If the conversation's folder no longer exists, the window says so instead of starting.
+
+### Terminals, shells and editors
+
+| Command | What it does |
+| --- | --- |
+| `config [--json]` | Show where new sessions open (`terminal`) and which shell runs them (`shell`) |
+| `config terminal wt\|conhost` | `wt` (default): a new Windows Terminal tab, or a console window when Windows Terminal isn't installed. `conhost`: always a classic console window |
+| `config shell cmd\|pwsh\|powershell` | The shell the new tab or window runs: Command Prompt (default), PowerShell 7 (`pwsh.exe`) or Windows PowerShell 5.1. It sets the profile's environment, runs `clauderoo run <profile>` and stays open afterwards |
+| `wt-profiles [--remove]` | Add a Windows Terminal profile for each clauderoo profile, named "Claude · &lt;name&gt;", with its own tab colour and the profile's start folder. They appear in Windows Terminal's new-tab dropdown (open a new Windows Terminal window to see them). Once added, they follow `add`, `rename`, `remove`, `restore`, `import` and the shell setting. `--remove` takes them out again |
+| `code [name] [dir] [--cursor \| --editor <exe>]` | Open VS Code on `dir` (default: the current folder) with the profile's environment, so the Claude Code extension in that window uses the profile. The profile is picked as `start` picks it. `--cursor` opens Cursor; `--editor` takes the path of another VS Code-based editor's `.exe` or `.cmd` launcher |
+
+The same choices are in the tray under **Advanced › New sessions open in**, and each profile's tray menu has **Open in VS Code…** (it opens the profile's start folder, or asks for one).
+
+**PowerShell and special characters.** With `pwsh` or `powershell`, the tab gets its commands as one encoded block that neither Windows Terminal nor Command Prompt reads, and every value in it is a quoted literal. So prompts and folders may contain any character, including `" % ! ; & '`. With `cmd`, the old limits stay.
+
+**VS Code and a running instance.** `code` needs VS Code's `code` command on `PATH` (the installer's "Add to PATH" option). It always asks VS Code for a new window and never changes your user environment. VS Code runs one process for all its windows. A new window gets the variables of the command that opened it, but VS Code can keep variables from its first start that the new command doesn't set. So:
+
+- A folder that's already open in VS Code is only brought to the front, and keeps the profile it was opened with. Close that window first.
+- Variables a profile sets always win, but a variable it doesn't set can carry over from VS Code's first start. The home profile has no `CLAUDE_CONFIG_DIR`, and only Claude-token profiles set a token. If VS Code was first started by `cr code` for another profile, a home-profile window (or a window of a profile without a token) may still use that profile. Quit VS Code completely and run `cr code` again. `cr code` says so when VS Code was already running.
 
 ### Folders
 

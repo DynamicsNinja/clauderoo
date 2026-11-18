@@ -32,6 +32,7 @@ internal enum Glyph
     Remove,        // E738  Skipped / Delete variable
     Save,          // E74E
     More,          // E712  a check still running
+    Code,          // E943  Open in VS Code
 }
 
 /// <summary>
@@ -72,6 +73,7 @@ internal static class Glyphs
         Glyph.Remove => '',
         Glyph.Save => '',
         Glyph.More => '',
+        Glyph.Code => '',
         _ => throw new ArgumentOutOfRangeException(nameof(glyph), glyph, null),
     };
 
@@ -103,6 +105,7 @@ internal static class Glyphs
         Glyph.Remove => "-",
         Glyph.Save => "↓",
         Glyph.More => "…",
+        Glyph.Code => "<>",
         _ => "?",
     };
 

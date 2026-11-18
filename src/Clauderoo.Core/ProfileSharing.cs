@@ -62,18 +62,21 @@ public partial class ProfileManager
 
         var notices = new List<string>();
         if (!isDir && !isFile) notices.Add($"{name} isn't in {cfg.HomeDir} yet; profiles get it once it's there.");
-        // What a profile already has under that name is its own: it keeps it rather than having it replaced.
-        foreach (var (p, e) in cfg.Profiles.Where(kv => !kv.Value.Home))
+        cfg = ConfigStore.Update(paths, c =>
         {
-            var mine = Path.Combine(paths.ProfileDir(p), name);
-            if ((Directory.Exists(mine) || File.Exists(mine)) && !e.Overrides.Contains(name))
+            // What a profile already has under that name is its own: it keeps it rather than having it replaced.
+            foreach (var (p, e) in c.Profiles.Where(kv => !kv.Value.Home))
             {
-                e.Overrides.Add(name);
-                notices.Add($"{p} keeps its own {name}. Run 'clauderoo share {p} {name}' to use home's instead.");
+                var mine = Path.Combine(paths.ProfileDir(p), name);
+                if ((Directory.Exists(mine) || File.Exists(mine)) && !e.Overrides.Contains(name))
+                {
+                    e.Overrides.Add(name);
+                    notices.Add($"{p} keeps its own {name}. Run 'clauderoo share {p} {name}' to use home's instead.");
+                }
             }
-        }
-        (k == SharedKind.Folder ? cfg.ExtraSharedDirs : cfg.ExtraSharedFiles).Add(name);
-        ConfigStore.Save(paths, cfg);
+            var list = k == SharedKind.Folder ? c.ExtraSharedDirs : c.ExtraSharedFiles;
+            if (!list.Contains(name, StringComparer.OrdinalIgnoreCase)) list.Add(name);
+        });
         var report = NewSyncer(cfg).SyncAll();
         report.Notices.InsertRange(0, notices);
         return report;
@@ -120,12 +123,17 @@ public partial class ProfileManager
             }
             else if (fileName != null && File.Exists(Path.Combine(paths.ProfileDir(p), item)))
                 report.Notices.Add($"{p} keeps its last copy of {item} as its own.");
-            e.Overrides.RemoveAll(o => o == item);
-            e.Exclude.RemoveAll(x => x.StartsWith(item + "/", StringComparison.Ordinal));
         }
-        cfg.ExtraSharedDirs.RemoveAll(d => d == item);
-        cfg.ExtraSharedFiles.RemoveAll(f => f == item);
-        ConfigStore.Save(paths, cfg);
+        ConfigStore.Update(paths, c =>
+        {
+            foreach (var e in c.Profiles.Values.Where(e => !e.Home))
+            {
+                e.Overrides.RemoveAll(o => o == item);
+                e.Exclude.RemoveAll(x => x.StartsWith(item + "/", StringComparison.Ordinal));
+            }
+            c.ExtraSharedDirs.RemoveAll(d => d == item);
+            c.ExtraSharedFiles.RemoveAll(f => f == item);
+        });
         return report;
     }
 
@@ -244,9 +252,12 @@ public partial class ProfileManager
         if (added.Count > 0 && entry.Overrides.Contains(item) && item != SharedItems.Plugins)
             notices.Add($"{name} owns {item}, so this applies only once it shares {item} again.");
 
-        entry.Exclude.RemoveAll(x => x.StartsWith(item + "/", StringComparison.Ordinal));
-        entry.Exclude.AddRange(wanted.Order(StringComparer.OrdinalIgnoreCase).Select(w => $"{item}/{w}"));
-        ConfigStore.Save(paths, cfg);
+        cfg = ConfigStore.Update(paths, c =>
+        {
+            var e = Entry(c, name);
+            e.Exclude.RemoveAll(x => x.StartsWith(item + "/", StringComparison.Ordinal));
+            e.Exclude.AddRange(wanted.Order(StringComparer.OrdinalIgnoreCase).Select(w => $"{item}/{w}"));
+        });
         var report = NewSyncer(cfg).Sync(name);
         report.Notices.InsertRange(0, notices);
         return report;
