@@ -45,11 +45,41 @@ sealed class ProfilesForm : Form
     private readonly Button _new = Btn("&New…");
     private readonly Button _rename = Btn("Rena&me…");
     private readonly Button _remove = Btn("Remo&ve");
-    private readonly Button _autoSwitch = Btn("Auto-s&witch…");
-    private readonly Button _export = Btn("E&xport…");
-    private readonly Button _import = Btn("Import…");
-    private readonly Button _removedCopies = Btn("Removed…");
-    private readonly Button _duplicate = Btn("Duplicate…");
+    // The menu bar: actions on the list and on clauderoo as a whole, kept out of the selected profile's settings.
+    private readonly MenuStrip _menu = new() { Dock = DockStyle.Top, RenderMode = ToolStripRenderMode.System, Padding = new Padding(0, 2, 0, 2) };
+    private readonly ToolStripMenuItem _autoSwitch = new("&Auto-switch…") { ToolTipText = "Switch the default profile when it nears a usage limit." };
+    private readonly ToolStripMenuItem _export = new("E&xport…");
+    private readonly ToolStripMenuItem _import = new("&Import…");
+    private readonly ToolStripMenuItem _removedCopies = new("&Restore removed profiles…") { ToolTipText = "Restore or permanently delete removed profiles." };
+    private readonly ToolStripMenuItem _duplicate = new("&Duplicate…");
+    private readonly ToolStripMenuItem _miRename = new("Rena&me…");
+    private readonly ToolStripMenuItem _miRemove = new("Remo&ve");
+
+    // Header: who the selected profile is, its usage, and the two things people come here to do.
+    private readonly Label _headName = new() { AutoSize = true, Margin = new Padding(0, 0, 0, 2), UseMnemonic = false };
+    private readonly GlyphLabel _headDetail = new() { Margin = new Padding(0, 0, 0, 4) };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 0) };
+    private readonly TabPage _tabAccount = Page("Account");
+    private readonly TabPage _tabFolders = Page("Folders");
+    private readonly TabPage _tabEnv = Page("Environment");
+    private readonly TabPage _tabSharing = Page("Sharing");
+    private readonly WrapLabel _sharingText = new() { Margin = new Padding(0, 0, 0, 8) };
+    private readonly WrapLabel _foldersNote = new()
+    {
+        Text = "Changes on this tab are saved right away.", ForeColor = SystemColors.GrayText, Margin = new Padding(0, 10, 0, 0),
+    };
+    private readonly Button _revert = Btn("Revert");
+    private readonly ComboBox _provider = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left, Margin = new Padding(0, 2, 0, 2),
+        AccessibleName = "Provider",
+    };
+    private static readonly string[] ProviderOrder = [Providers.Login, Providers.Vertex, Providers.ApiKey, Providers.Token];
+    // Vertex's model names are optional: folded away unless one is set.
+    private readonly LinkLabel _modelsToggle = new() { AutoSize = true, Margin = new Padding(0, 2, 0, 4) };
+    private readonly TableLayoutPanel _modelsPanel = FieldGrid();
+    private bool _modelsOpen;
+    private Font? _headFont;
 
     // Home: an explanation instead of disabled controls.
     private readonly TableLayoutPanel _homePanel;
@@ -59,11 +89,6 @@ sealed class ProfilesForm : Form
     private readonly GlyphLabel _homeAccount = new() { Margin = new Padding(0, 0, 0, 8) };
 
     private readonly TableLayoutPanel _providerRow;
-    private readonly RadioButton _rbLogin = Radio(TrayText.AccessKey(TrayText.ClaudeLogin, "login"));
-    private readonly RadioButton _rbVertex = Radio(TrayText.AccessKey(TrayText.Vertex, "x AI"));
-    private readonly RadioButton _rbApiKey = Radio(TrayText.AccessKey(TrayText.ApiKey, "API"));
-    // No access key: every letter of "Claude token" is taken by another control (arrow keys move between the radios).
-    private readonly RadioButton _rbToken = Radio(TrayText.Token);
 
     private readonly TableLayoutPanel _vertexPanel = FieldGrid();
     private readonly TextBox _project = Field("e.g. my-gcp-project");
@@ -95,10 +120,10 @@ sealed class ProfilesForm : Form
     private const string TokenCue = "Paste the token (sk-ant-oat…)";
 
     // Folders that `cr start` maps to this profile; changed right away (not part of Save).
-    private readonly Label _foldersLabel = new() { Text = "&Folders", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly Label _foldersLabel = new() { Text = "Projects that use this profile", AutoSize = true, Margin = new Padding(0, 0, 0, 0) };
     private readonly WrapLabel _foldersHint = new()
     {
-        Text = "'cr start' in one of these folders, or a folder inside it, uses this profile.",
+        Text = "Running 'cr start' in one of these folders, or a folder inside it, uses this profile.",
         ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 3),
     };
     private readonly TableLayoutPanel _foldersRow;
@@ -114,7 +139,7 @@ sealed class ProfilesForm : Form
     internal Button SharingButtonForTest => _sharing;
 
     // Start folder: where Start session (here and in the tray) opens; saved right away, like folder mappings.
-    private readonly Label _startDirLabel = new() { Text = "Start folder (used by Start session)", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
+    private readonly Label _startDirLabel = new() { Text = "Start session opens in", AutoSize = true, Margin = new Padding(0, 14, 0, 0) };
     private readonly TableLayoutPanel _startDirRow = Table(3);
     private readonly TextBox _startDir = new()
     {
@@ -122,22 +147,23 @@ sealed class ProfilesForm : Form
         PlaceholderText = "Your user folder", AccessibleName = "Start folder",
     };
     private readonly Button _browseStartDir = Btn("Browse…");
-    private readonly Button _clearStartDir = Btn("Clear");
+    private readonly Button _clearStartDir = Btn("Reset");
 
     private readonly TableLayoutPanel _loginPanel = FieldGrid();
     private readonly Label _account = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 0, 3), UseMnemonic = false };
 
     // Usage: a bar per window, the plan and "as of", and Refresh (Claude login); otherwise why it isn't tracked.
     private readonly UsageView? _usageView;
-    private readonly GroupBox _usageGroup = new()
+    // In the header, without a frame: Claude-login profiles only.
+    private readonly Panel _usageGroup = new()
     {
-        Text = "Usage", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 6), Padding = new Padding(8, 4, 8, 4),
+        AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 4), Padding = Padding.Empty,
     };
     private readonly TableLayoutPanel _usageRows = Table(3);
     // Right margin: the group's border and padding, so the wrapped lines stay inside it.
-    private readonly WrapLabel _usageInfo = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 20, 2) };
-    private readonly GlyphLabel _usageStatus = new() { Margin = new Padding(0, 2, 20, 2) };
+    private readonly WrapLabel _usageInfo = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
+    private readonly GlyphLabel _usageStatus = new() { Margin = new Padding(0, 2, 0, 2) };
     private readonly Button _usageRefresh = Btn("Re&fresh");
 
     // Required fields that are still empty (provider part).
@@ -147,7 +173,7 @@ sealed class ProfilesForm : Form
     private readonly Button _copy = Btn("Cop&y results");
     private readonly Button _signIn = Btn("Sign &in to Google…");
     // No access key: every letter of "Live check" is taken by another control.
-    private readonly CheckBox _liveCheck = new() { Text = "Live check", AutoSize = true, Margin = new Padding(6, 4, 6, 0) };
+    private readonly CheckBox _liveCheck = new() { Text = "Include a live test", AutoSize = true, Margin = new Padding(6, 4, 6, 0) };
     private readonly WrapLabel _liveNote = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 6) };
     private readonly GlyphLabel _checkStatus = new() { Margin = new Padding(0, 0, 0, 6) };
     private readonly CheckListView _checkList = new()
@@ -156,14 +182,14 @@ sealed class ProfilesForm : Form
     };
     private readonly FlowLayoutPanel _checkRow;
     private readonly TableLayoutPanel _root;
-    private readonly Panel _right;
+    private readonly TableLayoutPanel _right;
     private readonly TableLayoutPanel _top;
     private readonly FlowLayoutPanel _envButtons;
 
     private readonly Label _envLabel = new() { Text = "Environment variables", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
     private readonly WrapLabel _envHint = new()
     {
-        Text = "Extra environment variables for this profile (e.g. HTTPS_PROXY). Provider settings above are added automatically.",
+        Text = "clauderoo sets the provider's own variables for you; add only extras here (e.g. HTTPS_PROXY).",
         ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 3),
     };
     private readonly DataGridView _env = new()
@@ -176,7 +202,7 @@ sealed class ProfilesForm : Form
         SelectionMode = DataGridViewSelectionMode.CellSelect,
         BackgroundColor = SystemColors.Window, Margin = new Padding(0, 0, 0, 3),
     };
-    private readonly Button _envDelete = Btn("Delete varia&ble");
+    private readonly Button _envDelete = Btn("Remove varia&ble");
     private readonly GlyphLabel _envError = new() { Margin = new Padding(0, 3, 0, 0) };
 
     private readonly WrapLinkLabel _result = new()
@@ -196,7 +222,10 @@ sealed class ProfilesForm : Form
     private readonly Button _setDefault = Btn("Set as &default");
     private readonly Button _start = Btn("S&tart session");
     private readonly Button _save = Btn("&Save");
-    private readonly Button _useFromClaude = Btn("Use from Cl&aude…");
+    private readonly ToolStripMenuItem _useFromClaude = new("&Connect Claude to clauderoo (MCP)…")
+    {
+        ToolTipText = "Shows the command that lets a Claude session list profiles, check usage and hand prompts to another profile.",
+    };
 
     private readonly System.Windows.Forms.Timer _runningTimer = new() { Interval = 3000 };
     private Dictionary<string, int> _running = new(StringComparer.Ordinal);
@@ -222,7 +251,6 @@ sealed class ProfilesForm : Form
     private CancellationTokenSource? _checkCts; // the running setup check, if any
     private Task? _checkTask;      // its background task (completes once its claude process is killed)
     private CheckProgressModel? _checkProgress; // its live checklist (rows fill in as each check finishes)
-    private int _baseMinHeight;    // minimum window height for the content measured at startup
 
     /// <param name="showProblems">Opens the tray's Problems window; without it a result lists problem titles only.</param>
     /// <param name="usage">The tray's usage readings and Refresh; without it the Usage group says nothing is known yet.</param>
@@ -245,31 +273,48 @@ sealed class ProfilesForm : Form
         try { Icon = _icon = AppIcons.Load(AppIconState.Normal, _highContrast); }
         catch (Exception) { /* keep the default icon */ }
 
-        // Left: profile list + New / Rename / Remove.
-        _list.MinimumSize = new Size(230, 200);
+        // Left: the profile list, with the three things done to a row under it. The rest is in the File menu.
+        _list.MinimumSize = new Size(250, 200);
         _list.AccessibleName = "Profiles";
         var leftButtons = _leftButtons = Flow(FlowDirection.LeftToRight);
-        leftButtons.Controls.AddRange([_new, _duplicate, _rename, _remove]);
-        var transferButtons = Flow(FlowDirection.LeftToRight);
-        transferButtons.Margin = new Padding(0, 6, 0, 0);
-        transferButtons.Controls.AddRange([_export, _import, _removedCopies]);
-        // Auto-switch applies to every profile, so it sits under the list rather than in the editor.
-        _autoSwitch.Margin = new Padding(0, 6, 6, 0);
-        _tips.SetToolTip(_autoSwitch, "Switch the default profile when it nears a usage limit.");
+        leftButtons.Margin = new Padding(0, 0, 0, 0);
+        leftButtons.Controls.AddRange([_new, _rename, _remove]);
         var left = Table(1);
         left.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 12, 0);
-        left.RowCount = 4;
+        left.RowCount = 2;
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_list, 0, 0);
         left.Controls.Add(leftButtons, 0, 1);
-        left.Controls.Add(transferButtons, 0, 2);
-        left.Controls.Add(_autoSwitch, 0, 3);
 
-        // Right: the home explanation, or the provider choice.
+        // Menu bar.
+        var file = new ToolStripMenuItem("&File");
+        file.DropDownItems.AddRange([
+            new ToolStripMenuItem("&New profile…", null, (_, _) => Guard(NewProfile)),
+            _duplicate, _miRename, _miRemove,
+            new ToolStripSeparator(),
+            _import, _export, _removedCopies,
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("&Close", null, (_, _) => Close()),
+        ]);
+        // Rename and Remove follow their buttons (enabled, and why not).
+        file.DropDownOpening += (_, _) =>
+        {
+            _miRename.Enabled = _rename.Enabled;
+            _miRemove.Enabled = _remove.Enabled;
+            _miRemove.ToolTipText = _remove.AccessibleDescription;
+        };
+        _miRename.Click += (_, _) => Guard(RenameProfile);
+        _miRemove.Click += (_, _) => Guard(RemoveProfile);
+        var tools = new ToolStripMenuItem("Too&ls");
+        tools.DropDownItems.AddRange([_autoSwitch, _useFromClaude]);
+        _menu.Items.AddRange([file, tools]);
+        _menu.ShowItemToolTips = true;
+        foreach (var dd in new[] { file, tools }) dd.DropDown.ShowItemToolTips = true;
+        MainMenuStrip = _menu;
+
+        // Account tab: the home explanation, or the provider and its fields, then the setup check.
         _homePanel = Table(1);
         _homePanel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _homePanel.Margin = new Padding(0, 0, 0, 6);
@@ -278,20 +323,25 @@ sealed class ProfilesForm : Form
         _homePanel.Controls.Add(_whatsShared, 0, 2);
         _homePanel.Controls.Add(_homeAccount, 0, 3);
 
-        var radios = Flow(FlowDirection.TopDown);
-        radios.Controls.AddRange([_rbLogin, _rbVertex, _rbApiKey, _rbToken]);
+        foreach (var p in ProviderOrder) _provider.Items.Add(TrayText.ProviderName(p));
+        _provider.SelectedIndex = 0;
+        _provider.MinimumSize = new Size(240, 0);
         _providerRow = Table(2);
+        _providerRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _providerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         // Each label sits right before its control in the tab order, so its mnemonic moves focus there.
-        _providerRow.Controls.Add(new Label { Text = "Pr&ovider:", AutoSize = true, Margin = new Padding(0, 4, 12, 0) }, 0, 0);
-        _providerRow.Controls.Add(radios, 1, 0);
-        _providerRow.Margin = new Padding(0, 0, 0, 6);
+        _providerRow.Controls.Add(new Label { Text = "Pr&ovider:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 3, 12, 3) }, 0, 0);
+        _providerRow.Controls.Add(_provider, 1, 0);
+        _providerRow.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _providerRow.Margin = new Padding(0, 0, 0, 8);
 
         AddField(_vertexPanel, "&Project:", _project);
         AddField(_vertexPanel, "&Region:", _region);
-        AddField(_vertexPanel, "Sonn&et model:", _sonnet);
-        AddField(_vertexPanel, "Op&us model:", _opus);
-        AddField(_vertexPanel, "&Haiku model:", _haiku);
-        _vertexPanel.Margin = new Padding(0, 0, 0, 2);
+        _vertexPanel.Margin = new Padding(0, 0, 0, 0);
+        AddField(_modelsPanel, "Sonn&et model:", _sonnet);
+        AddField(_modelsPanel, "Op&us model:", _opus);
+        AddField(_modelsPanel, "&Haiku model:", _haiku);
+        _modelsPanel.Margin = new Padding(0, 0, 0, 2);
         foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey, _token })
             tb.MinimumSize = new Size(240, 0);
         _apiKey.UseSystemPasswordChar = true;
@@ -302,25 +352,16 @@ sealed class ProfilesForm : Form
         _tokenPanel.Margin = new Padding(0, 0, 0, 2);
         AddField(_loginPanel, "Account:", _account);
 
-        // Usage group: rows of name | bar | value, then the plan / "as of" line, a status line and Refresh.
-        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _usageRows.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _usageRefresh.Margin = new Padding(0, 2, 0, 2);
-        var usageBody = Table(1);
-        usageBody.Dock = DockStyle.Fill;
-        usageBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Control[] usageParts = [_usageRows, _usageInfo, _usageStatus, _usageRefresh];
-        usageBody.RowCount = usageParts.Length;
-        for (var i = 0; i < usageParts.Length; i++)
-        {
-            usageBody.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            usageBody.Controls.Add(usageParts[i], 0, i);
-        }
-        _usageGroup.Controls.Add(usageBody);
+        _checkRow = Flow(FlowDirection.LeftToRight);
+        _checkRow.Margin = new Padding(0, 8, 0, 4);
+        _checkRow.Controls.AddRange([_check, _liveCheck, _copy, _signIn]);
 
-        // Folders: the list, with its buttons stacked on the right.
+        var account = Content(
+            _homePanel, _providerRow, _vertexPanel, _modelsToggle, _modelsPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp,
+            _forget, _loginPanel, _fieldError, _checkRow, _liveNote, _checkStatus, _checkList);
+        _tabAccount.Controls.Add(account);
+
+        // Folders tab: the projects that pick this profile, then where Start session opens. Both saved right away.
         var folderButtons = Flow(FlowDirection.TopDown);
         _addFolder.Margin = new Padding(0, 0, 0, 4);
         _removeFolder.Margin = Padding.Empty;
@@ -343,119 +384,153 @@ sealed class ProfilesForm : Form
         _startDirRow.Controls.Add(_startDir, 0, 0);
         _startDirRow.Controls.Add(_browseStartDir, 1, 0);
         _startDirRow.Controls.Add(_clearStartDir, 2, 0);
+        var folders = Content(_foldersLabel, _foldersHint, _foldersRow, _startDirLabel, _startDirRow, _foldersNote);
+        _tabFolders.Controls.Add(folders);
 
-        _checkRow = Flow(FlowDirection.LeftToRight);
-        _checkRow.Margin = new Padding(0, 0, 0, 4);
-        _checkRow.Controls.AddRange([_check, _liveCheck, _copy, _signIn]);
-
+        // Environment tab: the grid takes the height.
         var envButtons = _envButtons = Flow(FlowDirection.LeftToRight);
         envButtons.Controls.Add(_envDelete);
+        envButtons.Padding = new Padding(0, 3, 0, 0);
         _env.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Name", FillWeight = 40 });
         _env.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Value", FillWeight = 60 });
-        _env.MinimumSize = new Size(380, 140);
-
-        // Right column: provider part on top (auto-sized), env buttons at the bottom, the grid fills the rest.
-        // Explicit cells: auto-placement skips invisible controls, which would shift rows when panels swap.
-        var top = _top = Table(1);
-        top.Dock = DockStyle.Top;
-        top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Control[] topRows =
-        [
-            _homePanel, _providerRow, _vertexPanel, _vertexHelp, _apiKeyPanel, _tokenPanel, _tokenHelp, _forget, _loginPanel,
-            _usageGroup, _fieldError, _checkRow, _liveNote, _checkStatus, _checkList, _foldersLabel, _foldersHint, _foldersRow,
-            _startDirLabel, _startDirRow,
-            _sharing,
-            _envLabel, _envHint,
-        ];
-        top.RowCount = topRows.Length;
-        for (var i = 0; i < topRows.Length; i++)
-        {
-            top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            top.Controls.Add(topRows[i], 0, i);
-        }
-        // Below it: the grid takes the rest, then its error line and buttons.
-        envButtons.Padding = new Padding(0, 3, 0, 0);
+        _env.MinimumSize = new Size(300, 100);
         _env.Dock = DockStyle.Fill;
         var envArea = Table(1);
         envArea.AutoSize = false;
         envArea.Dock = DockStyle.Fill;
         envArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        envArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         envArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         envArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         envArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        envArea.Controls.Add(_env, 0, 0);
-        envArea.Controls.Add(_envError, 0, 1);
-        envArea.Controls.Add(envButtons, 0, 2);
-        var right = _right = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        right.Controls.Add(envArea); // docked last, so it fills what the top leaves
-        right.Controls.Add(top);
+        envArea.Controls.Add(_envHint, 0, 0);
+        envArea.Controls.Add(_env, 0, 1);
+        envArea.Controls.Add(_envError, 0, 2);
+        envArea.Controls.Add(envButtons, 0, 3);
+        _tabEnv.Controls.Add(envArea);
+        _tabEnv.AutoScroll = false;
 
-        // Bottom: status line with optional Undo (wraps, spans the window), then the note and the actions.
-        _result.Visible = false;
-        _result.Margin = new Padding(0, 8, 0, 0);
-        var bottomButtons = Flow(FlowDirection.LeftToRight);
-        bottomButtons.Anchor = AnchorStyles.Right;
-        bottomButtons.Controls.AddRange([_setDefault, _start, _unsaved, _save]);
-        // "Use from Claude…" is about clauderoo as a whole, not the selected profile, so it sits apart on the left.
-        _useFromClaude.Anchor = AnchorStyles.Left;
-        _useFromClaude.Margin = new Padding(0, 0, 12, 0);
-        var bottom = Table(3);
+        // Sharing tab.
+        _sharing.Margin = new Padding(0, 2, 0, 6);
+        var sharing = Content(_sharingText, _sharing);
+        _tabSharing.Controls.Add(sharing);
+
+        _tabs.TabPages.AddRange([_tabAccount, _tabFolders, _tabEnv, _tabSharing]);
+
+        // Header: name, provider and account (and sessions running), usage bars; Start session and Set as default.
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _usageRows.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _usageRefresh.Margin = new Padding(0, 2, 0, 2);
+        var usageBody = Table(1);
+        usageBody.Dock = DockStyle.Top;
+        usageBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Control[] usageParts = [_usageRows, _usageInfo, _usageStatus, _usageRefresh];
+        usageBody.RowCount = usageParts.Length;
+        for (var i = 0; i < usageParts.Length; i++)
+        {
+            usageBody.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            usageBody.Controls.Add(usageParts[i], 0, i);
+        }
+        _usageGroup.Controls.Add(usageBody);
+        _usageGroup.MinimumSize = new Size(300, 0);
+
+        var headButtons = Flow(FlowDirection.LeftToRight);
+        headButtons.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _start.Margin = Padding.Empty;
+        headButtons.Controls.AddRange([_setDefault, _start]);
+        var header = Table(2);
+        header.Dock = DockStyle.Fill;
+        header.Margin = new Padding(0, 0, 0, 4);
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.RowCount = 3;
+        for (var i = 0; i < 3; i++) header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        header.Controls.Add(_headName, 0, 0);
+        header.Controls.Add(headButtons, 1, 0);
+        header.SetRowSpan(headButtons, 2);
+        header.Controls.Add(_headDetail, 0, 1);
+        header.Controls.Add(_usageGroup, 0, 2);
+        header.SetColumnSpan(_usageGroup, 2);
+
+        // Under the tabs: the restart note, then Save for the Account and Environment tabs.
+        var saveButtons = Flow(FlowDirection.LeftToRight);
+        saveButtons.Anchor = AnchorStyles.Right;
+        _save.Margin = Padding.Empty;
+        saveButtons.Controls.AddRange([_unsaved, _revert, _save]);
+        var bottom = Table(2);
         bottom.Dock = DockStyle.Fill;
         bottom.Margin = new Padding(0, 8, 0, 0);
-        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.Controls.Add(_useFromClaude, 0, 0);
-        bottom.Controls.Add(_restartNote, 1, 0);
-        bottom.Controls.Add(bottomButtons, 2, 0);
+        bottom.Controls.Add(_restartNote, 0, 0);
+        bottom.Controls.Add(saveButtons, 1, 0);
 
+        var right = _right = Table(1);
+        right.AutoSize = false;
+        right.Dock = DockStyle.Fill;
+        right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        right.RowCount = 3;
+        right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        right.Controls.Add(header, 0, 0);
+        right.Controls.Add(_tabs, 0, 1);
+        right.Controls.Add(bottom, 0, 2);
+        _top = account;
+
+        // Below both columns: the status line, with an optional Undo, across the window.
+        _result.Visible = false;
+        _result.Margin = new Padding(0, 8, 0, 0);
         var root = _root = Table(2);
         root.Dock = DockStyle.Fill;
         root.AutoSize = false;
-        root.RowCount = 3;
+        root.RowCount = 2;
         root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(left, 0, 0);
         root.Controls.Add(right, 1, 0);
         root.Controls.Add(_result, 0, 1);
         root.SetColumnSpan(_result, 2);
-        root.Controls.Add(bottom, 0, 2);
-        root.SetColumnSpan(bottom, 2);
-        Controls.Add(root);
+        root.Margin = new Padding(0, 6, 0, 0);
+        var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 6, 12, 12) };
+        body.Controls.Add(root);
+        Controls.Add(body);
+        Controls.Add(_menu); // docked after the body, so it takes the top edge first
+        Padding = Padding.Empty;
 
         // All Padding/Margin/MinimumSize literals above are logical (96 DPI) units: scale them once.
         ScaleLiterals(this);
         ApplyDpiResources();
         AcceptButton = _save;
 
-        // Size the window from its content, measured with the largest provider panel and every optional line showing.
-        _homePanel.Visible = _apiKeyPanel.Visible = _tokenPanel.Visible = _tokenHelp.Visible = _loginPanel.Visible = false;
-        _forget.Visible = _liveCheck.Visible = _liveNote.Visible = false;
-        _unsaved.Visible = true;
-        var rightWidth = Math.Max(_vertexPanel.GetPreferredSize(Size.Empty).Width, _env.MinimumSize.Width);
-        foreach (var w in new[] { _vertexHelp, _foldersHint, _envHint }) w.WrapTo(rightWidth - w.Margin.Horizontal);
-        var topPref = top.GetPreferredSize(Size.Empty);
-        right.Size = new Size(rightWidth,
-            topPref.Height + envButtons.GetPreferredSize(Size.Empty).Height + envButtons.Padding.Vertical + _env.MinimumSize.Height);
-        var pref = root.GetPreferredSize(Size.Empty);
-        ClientSize = new Size(pref.Width + Padding.Horizontal, pref.Height + Padding.Vertical);
-        MinimumSize = Size;
-        _baseMinHeight = MinimumSize.Height;
-        _unsaved.Visible = false;
-        _restartNote.Visible = false;
-        // The grid gives up height to long status lines before the window has to grow (EnsureFits).
-        _env.MinimumSize = new Size(_env.MinimumSize.Width, LogicalToDeviceUnits(70));
+        // A fixed, comfortable size: every tab scrolls on its own, so the window never has to grow to fit.
+        ClientSize = new Size(LogicalToDeviceUnits(900), LogicalToDeviceUnits(640));
+        MinimumSize = new Size(LogicalToDeviceUnits(760), LogicalToDeviceUnits(520));
         _checkList.MaxContentHeight = LogicalToDeviceUnits(190);
 
         // Status labels wrap to the width of their column.
-        WrapTo(top, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _liveNote, _fieldError, _checkStatus, _checkList,
-            _foldersHint, _envHint, _usageInfo, _usageStatus);
-        WrapTo(right, _envError);
+        WrapTo(account, _homeHeading, _homeText, _homeAccount, _vertexHelp, _tokenHelp, _liveNote, _fieldError, _checkStatus, _checkList);
+        WrapTo(folders, _foldersHint, _foldersNote);
+        WrapTo(envArea, _envHint, _envError);
+        WrapTo(sharing, _sharingText);
+        WrapTo(_usageGroup, _usageInfo, _usageStatus);
         WrapTo(root, _result);
+        // The header's detail line wraps beside the buttons, not under them.
+        void FitHeader()
+        {
+            _headDetail.WrapTo(Math.Max(1, header.ClientSize.Width - headButtons.Width - headButtons.Margin.Horizontal - _headDetail.Margin.Horizontal));
+            header.PerformLayout();
+        }
+        _headDetail.AutoSize = false;
+        _headDetail.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        _headDetail.TextChanged += (_, _) => FitHeader();
+        header.SizeChanged += (_, _) => FitHeader();
+        FitHeader();
         // SizeChanged: a wrapped label takes its new height after TextChanged has been raised.
         foreach (var c in new Control[] { _checkStatus, _fieldError, _envError, _homeText, _checkList, _usageGroup })
             c.SizeChanged += (_, _) => EnsureFits();
@@ -478,23 +553,22 @@ sealed class ProfilesForm : Form
         _export.Click += (_, _) => Guard(ExportProfiles);
         _import.Click += (_, _) => Guard(ImportProfiles);
         _removedCopies.Click += (_, _) => Guard(ShowRemovedCopies);
-        _tips.SetToolTip(_removedCopies, "Restore or permanently delete removed profiles.");
         _duplicate.Click += (_, _) => Guard(DuplicateProfile);
         _browseStartDir.Click += (_, _) => Guard(BrowseStartDir);
         _clearStartDir.Click += (_, _) => Guard(ClearStartDir);
-        foreach (var rb in new[] { _rbLogin, _rbVertex, _rbApiKey, _rbToken })
-            rb.CheckedChanged += (_, _) =>
-            {
-                if (!rb.Checked) return;
-                UpdateProviderPanels();
-                OnEdited();
-            };
+        _provider.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateProviderPanels();
+            OnEdited();
+        };
+        _modelsToggle.LinkClicked += (_, _) => { _modelsOpen = !_modelsOpen; UpdateProviderPanels(); };
+        _revert.Click += (_, _) => Guard(() => LoadProfile(_currentInfo));
+        _tips.SetToolTip(_revert, "Throw away the unsaved changes on the Account and Environment tabs.");
         foreach (var tb in new[] { _project, _region, _sonnet, _opus, _haiku, _apiKey, _token })
             tb.TextChanged += (_, _) => OnEdited();
         _folders.SelectedIndexChanged += (_, _) => _removeFolder.Enabled = _folders.SelectedIndex >= 0;
         _addFolder.Click += (_, _) => Guard(AddFolder);
         _removeFolder.Click += (_, _) => Guard(RemoveFolder);
-        _sharing.Margin = new Padding(0, LogicalToDeviceUnits(2), 0, LogicalToDeviceUnits(6));
         _tips.SetToolTip(_sharing, "Choose what this profile shares with your home profile, owns, or leaves out.");
         _sharing.Click += (_, _) => Guard(() => { if (_current != null) SharingDialog.ShowFor(this, _pm, _current, w => RunWriteAsync(w)); });
         // Commit each keystroke so validation and the Save state follow typing in the grid.
@@ -548,9 +622,8 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_autoSwitch, Glyph.Settings),
-                     (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove),
-                     (_export, Glyph.Save), (_import, Glyph.FolderOpen), (_removedCopies, Glyph.Undo),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh),
+                     (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove), (_revert, Glyph.Undo),
                  })
         {
             b.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
@@ -558,11 +631,23 @@ sealed class ProfilesForm : Form
             b.TextImageRelation = TextImageRelation.ImageBeforeText;
         }
 
+        foreach (var (m, g) in new (ToolStripMenuItem, Glyph)[]
+                 {
+                     (_duplicate, Glyph.Add), (_miRename, Glyph.Rename), (_miRemove, Glyph.Delete), (_export, Glyph.Save),
+                     (_import, Glyph.FolderOpen), (_removedCopies, Glyph.Undo), (_autoSwitch, Glyph.Settings), (_useFromClaude, Glyph.Code),
+                 })
+            m.Image = Glyphs.Get(g, 16, dpi, SystemColors.ControlText);
+
         var old = _boldFont;
         _boldFont = new Font(Font, FontStyle.Bold);
         _save.Font = _boldFont; // the primary action (also the AcceptButton)
+        _start.Font = _boldFont; // the window's other main action
         _homeHeading.Font = _boldFont;
         old?.Dispose();
+        var oldHead = _headFont;
+        _headFont = new Font(Font.FontFamily, Font.SizeInPoints + 4, FontStyle.Bold, GraphicsUnit.Point);
+        _headName.Font = _headFont;
+        oldHead?.Dispose();
 
         var line = TextRenderer.MeasureText("Ag", _boldFont).Height;
         _list.ItemHeight = Math.Min(255, 2 * line + LogicalToDeviceUnits(12));
@@ -736,10 +821,30 @@ sealed class ProfilesForm : Form
             right2 = Badge(right2, line2, glyph, selected ? fore : color,
                 rec.Status == CheckStatus.Ok ? When(rec.At) : "", muted);
         }
+        // Usage, right-aligned, so the list shows which account has room without clicking each one.
+        if (!TrayText.IsSignedOut(info) && TrayText.UsageNotTrackedFor(info) == null
+            && _usageView?.Readings.GetValueOrDefault(info.Name) is { } reading)
+        {
+            var parts = TrayText.UsageSuffixParts(reading, WarnFrom()).Where(x => x.Text != " · ").ToList();
+            if (parts.Count > 0)
+            {
+                var text = string.Join(" · ", parts.Select(x => x.Text));
+                var level = parts.Max(x => x.Level);
+                var ink = selected ? fore : level switch
+                {
+                    UsageLevel.High => StatusColors.Fail,
+                    UsageLevel.Warn => StatusColors.Warn,
+                    _ => SystemColors.GrayText,
+                };
+                var tw = TextRenderer.MeasureText(g, text, _list.Font, Size.Empty, RowMeasure).Width + 1;
+                TextRenderer.DrawText(g, text, _list.Font, new Rectangle(right2 - tw, line2.Top, tw, line2.Height), ink, RowText);
+                right2 -= tw + D(10);
+            }
+        }
         var icon = Glyphs.Get(ProviderGlyph(info.Provider), 12, dpi, muted);
         g.DrawImage(icon, new Rectangle(line2.Left, line2.Top + (line2.Height - icon.Height) / 2, icon.Width, icon.Height));
         var tx = line2.Left + icon.Width + gap;
-        TextRenderer.DrawText(g, TrayText.Describe(info), _list.Font, new Rectangle(tx, line2.Top, Math.Max(0, right2 - tx), line2.Height), muted, RowText);
+        TextRenderer.DrawText(g, TrayText.ShortDescribe(info), _list.Font, new Rectangle(tx, line2.Top, Math.Max(0, right2 - tx), line2.Height), muted, RowText);
 
         if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
@@ -774,6 +879,7 @@ sealed class ProfilesForm : Form
         if (now.Count == _running.Count && now.All(kv => _running.TryGetValue(kv.Key, out var v) && v == kv.Value)) return;
         _running = now;
         _list.Invalidate();
+        UpdateHeader();
         UpdateRestartNote();
     }
 
@@ -803,17 +909,20 @@ sealed class ProfilesForm : Form
 
             if (info == null)
             {
-                _rbLogin.Checked = true;
+                ChooseProvider(Providers.Login);
                 _account.Text = "";
+                _modelsOpen = false;
             }
             else
             {
-                _account.Text = info.Email ?? "Not signed in — start a session to sign in.";
+                // The header already says "not signed in": here, what to do about it.
+                _account.Text = info.Email ?? "Start a session to sign in.";
                 if (info.IsHome) ShowHome(info);
                 else
                 {
                     var entry = _pm.Get(info.Name);
                     var v = entry.Vertex;
+                    _modelsOpen = v is { } m && !string.IsNullOrWhiteSpace((m.SonnetModel ?? "") + m.OpusModel + m.HaikuModel);
                     if (v != null)
                     {
                         _project.Text = v.Project;
@@ -830,17 +939,11 @@ sealed class ProfilesForm : Form
                     foreach (var kv in _pm.GetEnv(info.Name).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
                         _env.Rows.Add(kv.Key, kv.Value);
                 }
-                var provider = info.IsHome ? Providers.Login : info.Provider;
-                (provider switch
-                {
-                    Providers.Vertex => _rbVertex,
-                    Providers.ApiKey => _rbApiKey,
-                    Providers.Token => _rbToken,
-                    _ => _rbLogin,
-                }).Checked = true;
+                ChooseProvider(info.IsHome ? Providers.Login : info.Provider);
             }
 
             _start.Enabled = info != null;
+            UpdateHeader();
             UpdateRestartNote();
             ShowUsage();
             UpdateProviderPanels();
@@ -895,11 +998,13 @@ sealed class ProfilesForm : Form
 
             // Vertex, API-key and token profiles: never polled, never peeked; the window just says why.
             var notTracked = TrayText.UsageNotTrackedFor(info);
-            _usageRefresh.Visible = notTracked == null && _usageView != null;
-            if (notTracked != null)
+            _usageRefresh.Visible = notTracked == null && _usageView != null && info.Email != null;
+            // Vertex, API key and token: nothing to show, so nothing takes room. Signed out: the header says so.
+            if (notTracked != null || info.Email == null)
             {
+                _usageGroup.Visible = false;
                 _usageRows.Visible = false;
-                _usageInfo.Text = notTracked;
+                _usageInfo.Text = "";
                 _usageStatus.Show(null, StatusColors.Muted, "");
                 return;
             }
@@ -913,7 +1018,6 @@ sealed class ProfilesForm : Form
 
             _usageInfo.Text = reading != null
                 ? (reading.Plan is { } plan ? $"Plan: {plan} · " : "") + "as of " + TrayText.UsageTime(reading.FetchedAt, now)
-                : info.Email == null ? "Not signed in — start a session to sign in."
                 : "Not checked yet.";
             if (TrayText.UsageStatus(last) is { } why)
                 _usageStatus.Show(Glyph.Warning, StatusColors.Warn, why);
@@ -940,7 +1044,7 @@ sealed class ProfilesForm : Form
         }, 0, row);
         _usageRows.Controls.Add(new UsageBar
         {
-            Percent = w.Percent, Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Percent = w.Percent, WarnFrom = WarnFrom(), Anchor = AnchorStyles.Left | AnchorStyles.Right,
             MinimumSize = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
             Size = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
             Margin = new Padding(0, LogicalToDeviceUnits(3), 0, LogicalToDeviceUnits(3)),
@@ -966,7 +1070,14 @@ sealed class ProfilesForm : Form
         }
     }
 
-    /// <summary>A flat bar: green below 70 %, amber from 70 %, red from 90 % (<see cref="TrayText.UsageLevelOf"/>).</summary>
+    // Where the bars turn amber: the same rule as the tray menu.
+    private int WarnFrom()
+    {
+        try { return TrayText.WarnThreshold(_pm.Config.AutoSwitch); }
+        catch (ClauderooException) { return TrayText.DefaultWarn; }
+    }
+
+    /// <summary>A flat bar coloured like the tray menu (<see cref="TrayText.UsageLevelOf"/>): amber from WarnFrom, red from 90 %.</summary>
     private sealed class UsageBar : Control
     {
         private double _percent;
@@ -980,6 +1091,9 @@ sealed class ProfilesForm : Form
         }
 
         [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public int WarnFrom { get; set; } = TrayText.DefaultWarn;
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
         public double Percent
         {
             get => _percent;
@@ -990,7 +1104,7 @@ sealed class ProfilesForm : Form
         {
             var r = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var back = new SolidBrush(SystemColors.Window)) e.Graphics.FillRectangle(back, r);
-            var ink = TrayText.UsageLevelOf(_percent) switch
+            var ink = TrayText.UsageLevelOf(_percent, WarnFrom) switch
             {
                 UsageLevel.High => StatusColors.Fail,
                 UsageLevel.Warn => StatusColors.Warn,
@@ -1005,8 +1119,55 @@ sealed class ProfilesForm : Form
     }
 
     private string SelectedProvider =>
-        _rbVertex.Checked ? Providers.Vertex : _rbApiKey.Checked ? Providers.ApiKey
-        : _rbToken.Checked ? Providers.Token : Providers.Login;
+        _provider.SelectedIndex is >= 0 and var i && i < ProviderOrder.Length ? ProviderOrder[i] : Providers.Login;
+
+    private void ChooseProvider(string provider)
+    {
+        var i = Array.IndexOf(ProviderOrder, provider);
+        _provider.SelectedIndex = i < 0 ? 0 : i;
+    }
+
+    /// <summary>
+    /// The header for the profile shown: its name, then provider · account (and default, home, sessions running).
+    /// Follows the saved settings, not unsaved edits.
+    /// </summary>
+    private void UpdateHeader()
+    {
+        var info = _currentInfo;
+        if (info == null)
+        {
+            _headName.Text = "No profile selected";
+            _headDetail.Show(null, SystemColors.GrayText, "");
+            return;
+        }
+        _headName.Text = info.Name;
+        var parts = new List<string> { TrayText.ProviderName(info.IsHome ? Providers.Login : info.Provider) };
+        if (TrayText.Account(info) is { } a) parts.Add(a);
+        if (info.IsDefault) parts.Add("default");
+        if (info.IsHome) parts.Add("home");
+        if (_running.TryGetValue(info.Name, out var n) && n > 0) parts.Add(TrayText.Running(n));
+        _headDetail.Show(ProviderGlyph(info.IsHome ? Providers.Login : info.Provider), SystemColors.GrayText, string.Join(" · ", parts));
+    }
+
+    // The tabs a profile has: home has no provider fields or environment of its own here, but still has folders.
+    private void UpdateTabs(bool editable)
+    {
+        var want = _current == null ? new[] { _tabAccount }
+            : editable ? new[] { _tabAccount, _tabFolders, _tabEnv, _tabSharing }
+            : new[] { _tabAccount, _tabFolders, _tabSharing };
+        if (_tabs.TabPages.Cast<TabPage>().SequenceEqual(want)) return;
+        var selected = _tabs.SelectedTab;
+        _tabs.TabPages.Clear();
+        _tabs.TabPages.AddRange(want);
+        if (selected != null && want.Contains(selected)) _tabs.SelectedTab = selected;
+    }
+
+    private void UpdateTabCaptions()
+    {
+        static string With(string name, int n) => n > 0 ? $"{name} ({n})" : name;
+        _tabFolders.Text = With("Folders", _folders.Items.Count);
+        _tabEnv.Text = With("Environment", EnvRows().Count());
+    }
 
     // Shows what fits the selected profile: the home explanation, or the provider fields, checks and env vars.
     private void UpdateProviderPanels()
@@ -1016,7 +1177,13 @@ sealed class ProfilesForm : Form
         var p = SelectedProvider;
         _homePanel.Visible = _current != null && _currentIsHome;
         _providerRow.Visible = editable;
-        _vertexPanel.Visible = _vertexHelp.Visible = editable && p == Providers.Vertex;
+        _vertexPanel.Visible = _vertexHelp.Visible = _modelsToggle.Visible = editable && p == Providers.Vertex;
+        _modelsPanel.Visible = editable && p == Providers.Vertex && _modelsOpen;
+        _modelsToggle.Text = (_modelsOpen ? "▾ " : "▸ ") + "Models (optional)";
+        UpdateTabs(editable);
+        _sharingText.Text = _currentIsHome ? WhatsSharedText
+            : "Choose what this profile shares with your home profile (settings, plugins, skills, hooks, MCP servers and " +
+              "more), keeps its own copy of, or leaves out. Changes are saved right away.";
         _apiKeyPanel.Visible = editable && p == Providers.ApiKey;
         _tokenPanel.Visible = _tokenHelp.Visible = editable && p == Providers.Token;
         _loginPanel.Visible = editable && p == Providers.Login;
@@ -1030,8 +1197,9 @@ sealed class ProfilesForm : Form
         UpdateLiveNote();
         UpdateForgetLink();
         _envLabel.Visible = _envHint.Visible = _env.Visible = _envButtons.Visible = _envError.Visible = editable;
-        _save.Visible = editable;
+        _save.Visible = _revert.Visible = editable;
         _env.AllowUserToAddRows = editable;
+        UpdateTabCaptions();
         if (!_loading) ShowCheckRecord(); // a running check keeps running; its result is filed under its profile
         ResumeLayout(true);
         EnsureFits();
@@ -1059,6 +1227,8 @@ sealed class ProfilesForm : Form
         var envOk = ValidateEnv();
         Text = BaseTitle + (dirty ? " •" : "");
         _unsaved.Visible = dirty;
+        _revert.Enabled = dirty;
+        UpdateTabCaptions();
         _save.Enabled = dirty && fieldsOk && envOk;
         _check.Text = dirty ? SaveAndCheckText : CheckText;
         UpdateActionStates();
@@ -1841,6 +2011,7 @@ sealed class ProfilesForm : Form
             for (var i = 0; select != null && i < _folders.Items.Count; i++)
                 if (string.Equals((string)_folders.Items[i], select, StringComparison.OrdinalIgnoreCase)) idx = i;
             _folders.SelectedIndex = idx;
+            UpdateTabCaptions();
         }
         finally { _folders.EndUpdate(); }
         _removeFolder.Enabled = _folders.SelectedIndex >= 0;
@@ -2073,14 +2244,7 @@ sealed class ProfilesForm : Form
     internal bool ForgetShownForTest => ForgetShown;
     internal TextBox ApiKeyBoxForTest => _apiKey;
     internal TextBox TokenBoxForTest => _token;
-    internal void SelectProviderForTest(string provider) =>
-        (provider switch
-        {
-            Providers.Vertex => _rbVertex,
-            Providers.ApiKey => _rbApiKey,
-            Providers.Token => _rbToken,
-            _ => _rbLogin,
-        }).Checked = true;
+    internal void SelectProviderForTest(string provider) => ChooseProvider(provider);
     internal void RunCheckForTest() => RunCheck();
     internal bool CheckRunningForTest => _checkingFor != null;
     internal IReadOnlyList<CheckItem>? LastCheckItemsForTest(string name) =>
@@ -2164,21 +2328,34 @@ sealed class ProfilesForm : Form
     // has, and keeps the minimum height in step so the window can't then be shrunk over the content.
     private void EnsureFits()
     {
+        // The tabs scroll, so nothing has to grow: only make sure a window opened on a small screen fits on it.
         if (!IsHandleCreated || WindowState == FormWindowState.Minimized) return;
         _root.PerformLayout();
-        var need = _top.GetPreferredSize(new Size(_right.ClientSize.Width, 0)).Height
-                   + (_env.Visible ? _envButtons.Height + _envError.Height + _env.MinimumSize.Height : 0);
-        var grow = need - _right.ClientSize.Height;
-        var max = Screen.FromControl(this).WorkingArea.Height;
-        var height = Height;
-        MinimumSize = new Size(MinimumSize.Width, Math.Min(max, Math.Max(_baseMinHeight, height + grow)));
-        if (grow > 0) Height = Math.Min(height + grow, max);
+        var area = Screen.FromControl(this).WorkingArea;
+        if (Height > area.Height) Height = area.Height;
+        if (MinimumSize.Height > area.Height) MinimumSize = new Size(MinimumSize.Width, area.Height);
     }
 
     private static Button Btn(string text) =>
         new() { Text = text, AutoSize = true, MinimumSize = new Size(80, 0), Margin = new Padding(0, 0, 6, 0) };
 
-    private static RadioButton Radio(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+    private static TabPage Page(string text) => new(text) { AutoScroll = true, Padding = new Padding(10, 8, 10, 8), UseVisualStyleBackColor = true };
+
+    // A tab's content: one column of auto-sized rows, docked to the top so the page scrolls when it's taller.
+    private static TableLayoutPanel Content(params Control[] rows)
+    {
+        var t = Table(1);
+        t.Dock = DockStyle.Top;
+        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        t.RowCount = rows.Length;
+        // Explicit cells: auto-placement skips invisible controls, which would shift rows when panels swap.
+        for (var i = 0; i < rows.Length; i++)
+        {
+            t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            t.Controls.Add(rows[i], 0, i);
+        }
+        return t;
+    }
 
     private static TextBox Field(string cue) => new()
     {

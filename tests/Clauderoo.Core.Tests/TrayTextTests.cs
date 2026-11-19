@@ -40,7 +40,7 @@ public class TrayTextTests
     [Fact]
     public void Label_Login_WithEmail()
     {
-        Assert.Equal("personal (home) — Claude login · someone@example.com",
+        Assert.Equal("personal · someone@example.com",
             TrayText.ProfileLabel(Login("personal", "someone@example.com", home: true)));
     }
 
@@ -48,16 +48,16 @@ public class TrayTextTests
     public void Label_Login_NotSignedIn()
     {
         var p = Login("plain", null);
-        Assert.Equal("plain — Claude login · not signed in", TrayText.ProfileLabel(p));
+        Assert.Equal("plain · not signed in", TrayText.ProfileLabel(p));
         Assert.True(TrayText.IsSignedOut(p));
     }
 
     [Fact]
     public void Label_Vertex_And_ApiKey()
     {
-        Assert.Equal("work — Google Vertex AI · acme-prod", TrayText.ProfileLabel(Vertex("work", "acme-prod")));
-        Assert.Equal("work — Google Vertex AI", TrayText.ProfileLabel(Vertex("work", null)));
-        Assert.Equal("api — API key", TrayText.ProfileLabel(ApiKey("api")));
+        Assert.Equal("work · acme-prod", TrayText.ProfileLabel(Vertex("work", "acme-prod")));
+        Assert.Equal("work · Google Vertex AI", TrayText.ProfileLabel(Vertex("work", null)));
+        Assert.Equal("api · API key", TrayText.ProfileLabel(ApiKey("api")));
         Assert.False(TrayText.IsSignedOut(ApiKey("api")));
     }
 
@@ -66,7 +66,7 @@ public class TrayTextTests
     {
         var p = new ProfileInfo("ci", false, false, null, [], @"C:\x\ci", Providers.Token);
         Assert.Equal("Claude token", TrayText.ProviderName(Providers.Token));
-        Assert.Equal("ci — Claude token", TrayText.ProfileLabel(p));
+        Assert.Equal("ci · Claude token", TrayText.ProfileLabel(p));
         Assert.False(TrayText.IsSignedOut(p)); // no email to show, and that's not "not signed in"
         Assert.Null(TrayText.Account(p));
     }
@@ -332,8 +332,8 @@ public class TrayTextTests
     [Fact]
     public void AutoSwitchMenu_LabelShowsThreshold()
     {
-        Assert.Equal("&Auto-switch default at 90%", TrayText.AutoSwitchMenu(null));
-        Assert.Equal("&Auto-switch default at 85%", TrayText.AutoSwitchMenu(new AutoSwitchSettings { Threshold = 85 }));
+        Assert.Equal("&Auto-switch at 90% usage", TrayText.AutoSwitchMenu(null));
+        Assert.Equal("&Auto-switch at 85% usage", TrayText.AutoSwitchMenu(new AutoSwitchSettings { Threshold = 85 }));
     }
 
     [Fact]
@@ -347,9 +347,9 @@ public class TrayTextTests
     [Fact]
     public void WarnThreshold_IsTheAutoSwitchThreshold_OnlyWhenOn()
     {
-        Assert.Equal(90, TrayText.WarnThreshold(null));
-        Assert.Equal(90, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = false, Threshold = 70 }));
-        Assert.Equal(70, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = true, Threshold = 70 }));
+        Assert.Equal(70, TrayText.WarnThreshold(null));
+        Assert.Equal(70, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = false, Threshold = 85 }));
+        Assert.Equal(85, TrayText.WarnThreshold(new AutoSwitchSettings { Enabled = true, Threshold = 85 }));
     }
 
     [Fact]

@@ -33,6 +33,9 @@ internal enum Glyph
     Save,          // E74E
     More,          // E712  a check still running
     Code,          // E943  Open in VS Code
+    Download,      // E896  Update to vX
+    History,       // E81C  Continue a conversation
+    Repair,        // E90F  Troubleshoot
 }
 
 /// <summary>
@@ -74,6 +77,9 @@ internal static class Glyphs
         Glyph.Save => '',
         Glyph.More => '',
         Glyph.Code => '',
+        Glyph.Download => '\uE896',
+        Glyph.History => '\uE81C',
+        Glyph.Repair => '\uE90F',
         _ => throw new ArgumentOutOfRangeException(nameof(glyph), glyph, null),
     };
 
@@ -106,6 +112,9 @@ internal static class Glyphs
         Glyph.Save => "↓",
         Glyph.More => "…",
         Glyph.Code => "<>",
+        Glyph.Download => "v",
+        Glyph.History => "@",
+        Glyph.Repair => "#",
         _ => "?",
     };
 

@@ -60,9 +60,21 @@ internal static class TrayText
     public static string Describe(ProfileInfo p) =>
         Account(p) is { } a ? $"{ProviderName(p.Provider)} · {a}" : ProviderName(p.Provider);
 
-    /// <summary>Menu label (not yet &amp;-escaped): "work — Google Vertex AI · my-proj", "personal (home) — Claude login · …".</summary>
-    public static string ProfileLabel(ProfileInfo p) =>
-        p.Name + (p.IsHome ? " (home)" : "") + " — " + Describe(p);
+    /// <summary>
+    /// The account, or the provider when there's no account to show: "someone@example.com", "not signed in", "my-proj",
+    /// "API key". The provider itself is the item's icon.
+    /// </summary>
+    public static string ShortDescribe(ProfileInfo p) => Account(p) ?? ProviderName(p.Provider);
+
+    /// <summary>Menu label (not yet &amp;-escaped): "work · my-proj", "personal · someone@example.com", "ci · API key".</summary>
+    public static string ProfileLabel(ProfileInfo p) => p.Name + " · " + ShortDescribe(p);
+
+    /// <summary>The menu's first action: "Start personal".</summary>
+    public static string StartDefault(string name) => $"&Start {name}";
+
+    /// <summary>"Refresh usage" with how old the numbers are: "Refresh usage (as of 10:24)".</summary>
+    public static string RefreshUsage(DateTimeOffset? newest) =>
+        newest is { } t ? $"Refresh &usage (as of {t.ToLocalTime():HH:mm})" : "Refresh &usage";
 
     public static string Plural(int n, string one, string many) => n == 1 ? $"1 {one}" : $"{n} {many}";
 
@@ -239,22 +251,27 @@ internal static class TrayText
         foreach (var name in new[] { "5h", "7d" })
         {
             if (WindowOf(r, name) is not { } w) continue;
-            var level = w.Percent < threshold ? UsageLevel.Ok : w.Percent >= 90 ? UsageLevel.High : UsageLevel.Warn;
+            var level = UsageLevelOf(w.Percent, threshold);
             parts.Add((" · ", UsageLevel.Ok));
             parts.Add(($"{name} {Pct(w.Percent)}", level));
         }
         return parts;
     }
 
-    /// <summary>The percentage the menu flags: the auto-switch threshold while auto-switch is on, otherwise 90.</summary>
-    public static int WarnThreshold(AutoSwitchSettings? s) => s is { Enabled: true } ? s.Threshold : 90;
+    /// <summary>
+    /// Where amber starts, the same in the menu and the Profiles window: the auto-switch threshold while auto-switch is
+    /// on (that's when it acts), otherwise 70 %. Red is always 90 % and up.
+    /// </summary>
+    public static int WarnThreshold(AutoSwitchSettings? s) => s is { Enabled: true } ? s.Threshold : DefaultWarn;
+
+    public const int DefaultWarn = 70;
 
     // ---------- auto-switch ----------
 
     static int ThresholdOf(AutoSwitchSettings? s) => s?.Threshold ?? new AutoSwitchSettings().Threshold;
 
-    /// <summary>The Advanced submenu's checkbox: "&amp;Auto-switch default at 90%".</summary>
-    public static string AutoSwitchMenu(AutoSwitchSettings? s) => $"&Auto-switch default at {ThresholdOf(s)}%";
+    /// <summary>The Settings submenu's checkbox: "&amp;Auto-switch at 90% usage".</summary>
+    public static string AutoSwitchMenu(AutoSwitchSettings? s) => $"&Auto-switch at {ThresholdOf(s)}% usage";
 
     /// <summary>The balloon after the tray switched the default.</summary>
     public static string AutoSwitchBalloon(string reason, string target) => $"{reason} New terminals now use {target}.";
@@ -334,9 +351,9 @@ internal static class TrayText
     public static string? UsageNotTrackedFor(ProfileInfo p) =>
         TrayMenuState.TracksUsage(p) ? null : UsageNotTracked(p.Provider);
 
-    /// <summary>Green below 70 %, amber from 70 %, red from 90 %.</summary>
-    public static UsageLevel UsageLevelOf(double percent) =>
-        percent >= 90 ? UsageLevel.High : percent >= 70 ? UsageLevel.Warn : UsageLevel.Ok;
+    /// <summary>Green below <paramref name="warnFrom"/> (see <see cref="WarnThreshold"/>), amber from it, red from 90 %.</summary>
+    public static UsageLevel UsageLevelOf(double percent, int warnFrom = DefaultWarn) =>
+        percent >= 90 ? UsageLevel.High : percent >= warnFrom ? UsageLevel.Warn : UsageLevel.Ok;
 
     /// <summary>The menu item that upgrades clauderoo ("Update to v1.2.0").</summary>
     public static string UpdateItem(string version) => $"&Update to v{version}";
