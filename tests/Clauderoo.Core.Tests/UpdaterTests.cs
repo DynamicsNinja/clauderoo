@@ -207,6 +207,7 @@ public class UpdaterTests
         {
             Repo = "me/clauderoo", CurrentVersion = "1.1.0", Http = Server(Hex(zip), zip),
             RunInstall = exe => { ran.Add(exe); existed = File.Exists(exe); return 0; },
+            RestartTray = () => null,
         };
         var r = RunCli(hooks, "upgrade");
         Assert.Equal(0, r.code);
@@ -229,5 +230,41 @@ public class UpdaterTests
         Assert.Equal(1, r.code);
         Assert.Contains("Download failed verification; nothing was changed.", r.e);
         Assert.Equal(0, ran);
+    }
+
+    [Theory]
+    [InlineData(true, "The tray app is restarting on the new version.")]
+    [InlineData(false, "exit it and start it again")]
+    [InlineData(null, null)]
+    public void Upgrade_RestartsTheTray(bool? restarted, string? expected)
+    {
+        var zip = MakeZip();
+        var asked = 0;
+        var hooks = new ReleaseHooks
+        {
+            Repo = "me/clauderoo", CurrentVersion = "1.1.0", Http = Server(Hex(zip), zip),
+            RunInstall = _ => 0,
+            RestartTray = () => { asked++; return restarted; },
+        };
+        var r = RunCli(hooks, "upgrade");
+        Assert.Equal(0, r.code);
+        Assert.Equal(1, asked);
+        if (expected != null) Assert.Contains(expected, r.o);
+        else Assert.DoesNotContain("tray", r.o, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Upgrade_InstallFails_DoesNotTouchTheTray()
+    {
+        var zip = MakeZip();
+        var asked = 0;
+        var hooks = new ReleaseHooks
+        {
+            Repo = "me/clauderoo", CurrentVersion = "1.1.0", Http = Server(Hex(zip), zip),
+            RunInstall = _ => 3,
+            RestartTray = () => { asked++; return true; },
+        };
+        Assert.Equal(3, RunCli(hooks, "upgrade").code);
+        Assert.Equal(0, asked);
     }
 }

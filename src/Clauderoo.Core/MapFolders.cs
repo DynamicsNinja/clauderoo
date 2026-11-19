@@ -28,6 +28,18 @@ public partial class ProfileManager
         });
     }
 
+    /// <summary>Stops `cr start` offering to map <paramref name="dir"/> (that folder only, not the ones below it).</summary>
+    public void SkipMapPrompt(string dir)
+    {
+        _ = Config;
+        var key = FolderMap.Normalize(dir);
+        ConfigStore.Update(paths, cfg =>
+        {
+            cfg.NoMapPrompt ??= [];
+            if (!cfg.NoMapPrompt.Any(k => k.Equals(key, StringComparison.OrdinalIgnoreCase))) cfg.NoMapPrompt.Add(key);
+        });
+    }
+
     public IReadOnlyList<(string Dir, string Profile)> Maps() =>
         Config.Folders.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => (kv.Key, kv.Value)).ToList();
 }

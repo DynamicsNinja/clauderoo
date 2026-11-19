@@ -27,4 +27,12 @@ public static class FolderMap
         }
         return best;
     }
+
+    /// <summary>True when the user asked never to be offered a mapping for exactly this folder.</summary>
+    public static bool MapPromptSkipped(ClauderooConfig cfg, string dir)
+    {
+        if (cfg.NoMapPrompt is not { Count: > 0 } list) return false;
+        var d = Normalize(dir);
+        return list.Any(k => Normalize(k).Equals(d, StringComparison.OrdinalIgnoreCase));
+    }
 }

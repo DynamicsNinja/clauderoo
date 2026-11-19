@@ -38,6 +38,8 @@ sealed class TrayContext : ApplicationContext
     private ProblemsForm? _problemsForm;
     private ConversationsForm? _conversationsForm;
     private DoctorForm? _doctorForm;
+    private UpdateForm? _updateForm;
+    private readonly EventWaitHandle _restartSignal;
 
     // Current state: kept between syncs, shown by the icon, tooltip, menu and Problems window.
     private IReadOnlyList<Problem> _problems = [];
@@ -144,6 +146,8 @@ sealed class TrayContext : ApplicationContext
 
         // `clauderoow.exe --manage` from another process arrives here (on a background thread).
         _manageSignal = ManageSignal.Listen(() => Post(() => Guard(ShowProfiles)));
+        // `cr upgrade` installed a new version: hand over to it.
+        _restartSignal = ManageSignal.ListenRestart(() => Post(() => Guard(RestartSelf)));
         if (openProfiles) Post(() => Guard(ShowProfiles));
 
         // Learn the current problems right away (quietly: icon and tooltip only) instead of waiting for a change.
@@ -430,12 +434,35 @@ sealed class TrayContext : ApplicationContext
         SaveUpdateState();
     }
 
-    // Runs the installed clauderoo.exe's upgrade in its own terminal window, so its progress and errors are visible.
+    // Downloads and installs the update in a window, then restarts the tray on the new version.
     private void UpdateNow()
     {
-        var exe = Path.Combine(AppContext.BaseDirectory, "clauderoo.exe");
-        if (!File.Exists(exe)) throw new ClauderooException("clauderoo.exe wasn't found next to the tray app, so it can't update itself.");
-        Process.Start(new ProcessStartInfo("cmd.exe", $"/k \"\"{exe}\" upgrade\"") { UseShellExecute = true })?.Dispose();
+        if (string.IsNullOrEmpty(AppVersion.Repo))
+            throw new ClauderooException("This build wasn't made from a GitHub release, so it can't update itself.");
+        if (_updateForm is not { IsDisposed: false } form)
+        {
+            form = new UpdateForm(AppVersion.Repo, () => Guard(RestartSelf));
+            var created = form;
+            form.FormClosed += (_, _) => { if (_updateForm == created) _updateForm = null; created.Dispose(); };
+            _updateForm = form;
+            form.Show();
+        }
+        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+        form.Activate();
+    }
+
+    /// <summary>
+    /// Starts the installed tray (which waits for this one to let go of the single-instance lock) and exits. If the
+    /// Profiles window keeps this one open (unsaved changes, Cancel), the new one takes over when it does close.
+    /// </summary>
+    private void RestartSelf()
+    {
+        var installed = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "clauderoo", "clauderoow.exe");
+        var exe = File.Exists(installed) ? installed : Path.Combine(AppContext.BaseDirectory, "clauderoow.exe");
+        AppLog.Info($"Tray: restarting from {exe}");
+        Process.Start(new ProcessStartInfo(exe, TrayInstance.RestartedArgument) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! })?.Dispose();
+        _updateForm?.Close();
+        Exit();
     }
 
     /// <summary>
@@ -988,6 +1015,8 @@ sealed class TrayContext : ApplicationContext
             _conversationsForm?.Dispose();
             _doctorForm?.Dispose();
             _manageSignal.Dispose();
+            _restartSignal.Dispose();
+            _updateForm?.Dispose();
             _poller.Dispose();      // stops the loop first, then the client it uses
             _usageClient.Dispose();
             _usageHandler.Dispose();

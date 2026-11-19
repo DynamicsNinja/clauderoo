@@ -11,6 +11,8 @@ var version = typeof(Commands).Assembly.GetName().Version?.ToString(3) ?? "0";
 using var usageHandler = UsageClient.CreateHandler();
 using var usage = new UsageClient(usageHandler, () => DateTimeOffset.UtcNow, version);
 
+if (!Console.IsInputRedirected && !Console.IsOutputRedirected) Commands.ConsoleAsk = Console.In.ReadLine;
+
 return Commands.Run(args, Console.Out, Console.Error, pm,
     startNewWindow: spec =>
     {

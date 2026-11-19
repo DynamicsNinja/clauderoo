@@ -67,6 +67,10 @@ public class ClauderooConfig
     /// <summary>Normalized full folder path -> profile name (see FolderMap).</summary>
     public Dictionary<string, string> Folders { get; set; } = new();
 
+    /// <summary>Normalized folders where `cr start` no longer offers to map the folder (the user answered "never").</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? NoMapPrompt { get; set; }
+
     /// <summary>Folders and files of the home profile shared on top of the built-in ones (see SharedItems).</summary>
     public List<string> ExtraSharedDirs { get; set; } = [];
     public List<string> ExtraSharedFiles { get; set; } = [];
