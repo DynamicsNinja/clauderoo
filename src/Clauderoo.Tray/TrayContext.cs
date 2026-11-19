@@ -325,6 +325,17 @@ sealed class TrayContext : ApplicationContext
         _menu.Show(pos, direction);
     }
 
+    /// <summary>
+    /// After a menu action that stayed open (Refresh usage, Set as default) finishes: rebuilds the menu in place so it
+    /// shows the result. Does nothing when the menu was closed meanwhile.
+    /// </summary>
+    private void RedrawOpenMenu()
+    {
+        if (!_menu.Visible || _menu.IsDisposed) return;
+        try { RebuildMenu(); }
+        catch (Exception e) { AppLog.Warn($"Tray: redrawing the menu failed: {e.Message}"); }
+    }
+
     private void RebuildMenu()
     {
         var actions = new TrayMenuActions
@@ -385,6 +396,8 @@ sealed class TrayContext : ApplicationContext
     {
         try { await _usage.Refresh(); }
         catch (Exception) { /* shutting down; a failed fetch is shown as the profile's usage status */ }
+        // The readings arrive through Updated (posted before this); redraw once they're applied.
+        Post(() => Guard(RedrawOpenMenu));
     }
 
     // ---------- update check ----------
@@ -750,6 +763,7 @@ sealed class TrayContext : ApplicationContext
             Kick();
         }
         catch (Exception e) { ReportError(e); }
+        RedrawOpenMenu(); // the star moves (or the item comes back if it failed)
     }
 
     // ---------- auto-switch ----------
