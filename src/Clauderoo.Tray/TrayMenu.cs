@@ -44,6 +44,7 @@ internal sealed class TrayMenuActions
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action UpdateNow { get; init; } = () => { };
+    public Action CheckUpdatesNow { get; init; } = () => { };
     public Action<bool> SetUpdateChecks { get; init; } = _ => { };
     public Action SetUp { get; init; } = () => { };
     public Action Retry { get; init; } = () => { };
@@ -140,9 +141,11 @@ internal static class TrayMenu
         advanced.DropDownItems.Add(SessionsOpenIn(s, a, dpi));
         if (s.UpdateChecksAvailable)
         {
-            var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
+            var checks = new ToolStripMenuItem("Check for &updates automatically") { Checked = s.UpdateChecksOn };
+            checks.ToolTipText = "Every few hours; a new version shows as Update to vX in this menu.";
             checks.Click += (_, _) => a.SetUpdateChecks(!checks.Checked);
             advanced.DropDownItems.Add(checks);
+            advanced.DropDownItems.Add(Item("Check for updates &now…", Neutral(Glyph.Refresh, dpi), a.CheckUpdatesNow));
         }
         items.Add(advanced);
 

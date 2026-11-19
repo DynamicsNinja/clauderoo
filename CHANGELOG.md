@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- **Check for updates now…** under Advanced in the tray menu checks GitHub right away and offers **Update now** when a newer version exists.
+
+### Changed
+- The tray checks for updates every 6 hours instead of once a day, so a new release shows up the same day.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

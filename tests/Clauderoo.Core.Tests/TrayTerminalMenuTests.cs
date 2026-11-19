@@ -46,4 +46,23 @@ public class TrayTerminalMenuTests
         items[4].PerformClick();
         Assert.Equal(TerminalChoice.PowerShell, shell);
     }
+
+    [Fact]
+    public void Advanced_CheckForUpdatesNow_OnlyInReleaseBuilds()
+    {
+        var clicked = 0;
+        using var menu = new ContextMenuStrip();
+        TrayMenu.Build(menu,
+            new TrayMenuState([Login("work", isDefault: true)], [], new Dictionary<string, int>(), false, UpdateChecksAvailable: true),
+            new TrayMenuActions { CheckUpdatesNow = () => clicked++ });
+        var items = Advanced(menu).DropDownItems.OfType<ToolStripMenuItem>().ToList();
+        Assert.Contains(items, i => i.Text == "Check for &updates automatically");
+        items.Single(i => i.Text == "Check for updates &now…").PerformClick();
+        Assert.Equal(1, clicked);
+
+        using var dev = new ContextMenuStrip();
+        TrayMenu.Build(dev, new TrayMenuState([Login("work", isDefault: true)], [], new Dictionary<string, int>(), false),
+            new TrayMenuActions());
+        Assert.DoesNotContain(Advanced(dev).DropDownItems.OfType<ToolStripMenuItem>(), i => i.Text!.StartsWith("Check for updates"));
+    }
 }

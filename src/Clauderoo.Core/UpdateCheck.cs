@@ -18,9 +18,9 @@ public sealed class UpdateState
 
 public static class UpdateCheck
 {
-    public static readonly TimeSpan Interval = TimeSpan.FromHours(24);
+    public static readonly TimeSpan Interval = TimeSpan.FromHours(6);
 
-    /// <summary>Pure: a check is due when checks are on and none ran in the last 24 hours (or the stored time is in the future).</summary>
+    /// <summary>Pure: a check is due when checks are on and none ran in the last <see cref="Interval"/> (or the stored time is in the future).</summary>
     public static bool IsDue(UpdateState state, DateTime nowUtc)
     {
         if (!state.CheckEnabled) return false;
@@ -50,7 +50,7 @@ public static class UpdateCheck
         NotifiedVersion = s.NotifiedVersion, CheckEnabled = s.CheckEnabled,
     };
 
-    /// <summary>Asks GitHub for the latest release and returns the updated state. A network failure keeps the old result and tries again tomorrow.</summary>
+    /// <summary>Asks GitHub for the latest release and returns the updated state. A network failure keeps the old result and tries again at the next due check.</summary>
     public static async Task<UpdateState> RunAsync(UpdateState state, Updater updater, DateTime nowUtc, CancellationToken ct)
     {
         var next = new UpdateState
