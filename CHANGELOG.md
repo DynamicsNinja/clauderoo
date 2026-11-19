@@ -4,6 +4,10 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+- The update window was blank: its text was squeezed to 1 pixel wide.
+- **Refresh usage** no longer makes the open tray menu flicker when the new numbers arrive.
+
 ## [0.3.1] - 2026-11-19
 
 ### Added
