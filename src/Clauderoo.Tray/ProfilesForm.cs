@@ -940,7 +940,7 @@ sealed class ProfilesForm : Form
         }, 0, row);
         _usageRows.Controls.Add(new UsageBar
         {
-            Percent = w.Percent, Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Percent = w.Percent, WarnFrom = WarnFrom(), Anchor = AnchorStyles.Left | AnchorStyles.Right,
             MinimumSize = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
             Size = new Size(LogicalToDeviceUnits(120), LogicalToDeviceUnits(10)),
             Margin = new Padding(0, LogicalToDeviceUnits(3), 0, LogicalToDeviceUnits(3)),
@@ -966,7 +966,14 @@ sealed class ProfilesForm : Form
         }
     }
 
-    /// <summary>A flat bar: green below 70 %, amber from 70 %, red from 90 % (<see cref="TrayText.UsageLevelOf"/>).</summary>
+    // Where the bars turn amber: the same rule as the tray menu.
+    private int WarnFrom()
+    {
+        try { return TrayText.WarnThreshold(_pm.Config.AutoSwitch); }
+        catch (ClauderooException) { return TrayText.DefaultWarn; }
+    }
+
+    /// <summary>A flat bar coloured like the tray menu (<see cref="TrayText.UsageLevelOf"/>): amber from WarnFrom, red from 90 %.</summary>
     private sealed class UsageBar : Control
     {
         private double _percent;
@@ -980,6 +987,9 @@ sealed class ProfilesForm : Form
         }
 
         [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public int WarnFrom { get; set; } = TrayText.DefaultWarn;
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
         public double Percent
         {
             get => _percent;
@@ -990,7 +1000,7 @@ sealed class ProfilesForm : Form
         {
             var r = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var back = new SolidBrush(SystemColors.Window)) e.Graphics.FillRectangle(back, r);
-            var ink = TrayText.UsageLevelOf(_percent) switch
+            var ink = TrayText.UsageLevelOf(_percent, WarnFrom) switch
             {
                 UsageLevel.High => StatusColors.Fail,
                 UsageLevel.Warn => StatusColors.Warn,

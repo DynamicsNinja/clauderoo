@@ -103,35 +103,46 @@ internal static class TrayMenu
             // Without problems the Problems window is reached here, for what changed without a balloon.
             if (s.RecentCount > 0) items.Add(Item("Recent &messages…", null, a.ShowProblems));
         }
+        // A new version is status: it goes with the header, not at the bottom.
+        if (s.UpdateVersion is { } newer)
+        {
+            var upd = Item(TrayText.UpdateItem(newer), Neutral(Glyph.Download, dpi), a.UpdateNow);
+            upd.Font = Bold(menu.Font);
+            items.Add(upd);
+        }
         items.Add(new ToolStripSeparator());
+
+        // The most common job first: a session under the default profile (the same as double-clicking the icon).
+        if (s.Profiles.FirstOrDefault(p => p.IsDefault) is { } def)
+        {
+            var go = Item(TrayText.StartDefault(Esc(def.Name)), Neutral(Glyph.Play, dpi), () => a.Start(def.Name));
+            go.Font = Bold(menu.Font);
+            go.ToolTipText = "Opens a terminal with Claude under the default profile. Double-clicking the tray icon does the same.";
+            items.Add(go);
+        }
 
         var troubled = s.Problems.Select(p => p.Profile).ToHashSet();
         foreach (var p in s.Profiles)
             items.Add(ProfileItem(p, s.Running.GetValueOrDefault(p.Name), troubled.Contains(p.Name), s, menu, a, dpi));
+        items.Add(new ToolStripSeparator());
         if (s.Profiles.Any(TrayMenuState.TracksUsage))
         {
-            var refresh = Item("Refresh &usage", Neutral(Glyph.Refresh, dpi), a.RefreshUsage);
-        // Stays open: the menu is redrawn with the new numbers when they arrive.
-        KeepOpen(refresh, () => { refresh.Text = "Refreshing usage…"; refresh.Enabled = false; });
+            DateTimeOffset? newest = s.Usage is { Count: > 0 } u ? u.Values.Max(r => r.FetchedAt) : null;
+            var refresh = Item(TrayText.RefreshUsage(newest), Neutral(Glyph.Refresh, dpi), a.RefreshUsage);
+            // Stays open: the menu is redrawn with the new numbers when they arrive.
+            KeepOpen(refresh, () => { refresh.Text = "Refreshing usage…"; refresh.Enabled = false; });
             refresh.ToolTipText = "Check the usage limits of your Claude-login profiles now.";
             items.Add(refresh);
         }
-
-        items.Add(new ToolStripSeparator());
         items.Add(Item("&Manage profiles…", Neutral(Glyph.Settings, dpi), a.ShowProfiles));
         items.Add(Item("&New profile…", Neutral(Glyph.Add, dpi), a.NewProfile));
-        var resume = Item("Continue a &conversation…", Neutral(Glyph.Play, dpi), a.ContinueConversation);
+        var resume = Item("Continue a &conversation…", Neutral(Glyph.History, dpi), a.ContinueConversation);
         resume.ToolTipText = "Pick a past conversation and carry on with it under another profile.";
         items.Add(resume);
 
-        var advanced = new ToolStripMenuItem("&Advanced");
+        // Settings first, then a Troubleshoot group.
+        var advanced = new ToolStripMenuItem(SettingsMenu) { Image = Neutral(Glyph.Settings, dpi) };
         PrepareDropDown(advanced, dpi);
-        var folder = Item("&Open profiles folder", Neutral(Glyph.Folder, dpi), a.OpenProfilesFolder);
-        folder.ToolTipText = "For troubleshooting. Changes made in these folders may be overwritten by sync.";
-        advanced.DropDownItems.Add(folder);
-        var doctor = Item("&Check this PC…", null, a.CheckThisPc);
-        doctor.ToolTipText = "Checks Claude Code, PATH, the MCP server and every profile's links (like 'cr doctor'). Changes nothing.";
-        advanced.DropDownItems.Add(doctor);
         var auto = Toggle("Start with &Windows", s.AutoStartOn, a.SetAutoStart);
         advanced.DropDownItems.Add(auto);
         var autoSwitch = Toggle(TrayText.AutoSwitchMenu(s.AutoSwitch), s.AutoSwitch is { Enabled: true }, a.SetAutoSwitch);
@@ -144,19 +155,21 @@ internal static class TrayMenu
             var checks = Toggle("Check for &updates automatically", s.UpdateChecksOn, a.SetUpdateChecks);
             checks.ToolTipText = "Every few hours; a new version shows as Update to vX in this menu.";
             advanced.DropDownItems.Add(checks);
-            advanced.DropDownItems.Add(Item("Check for updates &now…", Neutral(Glyph.Refresh, dpi), a.CheckUpdatesNow));
+            advanced.DropDownItems.Add(Item("Check for updates &now…", Neutral(Glyph.Download, dpi), a.CheckUpdatesNow));
         }
+        advanced.DropDownItems.Add(new ToolStripSeparator());
+        var trouble = new ToolStripMenuItem("Troubleshoot") { Enabled = false, Image = Neutral(Glyph.Repair, dpi), AccessibleRole = AccessibleRole.StaticText };
+        advanced.DropDownItems.Add(trouble);
+        var doctor = Item("&Check this PC…", Neutral(Glyph.Diagnostic, dpi), a.CheckThisPc);
+        doctor.ToolTipText = "Checks Claude Code, PATH, the MCP server and every profile's links (like 'cr doctor'). Changes nothing.";
+        advanced.DropDownItems.Add(doctor);
+        var folder = Item("&Open profiles folder", Neutral(Glyph.Folder, dpi), a.OpenProfilesFolder);
+        folder.ToolTipText = "Changes made in these folders may be overwritten by sync.";
+        advanced.DropDownItems.Add(folder);
         items.Add(advanced);
 
-        if (s.UpdateVersion is { } newer)
-        {
-            var upd = Item(TrayText.UpdateItem(newer), Neutral(Glyph.Refresh, dpi), a.UpdateNow);
-            upd.Font = Bold(menu.Font);
-            items.Add(upd);
-        }
-
         items.Add(new ToolStripSeparator());
-        items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));
+        items.Add(ExitItem(a, dpi));
     }
 
     /// <summary>The menu when the settings can't be loaded: what's wrong in plain words, and what can be done.</summary>
@@ -183,7 +196,17 @@ internal static class TrayMenu
         }
         items.Add(Item("&Retry", Neutral(Glyph.Refresh, dpi), a.Retry));
         items.Add(new ToolStripSeparator());
-        items.Add(Item("E&xit clauderoo (stops syncing)", Neutral(Glyph.Exit, dpi), a.Exit));
+        items.Add(ExitItem(a, dpi));
+    }
+
+    /// <summary>The submenu with the tray's settings and the troubleshooting tools.</summary>
+    public const string SettingsMenu = "Se&ttings";
+
+    static ToolStripMenuItem ExitItem(TrayMenuActions a, int dpi)
+    {
+        var exit = Item("E&xit clauderoo", Neutral(Glyph.Exit, dpi), a.Exit);
+        exit.ToolTipText = "Shared settings stop syncing until clauderoo starts again.";
+        return exit;
     }
 
     static ToolStripMenuItem ProfileItem(ProfileInfo p, int running, bool hasProblems, TrayMenuState s,
@@ -452,8 +475,10 @@ internal static class TrayMenu
             foreach (var (part, color) in runs)
             {
                 if (part.Length == 0) continue;
+                // On the highlight (hovered, or its submenu open) every run uses the highlight text colour: grey or amber
+                // on the selection blue is hard to read.
                 TextRenderer.DrawText(e.Graphics, part, e.TextFont, new Rectangle(x, r.Y, Math.Max(0, r.Right - x), r.Height),
-                    color ?? e.TextColor, flags);
+                    e.Item.Selected ? e.TextColor : color ?? e.TextColor, flags);
                 x += TextRenderer.MeasureText(e.Graphics, part, e.TextFont, r.Size, flags).Width;
             }
         }

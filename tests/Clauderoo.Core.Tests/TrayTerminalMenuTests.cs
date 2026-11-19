@@ -8,7 +8,7 @@ public class TrayTerminalMenuTests
         new(name, false, isDefault, name + "@example.com", [], @"C:\x\" + name, Providers.Login);
 
     static ToolStripMenuItem Advanced(ContextMenuStrip menu) =>
-        menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "&Advanced");
+        menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == TrayMenu.SettingsMenu);
 
     [Fact]
     public void ProfileSubmenu_HasOpenInVsCode()
@@ -129,5 +129,49 @@ public class TrayTerminalMenuTests
         Assert.Equal(1, refreshed);
         Assert.Equal("Refreshing usage…", refresh.Text);
         Assert.False(refresh.Enabled);
+    }
+
+    [Fact]
+    public void Menu_StartsWithStatus_ThenUpdate_ThenStartDefault()
+    {
+        string? started = null;
+        using var menu = new ContextMenuStrip();
+        TrayMenu.Build(menu, new TrayMenuState([Login("personal", isDefault: true), Login("work")], [], new Dictionary<string, int>(), false,
+            UpdateVersion: "9.9.9", UpdateChecksAvailable: true), new TrayMenuActions { Start = n => started = n });
+        var texts = menu.Items.Cast<ToolStripItem>().Select(i => i is ToolStripSeparator ? "---" : i.Text).ToList();
+        Assert.Equal("clauderoo — all good", texts[0]);
+        Assert.Equal("&Update to v9.9.9", texts[1]);
+        Assert.Equal("---", texts[2]);
+        Assert.Equal("&Start personal", texts[3]);
+        Assert.StartsWith("personal · ", texts[4]);
+        Assert.Equal("E&xit clauderoo", texts[^1]);
+        Assert.DoesNotContain(texts, t => t == "&Advanced");
+        menu.Items.OfType<ToolStripMenuItem>().Single(i => i.Text == "&Start personal").PerformClick();
+        Assert.Equal("personal", started);
+    }
+
+    [Fact]
+    public void Settings_HasATroubleshootGroup_AtTheEnd()
+    {
+        using var menu = new ContextMenuStrip();
+        TrayMenu.Build(menu, new TrayMenuState([Login("work", isDefault: true)], [], new Dictionary<string, int>(), false),
+            new TrayMenuActions());
+        var items = Advanced(menu).DropDownItems.Cast<ToolStripItem>().ToList();
+        var trouble = items.FindIndex(i => i.Text == "Troubleshoot");
+        Assert.True(trouble > 0);
+        Assert.IsType<ToolStripSeparator>(items[trouble - 1]);
+        Assert.Equal(new[] { "&Check this PC…", "&Open profiles folder" }, items.Skip(trouble + 1).Select(i => i.Text));
+    }
+
+    [Fact]
+    public void UsageColours_OneRule_ForMenuAndWindow()
+    {
+        Assert.Equal(UsageLevel.Ok, TrayText.UsageLevelOf(69));
+        Assert.Equal(UsageLevel.Warn, TrayText.UsageLevelOf(78));
+        Assert.Equal(UsageLevel.High, TrayText.UsageLevelOf(90));
+        // The menu's parts use the same function: 78 % is amber there too.
+        var r = new UsageReading("p", DateTimeOffset.Now, null, [new UsageWindow("5h", 78, null)]);
+        Assert.Contains(("5h 78%", UsageLevel.Warn), TrayText.UsageSuffixParts(r, TrayText.WarnThreshold(null)));
+        Assert.StartsWith("Refresh &usage (as of ", TrayText.RefreshUsage(DateTimeOffset.Now));
     }
 }
