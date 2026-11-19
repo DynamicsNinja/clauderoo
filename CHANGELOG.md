@@ -4,6 +4,15 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- `cr start` in a folder that isn't mapped offers to map it to the profile being started (yes / no / never for this folder).
+- `cr start <name>` in a folder mapped to a different profile asks before starting: start it anyway, start the mapped profile instead (default), or remap the folder.
+- `cr start` says it is starting Claude (profile and folder) before Claude's own start-up, instead of a silent terminal.
+- The tray's **Update to vX** downloads and installs in a progress window instead of a terminal, then restarts the tray on the new version.
+
+### Changed
+- `cr upgrade` restarts a running tray app itself instead of asking you to (a tray older than this release still needs restarting by hand once).
+
 ## [0.2.0] - 2026-11-18
 
 ### Added

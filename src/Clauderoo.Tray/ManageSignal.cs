@@ -36,4 +36,29 @@ static class ManageSignal
         thread.Start();
         return ev;
     }
+
+    /// <summary>
+    /// Called by the tray: answers each restart request from `cr upgrade` (see TrayInstance) on the ack event, then
+    /// runs <paramref name="onSignal"/> on a background thread.
+    /// </summary>
+    public static EventWaitHandle ListenRestart(Action onSignal)
+    {
+        var ev = new EventWaitHandle(false, EventResetMode.AutoReset, Clauderoo.Core.TrayInstance.RestartEvent);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                while (ev.WaitOne())
+                {
+                    using (var ack = new EventWaitHandle(false, EventResetMode.AutoReset, Clauderoo.Core.TrayInstance.RestartAckEvent))
+                        ack.Set();
+                    onSignal();
+                }
+            }
+            catch (ObjectDisposedException) { /* tray shutting down */ }
+        })
+        { IsBackground = true, Name = "clauderoo-restart-listener" };
+        thread.Start();
+        return ev;
+    }
 }

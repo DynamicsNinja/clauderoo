@@ -11,7 +11,11 @@ static class Program
 
         var manage = args.Any(a => string.Equals(a, "--manage", StringComparison.OrdinalIgnoreCase));
 
-        using var mutex = new Mutex(true, @"Local\clauderoo-tray", out var createdNew);
+        var restarted = args.Any(a => string.Equals(a, Clauderoo.Core.TrayInstance.RestartedArgument, StringComparison.OrdinalIgnoreCase));
+
+        using var mutex = new Mutex(true, Clauderoo.Core.TrayInstance.MutexName, out var createdNew);
+        // After an update the old tray starts this one and then exits: wait for it to let go instead of giving up.
+        if (!createdNew && restarted && WaitFor(mutex, TimeSpan.FromMinutes(10))) createdNew = true;
         if (!createdNew)
         {
             // The tray is already running: ask it to open the Profiles window.
@@ -24,6 +28,12 @@ static class Program
         using var context = new TrayContext(openProfiles: manage);
         Application.Run(context);
         return 0;
+    }
+
+    private static bool WaitFor(Mutex mutex, TimeSpan timeout)
+    {
+        try { return mutex.WaitOne(timeout); }
+        catch (AbandonedMutexException) { return true; } // the old tray exited without releasing it: ours now
     }
 }
 

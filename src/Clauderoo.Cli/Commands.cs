@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Clauderoo.Core;
 
 namespace Clauderoo.Cli;
@@ -15,6 +15,8 @@ public static partial class Commands
   list                                list profiles
   start [name] [dir] [-- args]        run Claude for a profile in this terminal (run = same)
                                       no name: use the folder's mapping, else the default
+                                      asks to map an unmapped folder, and before starting a profile the
+                                      folder isn't mapped to (only in a console; run never asks)
   start [name] [dir] --tab [-- args]  open it in a new Windows Terminal tab instead
   start [name] [dir] --isolated       run with a separate config folder: no shared plugins, skills, hooks or MCP servers
   map <profile> [dir]                 use <profile> for dir (default: here) and everything below it
@@ -259,17 +261,27 @@ public static partial class Commands
                 }
                 var dir = Path.GetFullPath(folderArg);
                 if (!Directory.Exists(dir)) throw new ClauderooException($"Folder not found: {dir}");
+                // Only a person typing `start` is asked; `run` is what new tabs and the tray launch, so it never asks.
+                if (cmd == "start" && StartPrompt(hooks) is { } ask)
+                {
+                    if (AskAboutMapping(cfg, pm, profile, dir, ask, output) is not { } chosen) return 1;
+                    profile = chosen;
+                }
                 if (!tab)
                 {
                     // A token profile's token is decrypted here, just before launch, into the child's environment only.
                     var spec = pm.WithToken(Launcher.InPlace(cfg, pm.Paths, profile, dir, claudeArgs, claudePath, isolated), profile);
                     if (isolated && pm.PrepareIsolated(profile).FirstRun)
                         output.WriteLine($"First isolated run for {profile}: log in once; later runs reuse it.");
+                    // Claude takes a few seconds to load its plugins and MCP servers; say so instead of a silent terminal.
+                    output.WriteLine($"Starting Claude as {profile}{(isolated ? " (isolated)" : "")} in {dir}. This can take a few seconds...");
+                    output.Flush();
                     return runInPlace(spec);
                 }
                 // The new tab runs `run <profile> [--isolated]`, which prepares the folder and injects any token itself,
                 // so the token never appears on a command line.
                 startNewWindow(Launcher.NewWindow(cfg, pm.Paths, profile, dir, claudeArgs, wtAvailable ?? Launcher.WtAvailable(), isolated: isolated));
+                output.WriteLine($"Opened a new tab for {profile}. Claude starts there in a few seconds.");
                 return 0;
             }
             case "map":
@@ -831,6 +843,57 @@ public static partial class Commands
     }
 
     // Hidden prompt (no echo) labelled e.g. "API key: "; a redirected stdin is read as one line.
+    /// <summary>
+    /// Reads an answer from the person at the console; set by Program only when stdin and stdout are a real console.
+    /// Null (tests, scripts, pipes) means `start` asks nothing.
+    /// </summary>
+    public static Func<string?>? ConsoleAsk { get; set; }
+
+    private static Func<string?>? StartPrompt(ReleaseHooks? hooks) => hooks?.ReadLine ?? ConsoleAsk;
+
+    /// <summary>
+    /// Before `start`: offers to map an unmapped folder to the profile, and asks before starting a profile other than the
+    /// one the folder is mapped to. Returns the profile to start, or null when the user backed out.
+    /// </summary>
+    internal static string? AskAboutMapping(ClauderooConfig cfg, ProfileManager pm, string profile, string dir,
+        Func<string?> ask, TextWriter output)
+    {
+        var key = FolderMap.Normalize(dir);
+        if (FolderMap.Resolve(cfg, dir) is { } hit)
+        {
+            if (string.Equals(hit.Profile, profile, StringComparison.Ordinal)) return profile;
+            var where = string.Equals(hit.MappedDir, key, StringComparison.OrdinalIgnoreCase) ? "This folder" : $"This folder (via {hit.MappedDir})";
+            output.WriteLine($"{where} is mapped to '{hit.Profile}'.");
+            output.Write($"Start '{profile}' anyway? [y]es / [N]o, start '{hit.Profile}' / [r]emap here to '{profile}' ");
+            var a = ask()?.Trim().ToLowerInvariant();
+            if (a is null) { output.WriteLine(); output.WriteLine("Nothing started."); return null; }
+            if (a is "y" or "yes") return profile;
+            if (a is "r" or "remap")
+            {
+                pm.Map(profile, key);
+                output.WriteLine($"Mapped {key} to {profile}.");
+                return profile;
+            }
+            output.WriteLine($"Using {hit.Profile}.");
+            return hit.Profile;
+        }
+        if (FolderMap.MapPromptSkipped(cfg, key)) return profile;
+        output.Write($"{key} isn't mapped to a profile. Map it to '{profile}' so 'cr start' here always uses it? [Y]es / [n]o / ne[v]er ");
+        var answer = ask()?.Trim().ToLowerInvariant();
+        if (answer is null) { output.WriteLine(); return profile; }
+        if (answer is "" or "y" or "yes")
+        {
+            pm.Map(profile, key);
+            output.WriteLine($"Mapped {key} to {profile}.");
+        }
+        else if (answer is "v" or "never")
+        {
+            pm.SkipMapPrompt(key);
+            output.WriteLine("Won't ask for this folder again ('cr map <profile>' maps it later).");
+        }
+        return profile;
+    }
+
     private static string? ReadSecretFromConsole(string label)
     {
         if (Console.IsInputRedirected) return Console.In.ReadLine();

@@ -22,6 +22,9 @@ public sealed class ReleaseHooks
     public ITaskScheduler? Scheduler { get; set; }
     /// <summary>The tray exe the scheduled task runs (default: the installed clauderoow.exe, else the one next to cr).</summary>
     public string? TrayExe { get; set; }
+    /// <summary>After an upgrade: asks a running tray to restart. True: it is restarting; false: one runs but didn't
+    /// answer (too old); null: none runs.</summary>
+    public Func<bool?>? RestartTray { get; set; }
 }
 
 internal static class ReleaseCommands
@@ -98,7 +101,15 @@ internal static class ReleaseCommands
             if (!File.Exists(exe)) throw new ClauderooException("The download didn't contain clauderoo.exe; nothing was changed.");
             output.WriteLine("Verified. Installing...");
             var code = (hooks?.RunInstall ?? RunInstallProcess)(exe);
-            if (code == 0) output.WriteLine($"Upgraded to {latest.Version}. Open a new terminal to use it. If the tray app is running, exit it and start it again (cr tray).");
+            if (code == 0)
+            {
+                output.WriteLine($"Upgraded to {latest.Version}. Open a new terminal to use it.");
+                switch ((hooks?.RestartTray ?? RestartTray)())
+                {
+                    case true: output.WriteLine("The tray app is restarting on the new version."); break;
+                    case false: output.WriteLine("The tray app is running an older version: exit it and start it again (cr tray)."); break;
+                }
+            }
             else err.WriteLine("The installer didn't finish; the previous version is still in place.");
             return code;
         }
@@ -108,6 +119,9 @@ internal static class ReleaseCommands
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
     }
+
+    private static bool? RestartTray() =>
+        TrayInstance.RequestRestart(TimeSpan.FromSeconds(3)) ? true : TrayInstance.IsRunning() ? false : null;
 
     private static int RunInstallProcess(string exe)
     {

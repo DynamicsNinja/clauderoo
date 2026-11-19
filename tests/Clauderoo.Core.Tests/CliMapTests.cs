@@ -85,4 +85,101 @@ public class CliMapTests
         Assert.Equal(0, Run(pm, "unmap", dir).code);
         Assert.DoesNotContain("work", Run(pm, "maps").o);
     }
+
+    private static (int code, string o, List<LaunchSpec> launched) Ask(ProfileManager pm, string? answer, params string[] args)
+    {
+        var o = new StringWriter();
+        var launched = new List<LaunchSpec>();
+        var asked = 0;
+        var code = Commands.Run(args, o, new StringWriter(), pm, s => { launched.Add(s); return 0; }, s => { launched.Add(s); return 0; },
+            wtAvailable: true, claudePath: "claude.cmd", hooks: new ReleaseHooks { ReadLine = () => { asked++; return answer; } });
+        return (code, o.ToString() + (asked > 0 ? "" : "<not asked>"), launched);
+    }
+
+    [Fact]
+    public void Start_Unmapped_YesMapsFolder()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "fresh");
+        var r = Ask(pm, "", "start", "work", dir);
+        Assert.Equal("work", Assert.Single(r.launched).Profile);
+        Assert.Contains("isn't mapped", r.o);
+        Assert.Equal("work", FolderMap.Resolve(pm.Config, dir)?.Profile);
+    }
+
+    [Fact]
+    public void Start_Unmapped_NoLeavesItUnmapped_NeverStopsAsking()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "fresh");
+        Ask(pm, "n", "start", "work", dir);
+        Assert.Null(FolderMap.Resolve(pm.Config, dir));
+        Ask(pm, "never", "start", "work", dir);
+        Assert.Null(FolderMap.Resolve(pm.Config, dir));
+        var r = Ask(pm, "y", "start", "work", dir);
+        Assert.EndsWith("<not asked>", r.o);
+        Assert.Null(FolderMap.Resolve(pm.Config, dir));
+    }
+
+    [Fact]
+    public void Start_Mapped_SameProfile_DoesNotAsk()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "company");
+        pm.Map("work", dir);
+        Assert.EndsWith("<not asked>", Ask(pm, "y", "start", "work", dir).o);
+        Assert.EndsWith("<not asked>", Ask(pm, "y", "start", dir).o);
+    }
+
+    [Fact]
+    public void Start_Mapped_OtherProfile_DefaultSwitchesToMapped()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "company");
+        pm.Map("work", dir);
+        var r = Ask(pm, "", "start", "personal", dir);
+        Assert.Contains("is mapped to 'work'", r.o);
+        Assert.Equal("work", Assert.Single(r.launched).Profile);
+    }
+
+    [Fact]
+    public void Start_Mapped_OtherProfile_YesKeepsChoice_RemapChangesMapping()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "company");
+        pm.Map("work", dir);
+        Assert.Equal("personal", Assert.Single(Ask(pm, "y", "start", "personal", dir).launched).Profile);
+        Assert.Equal("work", FolderMap.Resolve(pm.Config, dir)?.Profile);
+        Assert.Equal("personal", Assert.Single(Ask(pm, "r", "start", "personal", dir).launched).Profile);
+        Assert.Equal("personal", FolderMap.Resolve(pm.Config, dir)?.Profile);
+    }
+
+    [Fact]
+    public void Start_Mapped_OtherProfile_NoAnswerStartsNothing()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "company");
+        pm.Map("work", dir);
+        var r = Ask(pm, null, "start", "personal", dir);
+        Assert.Equal(1, r.code);
+        Assert.Empty(r.launched);
+    }
+
+    [Fact]
+    public void Run_NeverAsks()
+    {
+        var (pm, home) = Make();
+        using var _h = home;
+        var dir = Sub(home, "company");
+        pm.Map("work", dir);
+        var r = Ask(pm, "", "run", "personal", dir);
+        Assert.EndsWith("<not asked>", r.o);
+        Assert.Equal("personal", Assert.Single(r.launched).Profile);
+    }
 }
