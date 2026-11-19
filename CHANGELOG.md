@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-19
+
 ### Added
 - **Check for updates now…** under Advanced in the tray menu checks GitHub right away and offers **Update now** when a newer version exists.
 
@@ -95,7 +97,8 @@ First public release.
 - `cr version`, `cr upgrade` and `cr uninstall`.
 - Release builds from GitHub Actions, with a draft winget manifest.
 
-[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DynamicsNinja/clauderoo/releases/tag/v0.1.0
