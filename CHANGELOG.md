@@ -4,6 +4,13 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- The version shows at the bottom of the tray's **Settings** submenu, and in **Tools › About clauderoo** in the profile manager.
+
+### Changed
+- When a setup check's list appears, the Vertex model fields fold away so the Account tab doesn't scroll around the list.
+- README screenshots show the new profile manager and tray menu.
+
 ## [0.4.0] - 2026-11-19
 
 ### Changed

@@ -69,6 +69,14 @@ internal static class TrayText
     /// <summary>Menu label (not yet &amp;-escaped): "work · my-proj", "personal · someone@example.com", "ci · API key".</summary>
     public static string ProfileLabel(ProfileInfo p) => p.Name + " · " + ShortDescribe(p);
 
+    /// <summary>The version line at the end of the tray's Settings submenu: "clauderoo 0.4.0".</summary>
+    public static string VersionLine(string version) => $"clauderoo {version}";
+
+    /// <summary>The About box in the Profiles window.</summary>
+    public static string About(string version, string? repo) =>
+        $"clauderoo {version}\n\nRun Claude Code under several accounts on Windows, side by side." +
+        (string.IsNullOrEmpty(repo) ? "\n\nThis build wasn't made from a GitHub release." : $"\n\nhttps://github.com/{repo}");
+
     /// <summary>The menu's first action: "Start personal".</summary>
     public static string StartDefault(string name) => $"&Start {name}";
 

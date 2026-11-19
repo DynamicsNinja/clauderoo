@@ -160,7 +160,19 @@ public class TrayTerminalMenuTests
         var trouble = items.FindIndex(i => i.Text == "Troubleshoot");
         Assert.True(trouble > 0);
         Assert.IsType<ToolStripSeparator>(items[trouble - 1]);
-        Assert.Equal(new[] { "&Check this PC…", "&Open profiles folder" }, items.Skip(trouble + 1).Select(i => i.Text));
+        Assert.Equal(new[] { "&Check this PC…", "&Open profiles folder" }, items.Skip(trouble + 1).Take(2).Select(i => i.Text));
+        // Last: the version, after a separator, as plain text.
+        Assert.IsType<ToolStripSeparator>(items[^2]);
+        Assert.Equal("clauderoo " + AppVersion.Current, items[^1].Text);
+        Assert.False(items[^1].Enabled);
+    }
+
+    [Fact]
+    public void About_ShowsTheVersion_AndWhereItComesFrom()
+    {
+        Assert.StartsWith("clauderoo 1.2.3\n", TrayText.About("1.2.3", "me/clauderoo"));
+        Assert.EndsWith("https://github.com/me/clauderoo", TrayText.About("1.2.3", "me/clauderoo"));
+        Assert.Contains("wasn't made from a GitHub release", TrayText.About("0.0.0-dev", null));
     }
 
     [Fact]
