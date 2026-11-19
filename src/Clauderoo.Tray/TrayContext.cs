@@ -332,9 +332,24 @@ sealed class TrayContext : ApplicationContext
     private void RedrawOpenMenu()
     {
         if (!_menu.Visible || _menu.IsDisposed) return;
+        // Rebuilt with painting off, then shown in one go: no flash of an empty or half-built menu.
+        SendMessage(_menu.Handle, WmSetRedraw, IntPtr.Zero, IntPtr.Zero);
+        _menu.SuspendLayout();
         try { RebuildMenu(); }
         catch (Exception e) { AppLog.Warn($"Tray: redrawing the menu failed: {e.Message}"); }
+        finally
+        {
+            _menu.ResumeLayout(true);
+            SendMessage(_menu.Handle, WmSetRedraw, (IntPtr)1, IntPtr.Zero);
+            _menu.Invalidate(true);
+            _menu.Update();
+        }
     }
+
+    private const int WmSetRedraw = 0x000B;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     private void RebuildMenu()
     {

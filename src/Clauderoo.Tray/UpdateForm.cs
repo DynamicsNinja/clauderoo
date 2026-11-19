@@ -42,7 +42,7 @@ internal sealed class UpdateForm : Form
         _icon = AppIcons.Load(AppIconState.Normal, SystemInformation.HighContrast);
         Icon = _icon;
         CancelButton = _close;
-        ClientSize = new Size(LogicalToDeviceUnits(420), LogicalToDeviceUnits(150));
+        ClientSize = new Size(LogicalToDeviceUnits(420), LogicalToDeviceUnits(170));
         _bar.AccessibleName = "Update progress";
 
         var table = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
@@ -57,11 +57,10 @@ internal sealed class UpdateForm : Form
         table.Controls.Add(_detail, 0, 2);
         table.Controls.Add(buttons, 0, 3);
         Controls.Add(table);
-        table.SizeChanged += (_, _) =>
-        {
-            var w = Math.Max(100, table.ClientSize.Width - 6);
-            _status.MaximumSize = _detail.MaximumSize = new Size(w, 0);
-        };
+        // The labels wrap at the window's width. The window can't be resized, so it is set once, here: the labels start
+        // with a 1-pixel limit and would otherwise draw nothing.
+        var wrap = Math.Max(100, ClientSize.Width - Padding.Horizontal - LogicalToDeviceUnits(6));
+        _status.MaximumSize = _detail.MaximumSize = new Size(wrap, 0);
 
         _close.Click += (_, _) => Close();
         Shown += (_, _) => _ = RunAsync();
@@ -108,7 +107,7 @@ internal sealed class UpdateForm : Form
 
             if (_askFirst)
             {
-                Step($"clauderoo {latest.Version} is available.", $"You have {AppVersion.Current}. Update now to download and install it; clauderoo restarts afterwards.");
+                Step($"clauderoo {latest.Version} is available.", $"You have {AppVersion.Current}. clauderoo restarts after updating.");
                 _bar.Style = ProgressBarStyle.Continuous;
                 _bar.Value = 0;
                 _close.Text = "Not now";
