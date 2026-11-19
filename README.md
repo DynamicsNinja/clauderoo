@@ -50,7 +50,7 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 - **Default profile.** Pick which profile a plain `claude` uses in new terminals.
 - **Vertex setup check.** A read-only checklist covers gcloud, sign-in, IAM permission, leftover environment variables and a live test of each model. All checks run in parallel, with live progress.
 - **Tray app.** Start sessions, switch the default profile and see problems at a glance. The tray icon shows a badge when something needs attention.
-- **Profile manager window.** Choose a provider, edit environment variables, rename, remove and restore profiles (any removed copy, from **Removed…**, which can also delete them permanently), export and import them, and run the setup check.
+- **Profile manager window.** A header with the profile's account, usage, **Start session** and **Set as default**, then tabs: **Account** (provider and the setup check), **Folders** (projects that use the profile, and where Start session opens), **Environment** and **Sharing**. The **File** menu renames, duplicates, removes, imports, exports and restores profiles (**Restore removed profiles…** can also delete them permanently); **Tools** has **Auto-switch…** and the MCP setup.
 - **Usage limits.** See each Claude-login profile's 5-hour and 7-day usage (and per-model limits) with `cr usage`, in the tray menu and in the profile manager.
 - **Auto-switch.** When the default profile nears a usage limit, new terminals move to another profile that has room.
 - **MCP server.** `cr mcp` lets a Claude session list your profiles, check their usage, change the default and hand a one-shot prompt to another profile.
@@ -126,7 +126,7 @@ publish\clauderoo.exe install
 
 Open a new terminal afterwards so the `PATH` change takes effect.
 
-**Upgrading:** from a release install, run `cr upgrade`. It downloads the latest release, checks its SHA256 and runs its installer. The tray app also checks every 6 hours and offers "Update to vX" in its menu (turn this off under Advanced, where **Check for updates now…** checks right away); clicking it shows the download and install in a window and restarts the tray on the new version. `cr upgrade` restarts a running tray too. From a source build, pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
+**Upgrading:** from a release install, run `cr upgrade`. It downloads the latest release, checks its SHA256 and runs its installer. The tray app also checks every 6 hours and offers "Update to vX" in its menu (turn this off under **Settings**, where **Check for updates now…** checks right away); clicking it shows the download and install in a window and restarts the tray on the new version. `cr upgrade` restarts a running tray too. From a source build, pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
 
 **Uninstalling:** quit the tray app, then run `cr uninstall`. It turns autostart off, removes the install folder from your `PATH` and removes the folder a few seconds later. Your profiles, logins and settings in `%USERPROFILE%\.clauderoo` are kept.
 
@@ -191,7 +191,7 @@ The tray does the same from **Continue a conversation…**. The window lists con
 | `wt-profiles [--remove]` | Add a Windows Terminal profile for each clauderoo profile, named "Claude · &lt;name&gt;", with its own tab colour and the profile's start folder. They appear in Windows Terminal's new-tab dropdown (open a new Windows Terminal window to see them). Once added, they follow `add`, `rename`, `remove`, `restore`, `import` and the shell setting. `--remove` takes them out again |
 | `code [name] [dir] [--cursor \| --editor <exe>]` | Open VS Code on `dir` (default: the current folder) with the profile's environment, so the Claude Code extension in that window uses the profile. The profile is picked as `start` picks it. `--cursor` opens Cursor; `--editor` takes the path of another VS Code-based editor's `.exe` or `.cmd` launcher |
 
-The same choices are in the tray under **Advanced › New sessions open in**, and each profile's tray menu has **Open in VS Code…** (it opens the profile's start folder, or asks for one).
+The same choices are in the tray under **Settings › New sessions open in**, and each profile's tray menu has **Open in VS Code…** (it opens the profile's start folder, or asks for one).
 
 **PowerShell and special characters.** With `pwsh` or `powershell`, the tab gets its commands as one encoded block that neither Windows Terminal nor Command Prompt reads, and every value in it is a quoted literal. So prompts and folders may contain any character, including `" % ! ; & '`. With `cmd`, the old limits stay.
 
@@ -210,7 +210,7 @@ The same choices are in the tray under **Advanced › New sessions open in**, an
 
 The longest mapped folder wins. When you `cr start` in a folder that isn't mapped, clauderoo offers to map it to the profile you're starting (**Y**es, **n**o, or ne**v**er ask for this folder). When you name a profile other than the one the folder is mapped to, it asks first: **y** starts yours anyway, Enter starts the mapped profile instead, **r** remaps the folder to yours. Only `cr start` in a real console asks; `cr run`, new tabs, the tray and scripts never do.
 
-Mappings follow a profile when it's renamed and are dropped when it's removed. You can also edit them under **Folders** in the manager window.
+Mappings follow a profile when it's renamed and are dropped when it's removed. You can also edit them on the **Folders** tab of the manager window.
 
 ### Providers and environment
 
@@ -357,7 +357,7 @@ The checks run in parallel and the list updates as each one finishes. Each line 
 
 ### Checking keys and tokens
 
-Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live` (or **Live check** ticked next to **Check setup** in the window, which shows the results as the same checklist):
+Without `--live`, `cr check` (and **Check setup** in the window) only says whether an API key or token is saved, and when it was saved. With `--live` (or **Include a live test** ticked next to **Check setup** in the window, which shows the results as the same checklist):
 
 - **API key:** one authenticated request to the Anthropic API's models list (`GET /v1/models`), with a 10-second timeout. It uses no quota. A profile that sets `ANTHROPIC_BASE_URL` is tested against that address; the key is only sent over `https` (or plain `http` to this computer).
 - **Claude token:** a token from `claude setup-token` can only make model requests, so there's no free way to test it. clauderoo runs `claude -p` with the token, the Haiku model and a one-line prompt, which uses a few tokens of the account's quota.
@@ -371,7 +371,7 @@ The key or token is never printed, logged or included in `--json` output; error 
 For Claude-login profiles (home included), clauderoo shows how much of the subscription's 5-hour and 7-day windows is used, plus any per-model limits:
 
 - **CLI:** `cr usage [name]` prints a table; `cr usage --json` prints the same as JSON. `cr list` adds a `5h/7d` column from the last reading.
-- **Tray:** each profile line ends with `· 5h 42% · 7d 63%`, and its submenu lists each window with its reset time, such as "5-hour: 42%, resets 15:40". **Refresh usage** checks again right away.
+- **Tray:** each profile line reads `name · account · 5h 42% · 7d 63%` (amber from the auto-switch threshold, or 70%, red from 90%), and its submenu lists each window with its reset time, such as "5-hour: 42%, resets 15:40". **Refresh usage** checks again right away and says how old the numbers are. The profile manager's list shows the same numbers.
 - **Profile manager:** a **Usage** group shows a bar per window (green below 70%, amber from 70%, red from 90%), the reset time, the plan, when it was read ("as of") and a **Refresh** button.
 
 Vertex, API-key and Claude-token profiles have no subscription limits to show. The CLI, the tray submenu and the profile manager say so, for example "Usage isn't tracked for Claude token.", and `--json` gives them the status `notTracked`. clauderoo never reads their sign-in file and never calls the usage service for them.
@@ -396,7 +396,7 @@ The usage endpoint isn't documented by Anthropic. If it changes, usage shows as 
 | `list_sessions {profile?, limit?}` | Running sessions started by clauderoo and recent conversations (id, profile, folder, time, first prompt), newest first; `limit` is 1 to 200, default 20. Uses no quota |
 | `check_profile {profile, live?}` | The read-only sign-in check (like `cr check`). A Vertex profile gets the full checklist, which sends one tiny prompt per model; `live: true` tests an API key (no quota) or a Claude token (a few tokens). One check runs at a time |
 
-**Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or click **Use from Claude…** in the profile manager, and you get this command to run once in a terminal:
+**Registering it.** clauderoo never writes `~/.claude.json`. Run `cr mcp install`, or choose **Tools › Connect Claude to clauderoo (MCP)…** in the profile manager, and you get this command to run once in a terminal:
 
 ```powershell
 claude mcp add --scope user clauderoo -- "%LOCALAPPDATA%\clauderoo\cr.exe" mcp
@@ -426,7 +426,7 @@ Run it from a terminal using your home profile. Every profile then gets it throu
 
 Auto-switch changes the default profile when the default reaches a share of its 5-hour or 7-day limit (90% unless you change it). From then on, new terminals use the new default. Sessions that are already running keep their profile.
 
-- **Turning it on:** tick **Advanced → Auto-switch default at 90%** in the tray, use the **Auto-switch…** button in the profile manager, or run `cr auto on`.
+- **Turning it on:** tick **Settings → Auto-switch at 90% usage** in the tray, use **Tools › Auto-switch…** in the profile manager, or run `cr auto on`.
 - **Threshold and order:** set them in the **Auto-switch…** dialog, or with `cr auto --threshold 85 --order work,personal`. The threshold can be 6 to 100.
 - **Which profile it picks:** the first profile in the order whose last reading is under 15 minutes old and has both windows more than 5 points below the threshold. With no order set, every Claude-login profile is tried in list order. Vertex and API-key profiles have no limits to check, so they are used only when you list them in the order. Claude-token profiles are never auto-switch targets, because their usage isn't tracked, so `cr auto --order` refuses them.
 - **No flip-flopping:** after a switch, nothing changes for 10 minutes. clauderoo never switches back on its own.
@@ -449,7 +449,7 @@ Every clauderoo command, `cr auto --once` included, also exits with 2 on an unex
 
 ### Doctor
 
-`cr doctor`, or **Advanced › Check this PC…** in the tray, runs a read-only checklist of the machine and clauderoo's own state. It changes nothing: no sync, no config write, and the only program it runs is `claude --version`.
+`cr doctor`, or **Settings › Check this PC…** in the tray, runs a read-only checklist of the machine and clauderoo's own state. It changes nothing: no sync, no config write, and the only program it runs is `claude --version`.
 
 1. clauderoo is set up and `config.json` can be read.
 2. Claude Code is on `PATH`, and its version.
@@ -559,7 +559,7 @@ If you install or update a plugin from a non-home profile, that profile's folder
 
 Removed profiles are moved to `%USERPROFILE%\.clauderoo\profiles\_removed\<name>-<timestamp>`, never deleted, and their shared-folder junctions are unlinked first.
 
-To clean them up, use `cr removed` to see what's there and `cr purge` to delete copies permanently (for example `cr purge --older-than 30d`), or **Removed…** in the profile manager window. Both remove junctions as links and never touch what they point to.
+To clean them up, use `cr removed` to see what's there and `cr purge` to delete copies permanently (for example `cr purge --older-than 30d`), or **File › Restore removed profiles…** in the profile manager window. Both remove junctions as links and never touch what they point to.
 
 If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **Don't** use PowerShell 5.1 `Remove-Item -Recurse` on these folders: it can follow junctions into the shared folders. To remove all of clauderoo's data when uninstalling, use `cr uninstall --purge`, which never follows junctions.
 </details>
@@ -567,7 +567,7 @@ If you delete folders in `_removed` by hand instead, use Explorer or `rd /s`. **
 <details>
 <summary><strong>Something isn't working and you don't know why</strong></summary>
 
-Run `cr doctor` (or **Advanced › Check this PC…** in the tray). It checks Claude Code, `PATH`, the MCP server, the default profile and every profile's shared-folder links, and says how to fix what it finds.
+Run `cr doctor` (or **Settings › Check this PC…** in the tray). It checks Claude Code, `PATH`, the MCP server, the default profile and every profile's shared-folder links, and says how to fix what it finds.
 </details>
 
 <details>

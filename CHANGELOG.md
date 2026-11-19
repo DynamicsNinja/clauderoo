@@ -4,6 +4,18 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Changed
+- **Profile manager redesigned.** A header shows the profile's name, provider and account, sessions running, its usage bars, and **Start session** / **Set as default**. Below it, tabs: **Account** (provider as a dropdown, Vertex model names folded under *Models (optional)*, the setup check), **Folders (n)** (projects that use the profile, and *Start session opens in*), **Environment (n)** and **Sharing**. **Save** and a new **Revert** sit under the tabs; Folders and Sharing say they save right away. The tabs scroll, so the window has a fixed size and fits small screens.
+- The profile manager's list shows each profile's account and its usage (`5h 42% · 7d 63%`). List-wide and app-wide actions moved to a **File** / **Tools** menu bar; only **New**, **Rename** and **Remove** stay under the list.
+- Tray menu: rows read `name · account · usage` (the icon shows the provider); a bold **Start ‹default›** comes first; **Update to vX** sits under the header with its own icon; **Advanced** is now **Settings**, with a **Troubleshoot** group; **Refresh usage** shows how old the numbers are; **Continue a conversation** has its own icon.
+- Clearer labels: **Restore removed profiles…**, **Connect Claude to clauderoo (MCP)…**, **Auto-switch at 90% usage**, **Include a live test**, **Start session opens in**, **Reset**, **Remove variable**.
+
+### Fixed
+- Usage colours now follow one rule in the tray and the profile manager: amber from the auto-switch threshold (or 70%), red from 90%. Before, 78% was amber in the window and plain in the tray.
+- A signed-out profile no longer shows stale usage bars in the profile manager, and "not signed in" is said once.
+- Providers whose usage isn't tracked (Vertex, API key, Claude token) no longer show an empty Usage box.
+- A highlighted tray row with coloured parts (near a limit, not signed in) draws all its text in the highlight colour.
+
 ## [0.3.2] - 2026-11-19
 
 ### Fixed
