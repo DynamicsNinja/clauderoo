@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
 ### Added
 - `cr start` in a folder that isn't mapped offers to map it to the profile being started (yes / no / never for this folder).
 - `cr start <name>` in a folder mapped to a different profile asks before starting: start it anyway, start the mapped profile instead (default), or remap the folder.
@@ -86,6 +88,7 @@ First public release.
 - `cr version`, `cr upgrade` and `cr uninstall`.
 - Release builds from GitHub Actions, with a draft winget manifest.
 
-[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DynamicsNinja/clauderoo/releases/tag/v0.1.0
