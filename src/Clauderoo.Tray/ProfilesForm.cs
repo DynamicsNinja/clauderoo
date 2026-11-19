@@ -308,7 +308,9 @@ sealed class ProfilesForm : Form
         _miRename.Click += (_, _) => Guard(RenameProfile);
         _miRemove.Click += (_, _) => Guard(RemoveProfile);
         var tools = new ToolStripMenuItem("Too&ls");
-        tools.DropDownItems.AddRange([_autoSwitch, _useFromClaude]);
+        tools.DropDownItems.AddRange([_autoSwitch, _useFromClaude, new ToolStripSeparator(),
+            new ToolStripMenuItem("A&bout clauderoo", null, (_, _) => MessageBox.Show(this, TrayText.About(AppVersion.Current, AppVersion.Repo),
+                "About clauderoo", MessageBoxButtons.OK, MessageBoxIcon.Information))]);
         _menu.Items.AddRange([file, tools]);
         _menu.ShowItemToolTips = true;
         foreach (var dd in new[] { file, tools }) dd.DropDown.ShowItemToolTips = true;
@@ -1145,7 +1147,7 @@ sealed class ProfilesForm : Form
         if (TrayText.Account(info) is { } a) parts.Add(a);
         if (info.IsDefault) parts.Add("default");
         if (info.IsHome) parts.Add("home");
-        if (_running.TryGetValue(info.Name, out var n) && n > 0) parts.Add(TrayText.Running(n));
+        if (_running.TryGetValue(info.Name, out var n) && n > 0) parts.Add($"● {n} running"); // as in the list
         _headDetail.Show(ProviderGlyph(info.IsHome ? Providers.Login : info.Provider), SystemColors.GrayText, string.Join(" · ", parts));
     }
 
@@ -1715,6 +1717,14 @@ sealed class ProfilesForm : Form
     private void ShowCheckList(IReadOnlyList<CheckItem>? items, bool live = false)
     {
         var show = items is { Count: > 0 } && _current != null && !_currentIsHome;
+        // The check list needs the room: fold the optional model names away (one click brings them back), so the
+        // Account tab doesn't get a scrollbar around the list's own.
+        if (show && !_checkList.Visible && _modelsOpen)
+        {
+            _modelsOpen = false;
+            _modelsPanel.Visible = false;
+            _modelsToggle.Text = "▸ Models (optional)";
+        }
         if (show) _checkList.SetItems(items!, live);
         if (_checkList.Visible == show) return;
         _checkList.Visible = show;

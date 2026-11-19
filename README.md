@@ -59,17 +59,17 @@ clauderoo gives each account its own **profile**, a separate config folder with 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/profiles-window.png" width="640" alt="Profiles window with the home profile selected, showing its usage bars, plan and mapped folders"><br>
+  <img src="docs/images/profiles-window.png" width="640" alt="Profiles window with the home profile selected: a header with its account, usage bars and Start session, then Account, Folders and Sharing tabs; the list shows each profile's account and usage"><br>
   <em>Profile manager: every profile at a glance, with the home profile's usage, plan and the folders that start it.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/profiles-vertex.png" width="640" alt="Profiles window with a Google Vertex AI profile selected, showing project, region and model fields"><br>
+  <img src="docs/images/profiles-vertex.png" width="640" alt="Profiles window with a Google Vertex AI profile selected: provider, project and region on the Account tab, with the optional model names unfolded"><br>
   <em>A Vertex profile: project, region and models, a setup check, its folders and its own environment variables.</em>
 </p>
 
 <p align="center">
-  <img src="docs/images/tray-menu.png" width="640" alt="Tray menu with the default star, usage on the home profile and its submenu open showing a running session"><br>
+  <img src="docs/images/tray-menu.png" width="640" alt="Tray menu with Start personal first, one line per profile with its account and usage, and the default profile's submenu open showing a running session and its limits"><br>
   <em>Tray menu: one entry per profile, with its provider, account, usage, default marker and running sessions.</em>
 </p>
 
@@ -352,7 +352,7 @@ If you accept a model update from inside Claude (for example, moving Opus to a n
 The checks run in parallel and the list updates as each one finishes. Each line is marked ✓ ok, ⚠ warning, ✗ failed or – skipped, with a hint on how to fix it. The exit code is 1 only if something failed.
 
 <p align="center">
-  <img src="docs/images/check-setup-progress.png" width="560" alt="Check setup running with live progress">
+  <img src="docs/images/check-setup-progress.png" width="560" alt="Check setup running on the Account tab, with each check filling in as it finishes">
 </p>
 
 ### Checking keys and tokens

@@ -166,6 +166,11 @@ internal static class TrayMenu
         var folder = Item("&Open profiles folder", Neutral(Glyph.Folder, dpi), a.OpenProfilesFolder);
         folder.ToolTipText = "Changes made in these folders may be overwritten by sync.";
         advanced.DropDownItems.Add(folder);
+        advanced.DropDownItems.Add(new ToolStripSeparator());
+        advanced.DropDownItems.Add(new ToolStripMenuItem(TrayText.VersionLine(AppVersion.Current))
+        {
+            Enabled = false, AccessibleRole = AccessibleRole.StaticText,
+        });
         items.Add(advanced);
 
         items.Add(new ToolStripSeparator());
