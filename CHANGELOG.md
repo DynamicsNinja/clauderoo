@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
 ### Changed
 - **Profile manager redesigned.** A header shows the profile's name, provider and account, sessions running, its usage bars, and **Start session** / **Set as default**. Below it, tabs: **Account** (provider as a dropdown, Vertex model names folded under *Models (optional)*, the setup check), **Folders (n)** (projects that use the profile, and *Start session opens in*), **Environment (n)** and **Sharing**. **Save** and a new **Revert** sit under the tabs; Folders and Sharing say they save right away. The tabs scroll, so the window has a fixed size and fits small screens.
 - The profile manager's list shows each profile's account and its usage (`5h 42% · 7d 63%`). List-wide and app-wide actions moved to a **File** / **Tools** menu bar; only **New**, **Rename** and **Remove** stay under the list.
@@ -115,7 +117,8 @@ First public release.
 - `cr version`, `cr upgrade` and `cr uninstall`.
 - Release builds from GitHub Actions, with a draft winget manifest.
 
-[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.2.0...v0.3.0
