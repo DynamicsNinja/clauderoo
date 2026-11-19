@@ -325,6 +325,17 @@ sealed class TrayContext : ApplicationContext
         _menu.Show(pos, direction);
     }
 
+    /// <summary>
+    /// After a menu action that stayed open (Refresh usage, Set as default) finishes: rebuilds the menu in place so it
+    /// shows the result. Does nothing when the menu was closed meanwhile.
+    /// </summary>
+    private void RedrawOpenMenu()
+    {
+        if (!_menu.Visible || _menu.IsDisposed) return;
+        try { RebuildMenu(); }
+        catch (Exception e) { AppLog.Warn($"Tray: redrawing the menu failed: {e.Message}"); }
+    }
+
     private void RebuildMenu()
     {
         var actions = new TrayMenuActions
@@ -342,6 +353,7 @@ sealed class TrayContext : ApplicationContext
             SetAutoStart = on => Guard(() => AutoStart.Set(on, AutoStart.ResolveExe(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.ProcessPath!))),
             UpdateNow = () => Guard(UpdateNow),
+            CheckUpdatesNow = () => Guard(CheckUpdatesNow),
             SetUpdateChecks = on => Guard(() => SetUpdateChecks(on)),
             SetUp = () => Guard(SetUp),
             Retry = () => Guard(FullSyncGated),
@@ -384,6 +396,8 @@ sealed class TrayContext : ApplicationContext
     {
         try { await _usage.Refresh(); }
         catch (Exception) { /* shutting down; a failed fetch is shown as the profile's usage status */ }
+        // The readings arrive through Updated (posted before this); redraw once they're applied.
+        Post(() => Guard(RedrawOpenMenu));
     }
 
     // ---------- update check ----------
@@ -422,6 +436,17 @@ sealed class TrayContext : ApplicationContext
         if (announce) Balloon(TrayText.UpdateBalloon(newer!.ToString()), ToolTipIcon.Info);
     }
 
+    // A check from the update window counts as the scheduled one too: the menu shows (or drops) "Update to vX".
+    private void RecordCheck(ReleaseInfo? found)
+    {
+        _updateState.LastCheckUtc = DateTime.UtcNow;
+        _updateState.LatestVersion = found?.Version.ToString();
+        _updateState.LatestTag = found?.Tag;
+        if (found != null) _updateState.NotifiedVersion = found.Version.ToString(); // seen in the window: no balloon
+        SaveUpdateState();
+        UpdateStatus();
+    }
+
     private void SaveUpdateState()
     {
         var copy = UpdateCheck.Snapshot(_updateState); // taken on the UI thread; the write happens in the background
@@ -434,14 +459,19 @@ sealed class TrayContext : ApplicationContext
         SaveUpdateState();
     }
 
-    // Downloads and installs the update in a window, then restarts the tray on the new version.
-    private void UpdateNow()
+    // Downloads and installs the update in a window, then restarts the tray on the new version. With askFirst
+    // ("Check for updates now") it only checks, and installs when the user then clicks Update now.
+    private void UpdateNow() => ShowUpdate(askFirst: false);
+
+    private void CheckUpdatesNow() => ShowUpdate(askFirst: true);
+
+    private void ShowUpdate(bool askFirst)
     {
         if (string.IsNullOrEmpty(AppVersion.Repo))
             throw new ClauderooException("This build wasn't made from a GitHub release, so it can't update itself.");
         if (_updateForm is not { IsDisposed: false } form)
         {
-            form = new UpdateForm(AppVersion.Repo, () => Guard(RestartSelf));
+            form = new UpdateForm(AppVersion.Repo, () => Guard(RestartSelf), askFirst, found => Guard(() => RecordCheck(found)));
             var created = form;
             form.FormClosed += (_, _) => { if (_updateForm == created) _updateForm = null; created.Dispose(); };
             _updateForm = form;
@@ -733,6 +763,7 @@ sealed class TrayContext : ApplicationContext
             Kick();
         }
         catch (Exception e) { ReportError(e); }
+        RedrawOpenMenu(); // the star moves (or the item comes back if it failed)
     }
 
     // ---------- auto-switch ----------

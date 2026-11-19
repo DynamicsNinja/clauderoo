@@ -16,14 +16,22 @@ internal sealed class UpdateForm : Form
     private readonly ProgressBar _bar = new() { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 30, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 8) };
     private readonly Label _detail = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 8), MaximumSize = new Size(1, 0) };
     private readonly Button _close = new() { Text = "Cancel", AutoSize = true, Margin = new Padding(0, 8, 0, 0), DialogResult = DialogResult.Cancel };
+    private readonly Button _go = new() { Text = "&Update now", AutoSize = true, Margin = new Padding(0, 8, 8, 0), Visible = false };
+    private readonly bool _askFirst;
+    private readonly Action<ReleaseInfo?> _checked;
+    private TaskCompletionSource<bool>? _confirm;
     private readonly CancellationTokenSource _cts = new();
     private bool _installing;
 
     /// <param name="restart">Runs on the UI thread after a successful install: starts the new tray and exits this one.</param>
-    public UpdateForm(string repo, Action restart)
+    /// <param name="askFirst">"Check for updates now": when a newer version exists, wait for Update now instead of installing.</param>
+    /// <param name="checkedLatest">Runs on the UI thread with what GitHub reported (null: no release with a download).</param>
+    public UpdateForm(string repo, Action restart, bool askFirst = false, Action<ReleaseInfo?>? checkedLatest = null)
     {
         _repo = repo;
         _restart = restart;
+        _askFirst = askFirst;
+        _checked = checkedLatest ?? (_ => { });
         Text = "clauderoo — Update";
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = true;
@@ -42,6 +50,8 @@ internal sealed class UpdateForm : Form
         table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var buttons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Bottom, Margin = new Padding(0) };
         buttons.Controls.Add(_close);
+        buttons.Controls.Add(_go);
+        _go.Click += (_, _) => { _go.Visible = false; _confirm?.TrySetResult(true); };
         table.Controls.Add(_status, 0, 0);
         table.Controls.Add(_bar, 0, 1);
         table.Controls.Add(_detail, 0, 2);
@@ -82,6 +92,7 @@ internal sealed class UpdateForm : Form
         {
             Step("Looking for the latest version…", $"You have {AppVersion.Current}.");
             var lookup = await updater.LookupAsync(_cts.Token);
+            _checked(lookup.Info);
             if (lookup.Info is not { } latest)
             {
                 Finish("No update could be found.", lookup.ReleaseExists
@@ -93,6 +104,22 @@ internal sealed class UpdateForm : Form
             {
                 Finish($"clauderoo {AppVersion.Current} is up to date.", ok: true);
                 return;
+            }
+
+            if (_askFirst)
+            {
+                Step($"clauderoo {latest.Version} is available.", $"You have {AppVersion.Current}. Update now to download and install it; clauderoo restarts afterwards.");
+                _bar.Style = ProgressBarStyle.Continuous;
+                _bar.Value = 0;
+                _close.Text = "Not now";
+                _go.Visible = true;
+                AcceptButton = _go;
+                _go.Focus();
+                _confirm = new TaskCompletionSource<bool>();
+                using (_cts.Token.Register(() => _confirm.TrySetCanceled()))
+                    await _confirm.Task;
+                _bar.Style = ProgressBarStyle.Marquee;
+                _close.Text = "Cancel";
             }
 
             Step($"Downloading {latest.Tag}…", $"{AppVersion.Current} → {latest.Version}");
@@ -121,6 +148,7 @@ internal sealed class UpdateForm : Form
             _restart();
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* closed */ }
+        catch (ObjectDisposedException) { /* closed */ }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
         {
             Finish("Couldn't reach GitHub.", "Check your connection and try again. Nothing was changed.");

@@ -126,7 +126,7 @@ publish\clauderoo.exe install
 
 Open a new terminal afterwards so the `PATH` change takes effect.
 
-**Upgrading:** from a release install, run `cr upgrade`. It downloads the latest release, checks its SHA256 and runs its installer. The tray app also checks once a day and offers "Update to vX" in its menu (turn this off under Advanced); clicking it shows the download and install in a window and restarts the tray on the new version. `cr upgrade` restarts a running tray too. From a source build, pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
+**Upgrading:** from a release install, run `cr upgrade`. It downloads the latest release, checks its SHA256 and runs its installer. The tray app also checks every 6 hours and offers "Update to vX" in its menu (turn this off under Advanced, where **Check for updates now…** checks right away); clicking it shows the download and install in a window and restarts the tray on the new version. `cr upgrade` restarts a running tray too. From a source build, pull, publish again and rerun `publish\clauderoo.exe install`. Running copies are moved aside and replaced, and if copying fails the old version is put back.
 
 **Uninstalling:** quit the tray app, then run `cr uninstall`. It turns autostart off, removes the install folder from your `PATH` and removes the folder a few seconds later. Your profiles, logins and settings in `%USERPROFILE%\.clauderoo` are kept.
 

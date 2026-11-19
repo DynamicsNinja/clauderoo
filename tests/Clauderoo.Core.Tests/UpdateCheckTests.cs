@@ -12,8 +12,8 @@ public class UpdateCheckTests
         var s = new UpdateState();
         Assert.True(UpdateCheck.IsDue(s, T0));                       // never checked
         s.LastCheckUtc = T0;
-        Assert.False(UpdateCheck.IsDue(s, T0.AddHours(23)));
-        Assert.True(UpdateCheck.IsDue(s, T0.AddHours(24)));
+        Assert.False(UpdateCheck.IsDue(s, T0.AddHours(5)));
+        Assert.True(UpdateCheck.IsDue(s, T0.AddHours(6)));
         Assert.True(UpdateCheck.IsDue(s, T0.AddDays(3)));
         Assert.True(UpdateCheck.IsDue(s, T0.AddHours(-1)));           // clock went backwards: don't wait forever
         s.CheckEnabled = false;

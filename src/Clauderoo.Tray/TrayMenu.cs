@@ -44,6 +44,7 @@ internal sealed class TrayMenuActions
     public Action OpenProfilesFolder { get; init; } = () => { };
     public Action<bool> SetAutoStart { get; init; } = _ => { };
     public Action UpdateNow { get; init; } = () => { };
+    public Action CheckUpdatesNow { get; init; } = () => { };
     public Action<bool> SetUpdateChecks { get; init; } = _ => { };
     public Action SetUp { get; init; } = () => { };
     public Action Retry { get; init; } = () => { };
@@ -110,6 +111,8 @@ internal static class TrayMenu
         if (s.Profiles.Any(TrayMenuState.TracksUsage))
         {
             var refresh = Item("Refresh &usage", Neutral(Glyph.Refresh, dpi), a.RefreshUsage);
+        // Stays open: the menu is redrawn with the new numbers when they arrive.
+        KeepOpen(refresh, () => { refresh.Text = "Refreshing usage…"; refresh.Enabled = false; });
             refresh.ToolTipText = "Check the usage limits of your Claude-login profiles now.";
             items.Add(refresh);
         }
@@ -129,20 +132,19 @@ internal static class TrayMenu
         var doctor = Item("&Check this PC…", null, a.CheckThisPc);
         doctor.ToolTipText = "Checks Claude Code, PATH, the MCP server and every profile's links (like 'cr doctor'). Changes nothing.";
         advanced.DropDownItems.Add(doctor);
-        var auto = new ToolStripMenuItem("Start with &Windows") { Checked = s.AutoStartOn };
-        auto.Click += (_, _) => a.SetAutoStart(!auto.Checked);
+        var auto = Toggle("Start with &Windows", s.AutoStartOn, a.SetAutoStart);
         advanced.DropDownItems.Add(auto);
-        var autoSwitch = new ToolStripMenuItem(TrayText.AutoSwitchMenu(s.AutoSwitch)) { Checked = s.AutoSwitch is { Enabled: true } };
+        var autoSwitch = Toggle(TrayText.AutoSwitchMenu(s.AutoSwitch), s.AutoSwitch is { Enabled: true }, a.SetAutoSwitch);
         autoSwitch.ToolTipText = "When the default profile nears a usage limit, new terminals use another profile with room. "
                                  + "Change the threshold and order in Manage profiles.";
-        autoSwitch.Click += (_, _) => a.SetAutoSwitch(!autoSwitch.Checked);
         advanced.DropDownItems.Add(autoSwitch);
         advanced.DropDownItems.Add(SessionsOpenIn(s, a, dpi));
         if (s.UpdateChecksAvailable)
         {
-            var checks = new ToolStripMenuItem("Check for &updates daily") { Checked = s.UpdateChecksOn };
-            checks.Click += (_, _) => a.SetUpdateChecks(!checks.Checked);
+            var checks = Toggle("Check for &updates automatically", s.UpdateChecksOn, a.SetUpdateChecks);
+            checks.ToolTipText = "Every few hours; a new version shows as Update to vX in this menu.";
             advanced.DropDownItems.Add(checks);
+            advanced.DropDownItems.Add(Item("Check for updates &now…", Neutral(Glyph.Refresh, dpi), a.CheckUpdatesNow));
         }
         items.Add(advanced);
 
@@ -246,6 +248,8 @@ internal static class TrayMenu
             p.IsDefault ? Glyphs.Get(Glyph.Star, GlyphSize, dpi, StatusColors.Accent) : Neutral(Glyph.StarOutline, dpi),
             () => a.SetDefault(name));
         setDefault.Enabled = !p.IsDefault;
+        // Stays open: the star moves to this profile when the change is saved (the tray redraws the open menu).
+        KeepOpen(setDefault, () => { setDefault.Text = "Setting as default…"; setDefault.Enabled = false; });
         item.DropDownItems.Add(setDefault);
         if (running > 0)
         {
@@ -271,19 +275,28 @@ internal static class TrayMenu
             ToolTipText = "Where Start session opens Claude. Same as 'cr config terminal' and 'cr config shell'.",
         };
         PrepareDropDown(menu, dpi);
-        ToolStripMenuItem Choice(string text, bool on, Action pick)
+        // Radio groups that stay open: the tick moves to the picked choice right away.
+        ToolStripMenuItem Choice(List<ToolStripMenuItem> group, string text, bool on, Action pick)
         {
             var i = new ToolStripMenuItem(text) { Checked = on };
-            i.Click += (_, _) => { if (!on) pick(); };
+            group.Add(i);
+            KeepOpen(i, () =>
+            {
+                if (i.Checked) return;
+                foreach (var other in group) other.Checked = other == i;
+                pick();
+            });
             return i;
         }
-        menu.DropDownItems.Add(Choice("&Windows Terminal", s.Terminal != TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Wt)));
-        menu.DropDownItems.Add(Choice("Console wi&ndow", s.Terminal == TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Conhost)));
+        var terminals = new List<ToolStripMenuItem>();
+        menu.DropDownItems.Add(Choice(terminals, "&Windows Terminal", s.Terminal != TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Wt)));
+        menu.DropDownItems.Add(Choice(terminals, "Console wi&ndow", s.Terminal == TerminalChoice.Conhost, () => a.SetTerminal(TerminalChoice.Conhost)));
         menu.DropDownItems.Add(new ToolStripSeparator());
+        var shells = new List<ToolStripMenuItem>();
         foreach (var shell in TerminalChoice.Shells)
         {
             var key = shell switch { TerminalChoice.Pwsh => "PowerShell &7", TerminalChoice.PowerShell => "Windows &PowerShell", _ => "&Command Prompt" };
-            menu.DropDownItems.Add(Choice(key, s.Shell == shell, () => a.SetShell(shell)));
+            menu.DropDownItems.Add(Choice(shells, key, s.Shell == shell, () => a.SetShell(shell)));
         }
         return menu;
     }
@@ -293,6 +306,63 @@ internal static class TrayMenu
 
     static ToolStripMenuItem Header(string text, Font font) =>
         new(text.Replace("&", "&&")) { Enabled = false, Font = Bold(font), AccessibleRole = AccessibleRole.StaticText };
+
+    /// <summary>
+    /// Set while a click on a <see cref="KeepOpen"/> item is being handled: every menu in the chain refuses to close
+    /// for it. WinForms raises ItemClicked, then closes the menus, then runs the item's Click, so it is set in
+    /// ItemClicked and cleared at the end of Click.
+    /// </summary>
+    static bool _keepOpen;
+
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ToolStripItem, object> KeepOpenItems = new();
+
+    /// <summary>
+    /// An item that changes a setting in place: clicking it runs <paramref name="onClick"/> (which updates the item, so
+    /// the change shows) and leaves the menu open. Items that open a window or start a session still close it.
+    /// </summary>
+    internal static void KeepOpen(ToolStripMenuItem item, Action onClick)
+    {
+        KeepOpenItems.AddOrUpdate(item, true);
+        item.Click += (_, _) =>
+        {
+            try { onClick(); }
+            finally { _keepOpen = false; }
+        };
+    }
+
+    /// <summary>True when a menu closing for <paramref name="reason"/> should stay open (a KeepOpen item was clicked).</summary>
+    internal static bool StaysOpen(ToolStripDropDownCloseReason reason) =>
+        _keepOpen && reason == ToolStripDropDownCloseReason.ItemClicked;
+
+    static void HookKeepOpen(ToolStripDropDown dropDown)
+    {
+        dropDown.ItemClicked -= OnItemClicked;
+        dropDown.ItemClicked += OnItemClicked;
+        dropDown.Closing -= OnClosing;
+        dropDown.Closing += OnClosing;
+    }
+
+    static void OnItemClicked(object? sender, ToolStripItemClickedEventArgs e)
+    {
+        if (e.ClickedItem is { } item && KeepOpenItems.TryGetValue(item, out _)) _keepOpen = true;
+    }
+
+    static void OnClosing(object? sender, ToolStripDropDownClosingEventArgs e)
+    {
+        if (StaysOpen(e.CloseReason)) e.Cancel = true;
+    }
+
+    /// <summary>A checkbox item that stays open and flips its tick on click.</summary>
+    static ToolStripMenuItem Toggle(string text, bool on, Action<bool> set)
+    {
+        var item = new ToolStripMenuItem(text) { Checked = on };
+        KeepOpen(item, () =>
+        {
+            item.Checked = !item.Checked;
+            set(item.Checked);
+        });
+        return item;
+    }
 
     static ToolStripMenuItem Item(string text, Image? image, Action onClick)
     {
@@ -313,6 +383,7 @@ internal static class TrayMenu
     {
         item.DropDown.ImageScalingSize = ImageSize(dpi);
         item.DropDown.ShowItemToolTips = true;
+        HookKeepOpen(item.DropDown);
     }
 
     /// <summary>Disposes the previous items (and their submenus) and sets up images, margins and the renderer.</summary>
@@ -326,6 +397,7 @@ internal static class TrayMenu
         menu.ShowCheckMargin = true; // the star column for the default profile
         menu.ShowItemToolTips = true;
         if (menu.Renderer is not TrayRenderer) menu.Renderer = new TrayRenderer();
+        HookKeepOpen(menu);
     }
 
     static Font? _bold;
