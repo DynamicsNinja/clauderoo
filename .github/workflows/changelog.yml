@@ -1,0 +1,44 @@
+name: Changelog
+
+# A feat or fix PR must add a line under "## [Unreleased]" in CHANGELOG.md. PRs are squash-merged with their title,
+# so the title decides. Other types (chore, docs, ci, test, refactor...) aren't checked. Add the label "no-changelog"
+# to a feat/fix PR that users won't notice.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require an Unreleased entry for feat/fix PRs
+        env:
+          # Through env, never interpolated into the script: a PR title is untrusted text.
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          if ! printf '%s' "$TITLE" | grep -qE '^(feat|fix)(\([^)]*\))?!?:'; then
+            echo "Not a feat/fix PR; no changelog entry needed."
+            exit 0
+          fi
+          if [ "$SKIP" = "true" ]; then
+            echo "Labelled no-changelog; skipping."
+            exit 0
+          fi
+          unreleased() { awk '/^## \[Unreleased\]/ { on = 1; next } /^## \[/ { on = 0 } on && NF'; }
+          before=$(git show "$BASE:CHANGELOG.md" | unreleased)
+          after=$(unreleased < CHANGELOG.md)
+          if [ "$before" = "$after" ]; then
+            echo "::error file=CHANGELOG.md::This is a feat/fix PR but CHANGELOG.md has no new line under '## [Unreleased]'. Add one (Added / Changed / Fixed), or label the PR 'no-changelog' if users won't notice the change."
+            exit 1
+          fi
+          echo "Unreleased entry found:"
+          diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep '^>' || true

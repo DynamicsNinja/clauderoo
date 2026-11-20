@@ -44,7 +44,8 @@ These keep users' accounts safe. A pull request that breaks one won't be merged.
 1. Branch from `main`.
 2. Add or update tests for every behaviour change. Write the test first where you can.
 3. Run the whole suite and make sure it passes with no new warnings.
-4. Update `README.md` and add a line under **Unreleased** in `CHANGELOG.md`.
+4. Update `README.md` and add a line under **Unreleased** in `CHANGELOG.md`. CI fails a `feat:` or `fix:` PR
+   without one; label it `no-changelog` if users won't notice the change.
 5. Fill in the pull request template.
 
 ## Releases
