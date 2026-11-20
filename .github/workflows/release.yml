@@ -46,3 +46,33 @@ jobs:
           files: |
             ${{ env.ZIP }}
             ${{ env.ZIP }}.sha256
+
+  # Sends the new version to microsoft/winget-pkgs as a PR. Its own job, so a winget problem never marks the release
+  # itself as failed. Skipped (with a notice) for pre-releases, when the WINGET_TOKEN secret isn't set, and while the
+  # package isn't in winget yet: wingetcreate can only update a package that exists. See packaging/README.md.
+  winget:
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    steps:
+      - name: Submit to winget
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $id = 'DynamicsNinja.clauderoo'
+          if (-not $env:WINGET_TOKEN) {
+            Write-Output "::notice::WINGET_TOKEN isn't set, so this release wasn't sent to winget."
+            exit 0
+          }
+          gh api "repos/microsoft/winget-pkgs/contents/manifests/d/DynamicsNinja/clauderoo" --silent 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::notice::$id isn't in winget yet (the first version must be accepted by hand), so this release wasn't sent."
+            exit 0
+          }
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $url = "https://github.com/${{ github.repository }}/releases/download/$($env:GITHUB_REF_NAME)/clauderoo-$version-win-x64.zip"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe update $id --version $version --urls $url --submit --token $env:WINGET_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate failed ($LASTEXITCODE)" }

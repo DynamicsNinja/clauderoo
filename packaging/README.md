@@ -2,8 +2,16 @@
 
 ## winget
 
-`winget/` holds the manifest for `DynamicsNinja.clauderoo`, set up for release 0.2.0. It is not submitted yet. For each
-release, before sending it to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs):
+**After the package is in winget, releases go there on their own.** The release workflow's `winget` job runs
+`wingetcreate update` for every tag without a `-`, which opens a PR on
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) with the new version, URL and hash. It needs a
+repository secret named `WINGET_TOKEN`: a classic personal access token with the `public_repo` scope, from the account
+that owns the winget-pkgs fork. Without the secret, or while the package isn't in winget yet, the job skips with a
+notice and the release is unaffected. winget's reviewers still merge each PR.
+
+`winget/` holds a manifest for `DynamicsNinja.clauderoo`, for the first submission and for testing by hand. Once the
+package is in winget, wingetcreate builds each version from the one there, so these files don't need updating. To use
+them for a version by hand:
 
 1. Set `PackageVersion` in all three files to the release version (no `v`), and the version inside `InstallerUrl`.
 2. Set `InstallerSha256` to the contents of the release's `clauderoo-<version>-win-x64.zip.sha256`.
