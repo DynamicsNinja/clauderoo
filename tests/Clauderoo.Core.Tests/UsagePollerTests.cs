@@ -214,4 +214,21 @@ public class UsagePollerTests
         view.Seed(new Dictionary<string, UsageReading> { ["work"] = Reading("work", at, 33) });
         Assert.Equal(50, view.Readings["work"].Windows[0].Percent);
     }
+
+    [Fact]
+    public void UsageView_CheckedAt_MovesOnlyForProfilesFetchedAgain()
+    {
+        var t = new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero);
+        var view = new UsageView(() => t);
+        var homeResult = new UsageResult.NotSignedIn();
+        view.Apply(new Dictionary<string, UsageResult> { ["ifc"] = new UsageResult.Expired(), ["home"] = homeResult });
+        Assert.Equal(t, view.CheckedAt["ifc"]);
+
+        // Refresh: ifc is fetched again and is still expired (an equal value, a new object); home wasn't fetched
+        var first = t;
+        t = t.AddMinutes(5);
+        view.Apply(new Dictionary<string, UsageResult> { ["ifc"] = new UsageResult.Expired(), ["home"] = homeResult });
+        Assert.Equal(t, view.CheckedAt["ifc"]);
+        Assert.Equal(first, view.CheckedAt["home"]);
+    }
 }

@@ -178,13 +178,21 @@ internal sealed class UsagePoller(
 /// What the tray shows about usage, on the UI thread: the latest reading per profile (the cache's until a fetch
 /// works, then the live one, kept when a later fetch fails) and the latest fetch result.
 /// </summary>
-internal sealed class UsageView
+internal sealed class UsageView(Func<DateTimeOffset>? now = null)
 {
+    private readonly Func<DateTimeOffset> _now = now ?? (() => DateTimeOffset.Now);
     private Dictionary<string, UsageReading> _readings = new(StringComparer.Ordinal);
     private Dictionary<string, UsageResult> _results = new(StringComparer.Ordinal);
+    private Dictionary<string, DateTimeOffset> _checkedAt = new(StringComparer.Ordinal);
 
     public IReadOnlyDictionary<string, UsageReading> Readings => _readings;
     public IReadOnlyDictionary<string, UsageResult> Results => _results;
+
+    /// <summary>
+    /// When each profile was last checked, whatever the result (an expired sign-in is checked too), so a Refresh that
+    /// finds nothing new still shows it ran.
+    /// </summary>
+    public IReadOnlyDictionary<string, DateTimeOffset> CheckedAt => _checkedAt;
 
     /// <summary>Raised after the readings or results changed.</summary>
     public event Action? Changed;
@@ -205,10 +213,22 @@ internal sealed class UsageView
     public void Apply(IReadOnlyDictionary<string, UsageResult> results)
     {
         var next = new Dictionary<string, UsageReading>(_readings, StringComparer.Ordinal);
+        var checkedAt = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var at = _now();
         foreach (var (name, r) in results)
+        {
             if (r is UsageResult.Ok ok) next[name] = ok.Reading;
+            // The poller hands over every profile's latest result, fetched in this pass or not. Each fetch makes a new
+            // result object, so a different instance (not just an unequal value: records compare by value, and two
+            // Expired are equal) means the profile was checked now.
+            checkedAt[name] = _results.TryGetValue(name, out var before) && ReferenceEquals(before, r)
+                && _checkedAt.TryGetValue(name, out var was)
+                ? was
+                : at;
+        }
         _readings = next;
         _results = new Dictionary<string, UsageResult>(results, StringComparer.Ordinal);
+        _checkedAt = checkedAt;
         Changed?.Invoke();
     }
 }

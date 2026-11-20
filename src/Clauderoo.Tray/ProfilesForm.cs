@@ -165,6 +165,9 @@ sealed class ProfilesForm : Form
     private readonly WrapLabel _usageInfo = new() { ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
     private readonly GlyphLabel _usageStatus = new() { Margin = new Padding(0, 2, 0, 2) };
     private readonly Button _usageRefresh = Btn("Re&fresh");
+    // Shown instead of Refresh when the sign-in has expired: clauderoo never renews a token, but claude does when a
+    // session starts, so checking again would only find the same expired sign-in.
+    private readonly Button _usageRenew = Btn("Start session to renew");
 
     // Required fields that are still empty (provider part).
     private readonly GlyphLabel _fieldError = new() { Margin = new Padding(0, 0, 0, 6) };
@@ -425,10 +428,14 @@ sealed class ProfilesForm : Form
         _usageRows.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _usageRows.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _usageRefresh.Margin = new Padding(0, 2, 0, 2);
+        _usageRenew.Margin = new Padding(0, 2, 0, 2);
+        _usageRenew.Visible = false;
+        var usageButtons = Flow(FlowDirection.LeftToRight);
+        usageButtons.Controls.AddRange([_usageRefresh, _usageRenew]);
         var usageBody = Table(1);
         usageBody.Dock = DockStyle.Top;
         usageBody.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Control[] usageParts = [_usageRows, _usageInfo, _usageStatus, _usageRefresh];
+        Control[] usageParts = [_usageRows, _usageInfo, _usageStatus, usageButtons];
         usageBody.RowCount = usageParts.Length;
         for (var i = 0; i < usageParts.Length; i++)
         {
@@ -594,6 +601,7 @@ sealed class ProfilesForm : Form
         _save.Click += (_, _) => Save();
         _runningTimer.Tick += (_, _) => RefreshRunning();
         _usageRefresh.Click += async (_, _) => await RefreshUsageAsync();
+        _usageRenew.Click += (_, _) => Guard(StartSession);
         if (_usageView != null) _usageView.Changed += ShowUsage;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
@@ -624,7 +632,7 @@ sealed class ProfilesForm : Form
                  {
                      (_new, Glyph.Add), (_rename, Glyph.Rename), (_remove, Glyph.Delete), (_check, Glyph.Diagnostic),
                      (_signIn, Glyph.Person), (_envDelete, Glyph.Remove), (_setDefault, Glyph.StarOutline),
-                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh),
+                     (_start, Glyph.Play), (_save, Glyph.Save), (_usageRefresh, Glyph.Refresh), (_usageRenew, Glyph.Play),
                      (_addFolder, Glyph.FolderOpen), (_removeFolder, Glyph.Remove), (_revert, Glyph.Undo),
                  })
         {
@@ -1000,7 +1008,10 @@ sealed class ProfilesForm : Form
 
             // Vertex, API-key and token profiles: never polled, never peeked; the window just says why.
             var notTracked = TrayText.UsageNotTrackedFor(info);
-            _usageRefresh.Visible = notTracked == null && _usageView != null && info.Email != null;
+            var last = _usageView?.Results.GetValueOrDefault(info.Name);
+            var expired = last is UsageResult.Expired;
+            _usageRefresh.Visible = notTracked == null && _usageView != null && info.Email != null && !expired;
+            _usageRenew.Visible = notTracked == null && info.Email != null && expired;
             // Vertex, API key and token: nothing to show, so nothing takes room. Signed out: the header says so.
             if (notTracked != null || info.Email == null)
             {
@@ -1013,14 +1024,12 @@ sealed class ProfilesForm : Form
 
             var now = DateTimeOffset.Now;
             var reading = _usageView?.Readings.GetValueOrDefault(info.Name);
-            var last = _usageView?.Results.GetValueOrDefault(info.Name);
+            DateTimeOffset? checkedAt = _usageView?.CheckedAt.TryGetValue(info.Name, out var checkedTime) == true ? checkedTime : null;
             _usageRows.Visible = reading is { Windows.Count: > 0 };
             if (reading != null)
                 foreach (var w in reading.Windows) AddUsageRow(w, now);
 
-            _usageInfo.Text = reading != null
-                ? (reading.Plan is { } plan ? $"Plan: {plan} · " : "") + "as of " + TrayText.UsageTime(reading.FetchedAt, now)
-                : "Not checked yet.";
+            _usageInfo.Text = TrayText.UsageInfo(reading, checkedAt, signedIn: true, now);
             if (TrayText.UsageStatus(last) is { } why)
                 _usageStatus.Show(Glyph.Warning, StatusColors.Warn, why);
             else
