@@ -301,6 +301,22 @@ public class TrayTextTests
     }
 
     [Fact]
+    public void UsageInfo_ShowsWhenLastChecked_WhenNoNewReading()
+    {
+        var now = new DateTimeOffset(DateTime.Today.AddHours(12));
+        var r = Usage(now.AddHours(-2), W("5h", 42));
+        string T(DateTimeOffset t) => t.LocalDateTime.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+        // a fresh reading: the check is the reading, no extra time
+        Assert.Equal($"Plan: Max 5x · as of {T(now.AddHours(-2))}", TrayText.UsageInfo(r, now.AddHours(-2), true, now));
+        // checked since without a new reading (expired sign-in): both times, so Refresh visibly did something
+        Assert.Equal($"Plan: Max 5x · as of {T(now.AddHours(-2))} · checked {T(now)}", TrayText.UsageInfo(r, now, true, now));
+        Assert.Equal($"No reading yet · checked {T(now)}", TrayText.UsageInfo(null, now, true, now));
+        Assert.Equal("Not checked yet.", TrayText.UsageInfo(null, null, true, now));
+        Assert.Equal("Not signed in — start a session to sign in.", TrayText.UsageInfo(null, now, false, now));
+    }
+
+    [Fact]
     public void UsageLevel_Thresholds()
     {
         Assert.Equal(UsageLevel.Ok, TrayText.UsageLevelOf(69.9));

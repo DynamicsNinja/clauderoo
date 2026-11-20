@@ -339,6 +339,22 @@ internal static class TrayText
         return rows;
     }
 
+    /// <summary>
+    /// The Profiles window's line under the bars: "Plan: Max 5x · as of 15:40", plus "· checked 16:05" when a later
+    /// check gave no new reading (an expired sign-in, a failed fetch), so a Refresh always shows it ran.
+    /// </summary>
+    public static string UsageInfo(UsageReading? r, DateTimeOffset? checkedAt, bool signedIn, DateTimeOffset now)
+    {
+        var checkedPart = checkedAt is { } c && (r == null || c - r.FetchedAt >= TimeSpan.FromMinutes(1))
+            ? "checked " + UsageTime(c, now)
+            : null;
+        if (r != null)
+            return (r.Plan is { } plan ? $"Plan: {plan} · " : "") + "as of " + UsageTime(r.FetchedAt, now)
+                   + (checkedPart != null ? " · " + checkedPart : "");
+        if (!signedIn) return "Not signed in — start a session to sign in.";
+        return checkedPart != null ? "No reading yet · " + checkedPart : "Not checked yet.";
+    }
+
     /// <summary>Plain words for a fetch that didn't give a reading; null for Ok, not signed in or not fetched yet.</summary>
     public static string? UsageStatus(UsageResult? last) => last switch
     {
