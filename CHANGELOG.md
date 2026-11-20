@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-20
+
+### Fixed
+- When a profile's sign-in has expired, the profile manager's usage **Refresh** seemed to do nothing: it only checked again and found the same expired sign-in. It now offers **Start session to renew** instead (Claude renews the sign-in when a session starts), and the line under the usage bars shows when the profile was last checked, so a Refresh that finds nothing new still shows it ran.
+
 ## [0.4.1] - 2026-11-19
 
 ### Added
@@ -126,7 +131,8 @@ First public release.
 - `cr version`, `cr upgrade` and `cr uninstall`.
 - Release builds from GitHub Actions, with a draft winget manifest.
 
-[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/DynamicsNinja/clauderoo/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/DynamicsNinja/clauderoo/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DynamicsNinja/clauderoo/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/DynamicsNinja/clauderoo/compare/v0.3.1...v0.3.2
